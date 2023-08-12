@@ -17,6 +17,7 @@ data_lines = data_lines.replace('"material": 65,', '"material": 23,')#LIVERY1_3
 data_lines = data_lines.replace('"material": 69,', '"material": 24,')#HANDLE
 data_lines = data_lines.replace('"material": 63,', '"material": 22,')#GLASS
 data_lines = data_lines.replace('"material": 62,', '"material": 29,')#HUBLOTx
+print("DONE!")
 
 
 

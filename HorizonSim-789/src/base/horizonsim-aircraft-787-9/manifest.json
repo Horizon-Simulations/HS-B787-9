@@ -10,10 +10,10 @@
     }
   ],
   "content_type": "AIRCRAFT",
-  "title": "BlipBlop B787-9",
+  "title": "HS B787-9",
   "manufacturer": "Boeing",
-  "creator": "BlipBlop \u0026 Kuro_x",
-  "package_version": "1.1.2",
+  "creator": "Horizon Sim, Qbit \u0026 Kuro",
+  "package_version": "1.0.0",
   "minimum_game_version": "1.27.5",
   "release_notes": {
     "neutral": {
@@ -21,5 +21,5 @@
       "OlderHistory": ""
     }
   },
-  "total_package_size": "00000000000301418737"
+  "total_package_size": "00000000000804748502"
 }

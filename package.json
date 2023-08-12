@@ -6,7 +6,7 @@
     "scripts": {
         "prep-HS789:copy-base-package":"bash ./Scripts/copy.sh",
         "build-HS789:build":"bash ./Scripts/build.sh",
-        "build-HS780:models":"node HorizonSim-789/src/models/build.js",
+        "build-HS780:models":"node HorizonSim-789/src/models/build.js && python ./HorizonSim-789/src/models/build/replace.py",
         "final-HS789:layout":"cd ./Scripts && MSFSLayoutGenerator.exe ..\\HorizonSim-789\\build\\horizonsim-aircraft-787-9\\layout.json"
     },
     "lint-staged": {
