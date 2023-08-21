@@ -18,6 +18,10 @@
       {
         "gltf": "./add/788fuse.gltf",
         "bin": "./add/788fuse.bin"
+      },
+      {
+        "gltf": "./add/belly.gltf",
+        "bin": "./add/belly.bin"
       }
     ]
   }
