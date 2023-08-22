@@ -49777,7 +49777,7 @@
                         "TEXCOORD_1": 3907
                     },
                     "indices": 3908,
-                    "material": 6,
+                    "material": 21,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -49802,7 +49802,7 @@
                         "TEXCOORD_1": 3914
                     },
                     "indices": 3915,
-                    "material": 4,
+                    "material": 24,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -49852,7 +49852,7 @@
                         "TEXCOORD_1": 3928
                     },
                     "indices": 3929,
-                    "material": 21,
+                    "material": 4,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -49876,7 +49876,7 @@
                         "TEXCOORD_1": 3934
                     },
                     "indices": 3935,
-                    "material": 24,
+                    "material": 6,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
