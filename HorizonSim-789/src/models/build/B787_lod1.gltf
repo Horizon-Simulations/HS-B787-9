@@ -49655,7 +49655,7 @@
                         "TEXCOORD_1": 3879
                     },
                     "indices": 3880,
-                    "material": 29,
+                    "material": 62,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
