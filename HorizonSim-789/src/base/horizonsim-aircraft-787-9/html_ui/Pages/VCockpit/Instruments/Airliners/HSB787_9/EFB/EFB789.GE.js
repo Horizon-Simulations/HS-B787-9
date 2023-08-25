@@ -38505,7 +38505,7 @@ class BoeingPerformancePage extends DisplayComponent {
                                 }
                             }, unitForTextField: this.unitString }))),
                 FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box' },
-                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-10/GENX-1B67"),
+                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-9/GENX-1B67"),
                     FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-setting-buttons hidden', ref: this.textAreaSettingButtonsRefs },
                         FSComponent.buildComponent(BoeingEfbButton, { selected: this.isFullSettingActive, onClick: () => this.onMenuButtonClicked(textAreaSetting.Full) },
                             FSComponent.buildComponent("span", null, "FULL")),
