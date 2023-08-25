@@ -1,3 +1,7 @@
+/* Changes by Horizon Simulations:
+    -changes color codes
+*/
+
 html {
   /*
   This is a repository for common style parameters. Use these whenever you can, so that we can make global adjustments at just this point.
@@ -9,19 +13,19 @@ html {
   --boeing-colors-black-translucent: rgba(0, 0, 0, 0.2);
   --boeing-colors-black-translucent-border: rgba(0, 0, 0, 0.5);
   --boeing-colors-white: white;
-  --boeing-colors-gray: #737189;
-  --boeing-colors-dark-gray: #737189;
-  --boeing-colors-darker-gray: #4a485f;
+  --boeing-colors-gray: #89869a;
+  --boeing-colors-dark-gray: #89869a;
+  --boeing-colors-darker-gray: #646474;
   --boeing-colors-blue: hsl(230, 100%, 51%);
-  --boeing-colors-cyan: hsl(192, 100%, 50%);
+  --boeing-colors-cyan: #00ffff;
   --boeing-colors-red: red;
-  --boeing-colors-amber: hsl(45, 100%, 50%);
-  --boeing-colors-green: #49e700;
-  --boeing-colors-dark-green: #007500;
-  --boeing-colors-magenta: #ff00ff;
+  --boeing-colors-amber: #ffd600;
+  --boeing-colors-green: #00ff00;
+  --boeing-colors-dark-green: #1d9123;
+  --boeing-colors-magenta: #ff5bff;
 
   /* Keep B787 colors in sync with B787Colors.ts */
-  --b78x-colors-separator-gray: #737189;
+  --b78x-colors-separator-gray: #89869a;
 
   --boeing-pane-height: 1425px;
   --boeing-pane-width-full: 1920px;
@@ -35,8 +39,33 @@ html {
   font-style: normal;
 }
 
-#Electricity[state="off"] {
+@keyframes screenFadeIn {
+  0% {
+    display: none;
+    opacity: 0;
+  }
+
+  1% {
+    display: block;
+    opacity: 0;
+  }
+
+  85% {
+    opacity: 0.15;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+:not(.efb)>#Electricity {
+  animation: screenFadeIn 7s ease-out forwards;
+}
+
+#Electricity[state=off] {
   display: none;
+  opacity: 0;
 }
 
 /** HINT: Don't show the white highlight since the instruments is in general not interactive */
@@ -1568,14 +1597,14 @@ html {
 }
 
 .alt-baro-setting-inner {
-  width: min-content;
   display: flex;
   flex-flow: row nowrap;
   align-items: baseline;
+  justify-content: center;
 }
 
 .alt-baro-value-wrapper {
-  width: 90px;
+  min-width: 72px;
   text-align: right;
 }
 
@@ -1596,7 +1625,7 @@ html {
   content: " ";
   font-size: var(--alt-baro-font-size-large);
   white-space: pre;
-  width: 0px;
+  width: 0;
 }
 
 .alt-baro-top .alt-baro-value-wrapper,
@@ -1631,11 +1660,15 @@ html {
 .alt-baro-alert:not(.alt-baro-std) .alt-baro-top .alt-baro-setting-inner {
   outline: solid 2px var(--boeing-colors-amber);
   outline-offset: 2px;
+  background-color: var(--boeing-colors-black);
 }
 
 .alt-baro-alert.alt-baro-std .alt-baro-top .alt-baro-value {
   outline: solid 2px var(--boeing-colors-amber);
   outline-offset: 2px;
+  padding-left: 5px;
+  padding-right: 5px;
+  background-color: var(--boeing-colors-black);
 }
 
 .alt-baro-qfe-alert .alt-baro-top .alt-baro-reference {
@@ -1719,7 +1752,7 @@ html {
   width: 100%;
   height: 100%;
 
-  --deviation-scale-ls-dot-radius: 4px;
+  --deviation-scale-ls-dot-radius: 5px;
   --deviation-scale-ls-reduced-dot-width: 8px;
   --deviation-scale-ls-reduced-dot-height: 8px;
 
@@ -1745,8 +1778,8 @@ html {
 
 .deviation-scale-container {
   position: absolute;
-  left: 0px;
-  top: 0px;
+  left: 0;
+  top: 0;
   width: 100%;
 
   --deviation-scale-color: var(--boeing-colors-white);
@@ -1788,9 +1821,11 @@ html {
 .deviation-background-fmc,
 .deviation-background-ls {
   position: absolute;
+  left: 50%;
   /* allow the round endcap on the centre scale to go above the box */
   top: 2px;
-  width: 100%;
+  width: 104%;
+  transform: translateX(-50%);
 }
 
 .deviation-background-fmc {
@@ -1849,14 +1884,14 @@ html {
   position: absolute;
   top: 95.2%;
   left: 25.6%;
-  width: 352px;
+  width: 346px;
   height: 54px;
 }
 .vertical-deviation-box {
   position: absolute;
   top: 70.2%;
   left: 69.0%;
-  width: 352px;
+  width: 346px;
   height: 54px;
   transform-origin: 0 0;
   transform: rotate(270deg);
@@ -1872,8 +1907,8 @@ html {
 
 .rising-runway-symbol {
   position: absolute;
-  top: 0px;
-  left: 96.5px;
+  top: 0;
+  left: 93px;
   width: 230px;
   height: 392px;
 }
@@ -2321,6 +2356,18 @@ html {
   background: var(--boeing-colors-magenta);
   border-radius: 6px;
   border: solid 1px var(--boeing-colors-black);
+}
+
+.pfd-fd-command-v-bar {
+  fill: var(--boeing-colors-magenta);
+  stroke: var(--boeing-colors-magenta);
+  stroke-width: 1.5px;
+}
+
+.pfd-fd-command-v-bar2 {
+  stroke: var(--boeing-colors-magenta);
+  stroke-width: 1.5px;
+  fill: none;
 }
 
 .pfd-fd-command-bar-pitch {
