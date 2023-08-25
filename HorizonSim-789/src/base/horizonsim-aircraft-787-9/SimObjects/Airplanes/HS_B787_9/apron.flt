@@ -119,7 +119,7 @@ XMLVAR_Battery_Switch_State=0
 XMLVAR_Mins_Selector_Baro=1
 XMLVAR_SeatBelts=1
 XMLVAR_FansLower=1
-XMLVAR_RecircUpper=0
+XMLVAR_RecircUpper=1
 XMLVAR_Cooling_Aft=1
 XMLVAR_Equip_Fwd=1
 XMLVAR_Outflow_Fwd=1
@@ -160,6 +160,7 @@ bus.2=bus.8:0 ; Main Battery Bus disconnected from Hot Battery Bus
 bus.3=bus.9:0 ; APU Battery Bus disconnected from APU Battery Bus
 circuit.97=False ; IRS 1 off
 circuit.98=False ; IRS 2 off
+circuit.100=True ; EFB on
 
 [Gauges.0]
 KollsmanSetting=29.921342849731445313
