@@ -42707,7 +42707,7 @@ const boeingMsfsUserSettings = [
     },
     {
         name: 'boeingMsfsSelcal',
-        defaultValue: 'KR-WT',
+        defaultValue: 'HS-WT',
     },
     {
         name: 'boeingMsfsSatCom',
@@ -71176,15 +71176,15 @@ B787EngineData.n1_tpr_lookup = new LerpLookupTable([
 class B787PerformanceMath extends BoeingPerformanceDataProvider {
     /** @inheritDoc */
     get operatingEmptyWeight() {
-        return 264500; // 119,975 kg
+        return 284000; // 128,820 kg
     }
     /** @inheritDoc */
     get maxZeroFuelWeight() {
-        return 355000; // 161,020kg
+        return 400000; // 181,435kg
     }
     /** @inheritDoc */
     get maxGrossWeight() {
-        return 502500; // 228,384 kg
+        return 425500; // 193,000 kg
     }
     /** @inheritDoc */
     get maxReserveFuel() {
@@ -71215,7 +71215,7 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
             inlet_area: 68.4,
             low_idle_n1: 20,
             mach_influence_on_n1: 10,
-            static_thrust: 66978, // GenX-1B64; 63897, // Trent1000-H2
+            static_thrust: 69378, // GenX-1B67; 69194, // Trent1000-D2
             ThrustSpecificFuelConsumption: 0.2845,
             /** Output: Thrust scalar; Term 1: Mach; Term 2: CN1 */
             n1_and_mach_on_thrust_table: new LerpLookupTable([
@@ -71844,16 +71844,19 @@ class WTB78xFsInstrument {
         this.fmsOperatingPhasePublisher = new FmsOperatingPhasePublisher(this.bus);
         this.irsSystemGroupStatusPublisher = new IrsSystemGroupStatusPublisher(this.bus, 2);
         // TODO check placard speeds are correct for -8 (from flight_model.cfg)
-        // -8 is 260, 240, 230, *220*, *215*, 215, 210, 190, 180
+        // -9 is 260, 240, 230, *220*, *215*, 215, 210, 190, 180
         this.flapConfig = {
             flap_positions: [
                 { label: 0, flapAngle: 0, slatAngle: 0, speedLimit: Infinity },
-                { label: 1, flapAngle: 0, slatAngle: 5, speedLimit: 260 },
-                { label: 5, flapAngle: 15, slatAngle: 19.5, speedLimit: 240 },
-                { label: 15, flapAngle: 20, slatAngle: 19.5, speedLimit: 220 },
-                { label: 20, flapAngle: 30, slatAngle: 19.5, speedLimit: 215 },
-                { label: 25, flapAngle: 37.5, slatAngle: 23.0, speedLimit: 190 },
-                { label: 30, flapAngle: 43, slatAngle: 23.0, speedLimit: 180 },
+                { label: 1, flapAngle: 0, slatAngle: 15, speedLimit: 260 },
+                { label: 5, flapAngle: 5, slatAngle: 15.572958, speedLimit: 240 },
+                { label: 10, flapAngle: 10, slatAngle: 16.145916, speedLimit: 230 },
+                { label: 15, flapAngle: 15, slatAngle: 16.718873, speedLimit: 225 },
+                { label: 17, flapAngle: 17, slatAngle: 17.291831, speedLimit: 220 },
+                { label: 18, flapAngle: 18, slatAngle: 17.864789, speedLimit: 215 },
+                { label: 20, flapAngle: 20, slatAngle: 18.437747, speedLimit: 210 },
+                { label: 25, flapAngle: 20, slatAngle: 31, speedLimit: 190 },
+                { label: 30, flapAngle: 30, slatAngle: 31.572958, speedLimit: 180 },
             ],
             speed_data: this.speedData,
         };
@@ -73199,7 +73202,7 @@ class B787FlapSpeedBugDataProvider {
     constructor(bus, speedProvider, adcIndex) {
         this.bus = bus;
         this.speedProvider = speedProvider;
-        this.flapPositions = [0, 1, 5, 15, 20];
+        this.flapPositions = [0, 1, 5, 10, 15, 17, 18, 20];
         this._data = new Map(Array.from(this.flapPositions, position => {
             return [
                 position,
@@ -73336,17 +73339,35 @@ class B787FlapSpeedBugDataProvider {
             this.hideFlapSpeedBug(this._data.get(5));
         }
         // F10 -> visible if handle 10
-        // F15 -> visible if handle 15
         if (this.isAltBelow20k && this.nominalFlapsHandleIndex === 3) {
+            this.updateFlapManeuveringSpeed(this._data.get(10), pressureAlt, weight);
+        }
+        else {
+            this.hideFlapSpeedBug(this._data.get(10));
+        }
+        // F15 -> visible if handle 15
+        if (this.isAltBelow20k && this.nominalFlapsHandleIndex === 4) {
             this.updateFlapManeuveringSpeed(this._data.get(15), pressureAlt, weight);
         }
         else {
             this.hideFlapSpeedBug(this._data.get(15));
         }
         // F17 -> visible if handle 17
+        if (this.isAltBelow20k && this.nominalFlapsHandleIndex === 5) {
+            this.updateFlapManeuveringSpeed(this._data.get(17), pressureAlt, weight);
+        }
+        else {
+            this.hideFlapSpeedBug(this._data.get(17));
+        }
         // F18 -> visible if handle 18
+        if (this.isAltBelow20k && this.nominalFlapsHandleIndex === 6) {
+            this.updateFlapManeuveringSpeed(this._data.get(18), pressureAlt, weight);
+        }
+        else {
+            this.hideFlapSpeedBug(this._data.get(18));
+        }
         // F20 -> visible if handle 20
-        if (this.isAltBelow20k && this.nominalFlapsHandleIndex === 4) {
+        if (this.isAltBelow20k && this.nominalFlapsHandleIndex === 7) {
             this.updateFlapManeuveringSpeed(this._data.get(20), pressureAlt, weight);
         }
         else {
@@ -73423,14 +73444,14 @@ class B787AltitudeAlertController extends BoeingAltitudeAlertController {
             let isLandingFlapsSet;
             switch (landingFlaps) {
                 case 20:
-                    isLandingFlapsSet = flapPosition === 4;
+                    isLandingFlapsSet = flapPosition === 7;
                     break;
                 case 25:
-                    isLandingFlapsSet = flapPosition === 5;
+                    isLandingFlapsSet = flapPosition === 8;
                     break;
                 case 30:
                 default:
-                    isLandingFlapsSet = flapPosition === 6;
+                    isLandingFlapsSet = flapPosition === 9;
             }
             return inApproachLock || (gearDown && isLandingFlapsSet);
         }, this.isGearDown, this.flapsPosition, this.performancePlan.approachFlapSpeed, this.inApproachLock);

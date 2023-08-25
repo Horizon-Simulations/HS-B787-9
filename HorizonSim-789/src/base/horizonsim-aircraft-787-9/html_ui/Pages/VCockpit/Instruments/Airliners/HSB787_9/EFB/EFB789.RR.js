@@ -27069,7 +27069,7 @@ const boeingMsfsUserSettings = [
     },
     {
         name: 'boeingMsfsSelcal',
-        defaultValue: 'KR-WT',
+        defaultValue: 'HS-WT',
     },
     {
         name: 'boeingMsfsAutoFuelManagement',
@@ -37909,7 +37909,7 @@ class BoeingPerformancePage extends DisplayComponent {
             EFBTakeoffThrustMode.TO2,
             EFBTakeoffThrustMode.WINDSHEAR,
         ]);
-        this.flapList = ArraySubject.create([OptimumRequest.OPTIMUM, 5, 15, 20]);
+        this.flapList = ArraySubject.create([OptimumRequest.OPTIMUM, 5, 10, 15, 17, 18, 20]);
         this.aiList = ArraySubject.create([EFBAntiIceSetting.OFF, EFBAntiIceSetting.ENGINE, EFBAntiIceSetting.ENGINE_AUTO]);
         this.imClbList = ArraySubject.create(['OPTIMUM', 'NONE', 'EXIT']);
         this.intxList = ArraySubject.create([]);
@@ -38452,7 +38452,7 @@ class BoeingPerformancePage extends DisplayComponent {
                     FSComponent.buildComponent("span", null, "CDL")),
                 FSComponent.buildComponent(BoeingEfbProgressBar, { ref: this.progressBarRef, isHidden: this.isProgressBarVisible })),
             FSComponent.buildComponent("div", { class: 'efb-middle' },
-                FSComponent.buildComponent("div", { class: 'efb-middle-top-left-title' }, "TRENT1000-H2"),
+                FSComponent.buildComponent("div", { class: 'efb-middle-top-left-title' }, "TRENT1000-D2"),
                 FSComponent.buildComponent("div", { class: 'efb-middle-top-right-box' },
                     FSComponent.buildComponent("div", { class: 'right-side-dropdowns' },
                         FSComponent.buildComponent(BoeingEfbDropdownButton, { dropdownItems: this.rtgList, dropdownItemFormatter: RawFormatter, hasGreenOutline: false, hasArrow: true, dropdownButtonName: 'RTG', isNameOnLeftSide: false, dropDownDefaultName: 'THRUST RTG', onItemSelected: (thrustRTG) => this.pickedRtg.set(thrustRTG) }),
@@ -38505,7 +38505,7 @@ class BoeingPerformancePage extends DisplayComponent {
                                 }
                             }, unitForTextField: this.unitString }))),
                 FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box' },
-                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-8/TRENT1000-H2"),
+                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-8/TRENT1000-D2"),
                     FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-setting-buttons hidden', ref: this.textAreaSettingButtonsRefs },
                         FSComponent.buildComponent(BoeingEfbButton, { selected: this.isFullSettingActive, onClick: () => this.onMenuButtonClicked(textAreaSetting.Full) },
                             FSComponent.buildComponent("span", null, "FULL")),
@@ -42803,7 +42803,7 @@ class B787TakeoffCalculator {
         }
     }
 }
-B787TakeoffCalculator.possibleFlapPositions = [5, 15, 20];
+B787TakeoffCalculator.possibleFlapPositions = [5, 10, 15, 17, 18, 20];
 B787TakeoffCalculator.resultCache = new Map(Array.from(B787TakeoffCalculator.possibleFlapPositions, (pos) => [pos, {
         isPossible: false,
         maxTakeoffWeightOut: 0,
@@ -43968,15 +43968,15 @@ B787EngineData.n1_tpr_lookup = new LerpLookupTable([
 class B787PerformanceMath extends BoeingPerformanceDataProvider {
     /** @inheritDoc */
     get operatingEmptyWeight() {
-        return 264500; // 119,975 kg
+        return 284000; // 128,820 kg
     }
     /** @inheritDoc */
     get maxZeroFuelWeight() {
-        return 355000; // 161,020kg
+        return 400000; // 181,435kg
     }
     /** @inheritDoc */
     get maxGrossWeight() {
-        return 502500; // 228,384 kg
+        return 425500; // 193,000 kg
     }
     /** @inheritDoc */
     get maxReserveFuel() {
@@ -44007,7 +44007,7 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
             inlet_area: 68.4,
             low_idle_n1: 20,
             mach_influence_on_n1: 10,
-            static_thrust: 66978, // GenX-1B64; 63897, // Trent1000-H2
+            static_thrust: 69378, // GenX-1B67; 69194, // Trent1000-D2
             ThrustSpecificFuelConsumption: 0.2845,
             /** Output: Thrust scalar; Term 1: Mach; Term 2: CN1 */
             n1_and_mach_on_thrust_table: new LerpLookupTable([
@@ -44636,16 +44636,19 @@ class WTB78xFsInstrument {
         this.fmsOperatingPhasePublisher = new FmsOperatingPhasePublisher(this.bus);
         this.irsSystemGroupStatusPublisher = new IrsSystemGroupStatusPublisher(this.bus, 2);
         // TODO check placard speeds are correct for -8 (from flight_model.cfg)
-        // -8 is 260, 240, 230, *220*, *215*, 215, 210, 190, 180
+        // -9 is 260, 240, 230, *220*, *215*, 215, 210, 190, 180
         this.flapConfig = {
             flap_positions: [
                 { label: 0, flapAngle: 0, slatAngle: 0, speedLimit: Infinity },
-                { label: 1, flapAngle: 0, slatAngle: 5, speedLimit: 260 },
-                { label: 5, flapAngle: 15, slatAngle: 19.5, speedLimit: 240 },
-                { label: 15, flapAngle: 20, slatAngle: 19.5, speedLimit: 220 },
-                { label: 20, flapAngle: 30, slatAngle: 19.5, speedLimit: 215 },
-                { label: 25, flapAngle: 37.5, slatAngle: 23.0, speedLimit: 190 },
-                { label: 30, flapAngle: 43, slatAngle: 23.0, speedLimit: 180 },
+                { label: 1, flapAngle: 0, slatAngle: 15, speedLimit: 260 },
+                { label: 5, flapAngle: 5, slatAngle: 15.572958, speedLimit: 240 },
+                { label: 10, flapAngle: 10, slatAngle: 16.145916, speedLimit: 230 },
+                { label: 15, flapAngle: 15, slatAngle: 16.718873, speedLimit: 225 },
+                { label: 17, flapAngle: 17, slatAngle: 17.291831, speedLimit: 220 },
+                { label: 18, flapAngle: 18, slatAngle: 17.864789, speedLimit: 215 },
+                { label: 20, flapAngle: 20, slatAngle: 18.437747, speedLimit: 210 },
+                { label: 25, flapAngle: 20, slatAngle: 31, speedLimit: 190 },
+                { label: 30, flapAngle: 30, slatAngle: 31.572958, speedLimit: 180 },
             ],
             speed_data: this.speedData,
         };
