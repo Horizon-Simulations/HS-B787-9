@@ -990,7 +990,7 @@
             //{"old": "corrected_airflow_table=0:0:.9,0:0:0,20:0.1:5,40:1:7.3,60:3:8.75,70:4:9.7,75:5:10.5,80:8:12,85:11.5:14.75,90:15:18,95:17:21,100:19:23,105:21:24.75,110:23:26.25", "new": ""},
             //{"old": "fuel_flow_scalar = 1 ; Fuel flow scalar", "new": "fuel_flow_scalar = 0.98 ; Fuel flow scalar"},//1st:0.93
             //---Below=ToDo---
-            {"old": "static_thrust = 76100 ; Lbs, max rated static thrust at Sea Level", "new": "static_thrust = 69378; GEnX-1B67;69194; trent100-D2; Lbs, max rated static thrust at Sea Level"},//trent100-H2
+            {"old": "static_thrust = 76100 ; Lbs, max rated static thrust at Sea Level", "new": "static_thrust = 69378; GEnX-1B67;69194; trent100-D2; Lbs, max rated static thrust at Sea Level"},//trent100-D2
             {"old": "-6, -32.4, -5", "new": "19.98, -32.4, -5"},
             {"old": "-6, 32.4, -5", "new": "19.98, 32.4, -5"},
             //{"old": "thrust_scalar = 1", "new": "thrust_scalar = 0.98"}
