@@ -161,7 +161,7 @@
             //{"old": "var(--boeing-colors-white)", "new": "BoeingColors.white"},
             //{"old": "var(--boeing-colors-magenta)", "new": "BoeingColors.magenta"},
             //EFB
-            {"old": "787-10/TRENT1000-D", "new": "787-8/GENX-1B67"},
+            {"old": "787-10/TRENT1000-J", "new": "787-9/GENX-1B67"},
             {"old": "TRENT1000-J", "new": "GENX-1B67"},
             {"old": "", "new": ""}
         ]
