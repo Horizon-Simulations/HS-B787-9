@@ -120,8 +120,8 @@
                 //MFD-HUD-PFD
                 {"old": "return 298700; \/\/ 135,488 kg", "new": "return 284000; \/\/ 128,820 kg"},//operatingEmptyWeight
                 {"old": "return 425000; \/\/ 192,777 kg", "new": "return 400000; \/\/ 181,435kg"},//maxZeroFuelWeight
-                {"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 69378, \/\/ GenX-1B67; 69194, \/\/ Trent1000-D2"},
+                //{"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //Rob
                 //---Below=ToDo---
@@ -161,8 +161,8 @@
                 //{"old": "var(--boeing-colors-white)", "new": "BoeingColors.white"},
                 //{"old": "var(--boeing-colors-magenta)", "new": "BoeingColors.magenta"},
                 //EFB
-                {"old": "787-10/TRENT1000-J", "new": "787-9/GENX-1B67"},
-                {"old": "TRENT1000-J", "new": "GENX-1B67"},
+                {"old": "787-10/TRENT1000-J", "new": "787-9/GENX-1B74"},
+                {"old": "TRENT1000-J", "new": "GENX-1B74"},
                 {"old": "", "new": ""}
             ]
         },
@@ -176,8 +176,8 @@
                 //MFD-HUD-PFD
                 {"old": "return 298700; \/\/ 135,488 kg", "new": "return 284000; \/\/ 128,820 kg"},//operatingEmptyWeight
                 {"old": "return 425000; \/\/ 192,777 kg", "new": "return 400000; \/\/ 181,435kg"},//maxZeroFuelWeight
-                {"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 69378, \/\/ GenX-1B67; 69194, \/\/ Trent1000-D2"},
+                //{"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //Rob
                 //---Below=ToDo---
@@ -268,13 +268,13 @@
                 //MFD-HUD-PFD
                 {"old": "return 298700; \/\/ 135,488 kg", "new": "return 284000; \/\/ 128,820 kg"},//operatingEmptyWeight
                 {"old": "return 425000; \/\/ 192,777 kg", "new": "return 400000; \/\/ 181,435kg"},//maxZeroFuelWeight
-                {"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
+                //{"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
                 //B787PerformanceMath-getAircraftFlightModel
                 ///no longer exist:beta3///{"old": "lift_coef_aoa_0: 0.317,", "new": "lift_coef_aoa_0: 0.288,"},//cruise_lift_scalar =0.91
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
                 //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 69378, \/\/ GenX-1B67; 69194, \/\/ Trent1000-D2"},
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
                 //---Below=ToDo---
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //{"old": "defaultValue: ClimbThrustMode.CLB,", "new": "defaultValue: ClimbThrustMode.CLB1,"},//use CLB1 for def
@@ -347,14 +347,14 @@
                 {"old": "defaultValue: 'DM-ES',", "new": "defaultValue: 'HS-WT',"},
                 {"old": "return 298700; \/\/ 135,488 kg", "new": "return 284000; \/\/ 128,820 kg"},//operatingEmptyWeight
                 {"old": "return 425000; \/\/ 192,777 kg", "new": "return 400000; \/\/ 181,435kg"},//maxZeroFuelWeight
-                {"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
+                //{"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
                 //MFD-HUD-PFD
                 //B787PerformanceMath-getAircraftFlightModel
                 ///no longer exist:beta3///{"old": "lift_coef_aoa_0: 0.317,", "new": "lift_coef_aoa_0: 0.288,"},//cruise_lift_scalar =0.91
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
                 //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 69378, \/\/ GenX-1B67; 69194, \/\/ Trent1000-D2"},
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
                 //---Below=ToDo---
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //{"old": "defaultValue: ClimbThrustMode.CLB,", "new": "defaultValue: ClimbThrustMode.CLB1,"},//use CLB1 for def
@@ -446,14 +446,14 @@
                 //{"old": "takeoffFlapSettings: ['5', '05', '10', '15', '17', '18', '20'],", "new": "takeoffFlapSettings: ['5', '05', '15', '20'],"},
                 {"old": "return 298700; \/\/ 135,488 kg", "new": "return 284000; \/\/ 128,820 kg"},//operatingEmptyWeight
                 {"old": "return 425000; \/\/ 192,777 kg", "new": "return 400000; \/\/ 181,435kg"},//maxZeroFuelWeight
-                {"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
+                //{"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
                 //MFD-HUD-PFD
                 //B787PerformanceMath-getAircraftFlightModel
                 ///no longer exist:beta3///{"old": "lift_coef_aoa_0: 0.317,", "new": "lift_coef_aoa_0: 0.288,"},//cruise_lift_scalar =0.91
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
                 //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 69378, \/\/ GenX-1B67; 69194, \/\/ Trent1000-D2"},//{"old": "static_thrust: 76100,", "new": "static_thrust: 74511,"},
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},//{"old": "static_thrust: 76100,", "new": "static_thrust: 74511,"},
                 //---Below=ToDo---
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //END
@@ -607,14 +607,14 @@
                 //{"old": "takeoffFlapSettings: ['5', '05', '10', '15', '17', '18', '20'],", "new": "takeoffFlapSettings: ['5', '05', '15', '20'],"},
                 {"old": "return 298700; \/\/ 135,488 kg", "new": "return 284000; \/\/ 128,820 kg"},//operatingEmptyWeight
                 {"old": "return 425000; \/\/ 192,777 kg", "new": "return 400000; \/\/ 181,435kg"},//maxZeroFuelWeight
-                {"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
+                //{"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
                 //MFD-HUD-PFD
                 //B787PerformanceMath-getAircraftFlightModel
                 ///no longer exist:beta3///{"old": "lift_coef_aoa_0: 0.317,", "new": "lift_coef_aoa_0: 0.288,"},//cruise_lift_scalar =0.91
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
                 //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 69378, \/\/ GenX-1B67; 69194, \/\/ Trent1000-D2"},//{"old": "static_thrust: 76100,", "new": "static_thrust: 74511,"},
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},//{"old": "static_thrust: 76100,", "new": "static_thrust: 74511,"},
                 //---Below=ToDo---
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //END
@@ -624,7 +624,7 @@
                 {"old": "['', 'DRAG/FF '],", "new": "[' B789 VERSION', 'DRAG/FF '],"},
                 {"old": "['', '+1.1/-3.5', ''],", "new": "['HS v0.0.0', '+1.1/-3.5', ''],"},
                 {"old": "defaultValue: 'DM-ES',", "new": "defaultValue: 'HS-WT',"},
-                {"old": "return 'TRENT1000';", "new": "return 'GENX-1B67';"},//Genx-1B67
+                {"old": "return 'TRENT1000';", "new": "return 'GENX-1B74';"},//Genx-1B74
                 //{"old": "defaultValue: ClimbThrustMode.CLB,", "new": "defaultValue: ClimbThrustMode.CLB1,"},//use CLB1 for def
                 //{"old": "defaultValue: TakeoffThrustMode.TO,", "new": "defaultValue: TakeoffThrustMode.TO1,"},//use TO1 for def
                 //{"old": "this.fadecThrustMode = ConsumerSubject.create(this.subs.on('fadec_thrust_mode'), TakeoffThrustMode.TO);", "new": "this.fadecThrustMode = ConsumerSubject.create(this.subs.on('fadec_thrust_mode'), TakeoffThrustMode.TO1);"},
@@ -747,7 +747,7 @@
             "name": "target_performance.cfg",
             "paths": {"old": "old/asobo-aircraft-b787-10/SimObjects/Airplanes/Asobo_B787_10/target_performance.cfg", "new": "new/horizonsim-aircraft-787-9/SimObjects/Airplanes/HS_B787_9/target_performance.cfg"},
             "texts": [
-                {"old": "max_gross_weight = 557000,1.0;", "new": "max_gross_weight = 425500,1.0;"},
+                //{"old": "max_gross_weight = 557000,1.0;", "new": "max_gross_weight = 425500,1.0;"},
                 {"old": "empty_weight = 298700,1.0;", "new": "empty_weight = 284000,1.0;"}
             ]
         },
@@ -757,19 +757,16 @@
             "texts": [
                 //{"old": "", "new": ""},
                 //{"old": "reference_datum_position = 0, 0, 0", "new": "reference_datum_position = 19.98, 0, 0"},
-                {"old": "max_gross_weight =557000", "new": "max_gross_weight =425500"},
+                //{"old": "max_gross_weight =557000", "new": "max_gross_weight =425500"},
                 {"old": "empty_weight =298700", "new": "empty_weight =284000"},
                 //v2.0.0
                 //{"old": "empty_weight_CG_position = -14.5, 0, 0", "new": "empty_weight_CG_position = 4.37, 0, 0 ; target 22.5% MAC empty weight CG (loac applied to main gear on ground)"},
                 //v2.0.1
                 //---Below=ToDo---
                 {"old": "empty_weight_CG_position = -14.5, 0, 0", "new": "empty_weight_CG_position = -13, 0, 0 ;-5.4, 0, 0;-13, 0, 0 ; target 23.5% MAC empty weight CG (loac applied to main gear on ground)"},
-                //---Below=ToDo---
-                {"old": "empty_weight_pitch_MOI =2816347", "new": "empty_weight_pitch_MOI =2706347"},//
-                //---Below=ToDo---
-                {"old": "empty_weight_roll_MOI =2217827", "new": "empty_weight_roll_MOI =2167827"},//
-                //---Below=ToDo---
-                {"old": "empty_weight_yaw_MOI =16117016", "new": "empty_weight_yaw_MOI =1517016"},//
+                {"old": "empty_weight_pitch_MOI =2816347", "new": "empty_weight_pitch_MOI =19047173"},//2706347
+                {"old": "empty_weight_roll_MOI =2217827", "new": "empty_weight_roll_MOI =9231005"},//2167827
+                {"old": "empty_weight_yaw_MOI =16117016", "new": "empty_weight_yaw_MOI =26746327"},//1517016
                 //---Below=ToDo---
                 {"old": "max_number_of_stations =7\nstation_load.0 = 170, 83.616722, -1.614532, 3.514503, TT:MENU.PAYLOAD.PILOT, 1\nstation_load.1 = 170, 83.521398, 1.716649, 4.155323, TT:MENU.PAYLOAD.COPILOT, 2\nstation_load.2 = 3000, 40.641644, 0, 5.000003, TT:MENU.PAYLOAD.BUSINESS_CLASS, 0\nstation_load.3 = 8000, -10.927045, 0, 5.000004, TT:MENU.PAYLOAD.PREMIUM_ECONOMY, 0\nstation_load.4 = 15000, -57.188078, 0, 3.082149, TT:MENU.PAYLOAD.ECONOMY_CLASS, 0\nstation_load.5 = 2000, 32.321239, 0, -2.726664, TT:MENU.PAYLOAD.FORWARD_BAGGAGE, 0\nstation_load.6 = 2000, -65.832885, 0.000002, -2.982455, TT:MENU.PAYLOAD.REAR_BAGGAGE, 0", "new": "max_number_of_stations =7\nstation_load.0 = 170, 63.636722, -1.614532, 3.514503, TT:MENU.PAYLOAD.PILOT, 1\nstation_load.1 = 170, 63.541398, 1.716649, 4.155323, TT:MENU.PAYLOAD.COPILOT, 2\nstation_load.2 = 3000, 20.661644, 0, 5.000003, TT:MENU.PAYLOAD.BUSINESS_CLASS, 3\nstation_load.3 = 8000, -10.927045, 0, 5.000004, TT:MENU.PAYLOAD.PREMIUM_ECONOMY, 3\nstation_load.4 = 15000, -39.178078, 0, 3.082149, TT:MENU.PAYLOAD.ECONOMY_CLASS, 3\nstation_load.5 = 2000, 12.341239, 0, -2.726664, TT:MENU.PAYLOAD.FORWARD_BAGGAGE, 6\nstation_load.6 = 2000, -47.822885, 0.000002, -2.982455, TT:MENU.PAYLOAD.REAR_BAGGAGE, 6"},
                 //cg
@@ -866,7 +863,7 @@
                 //v2 ref:MFD.js
                 //---Below=ToDo---
                 {"old": "pitch_stability =1", "new": "pitch_stability =2.75"},//v2:2.75
-                {"old": "roll_stability =1", "new": "roll_stability =2"},//v2:2.75
+                //{"old": "roll_stability =1", "new": "roll_stability =2"},//v2:2.75
                 //
                 //---Below=ToDo---
                 {"old": "drag_coef_flaps =0.1295", "new": "drag_coef_flaps =0.1285"},//1st:0.1285
@@ -974,7 +971,7 @@
                 //{"old": "corrected_airflow_table=0:0:.9,0:0:0,20:0.1:5,40:1:7.3,60:3:8.75,70:4:9.7,75:5:10.5,80:8:12,85:11.5:14.75,90:15:18,95:17:21,100:19:23,105:21:24.75,110:23:26.25", "new": ""},
                 //{"old": "fuel_flow_scalar = 1 ; Fuel flow scalar", "new": "fuel_flow_scalar = 0.98 ; Fuel flow scalar"},//1st:0.93
                 //---Below=ToDo---
-                {"old": "static_thrust = 76100 ; Lbs, max rated static thrust at Sea Level", "new": "static_thrust = 69378; GEnX-1B67;69194; trent100-D2; Lbs, max rated static thrust at Sea Level"},//trent100-D2
+                {"old": "static_thrust = 76100 ; Lbs, max rated static thrust at Sea Level", "new": "static_thrust = 74100; GEnX-1B74;69194; trent100-D2; Lbs, max rated static thrust at Sea Level"},//trent100-D2
                 {"old": "-6, -32.4, -5", "new": "19.98, -32.4, -5"},
                 {"old": "-6, 32.4, -5", "new": "19.98, 32.4, -5"},
                 //{"old": "thrust_scalar = 1", "new": "thrust_scalar = 0.98"}
