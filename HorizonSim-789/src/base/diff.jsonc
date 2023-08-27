@@ -121,7 +121,7 @@
                 {"old": "return 298700; \/\/ 135,488 kg", "new": "return 284000; \/\/ 128,820 kg"},//operatingEmptyWeight
                 {"old": "return 425000; \/\/ 192,777 kg", "new": "return 400000; \/\/ 181,435kg"},//maxZeroFuelWeight
                 //{"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100,\/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //Rob
                 //---Below=ToDo---
@@ -177,7 +177,7 @@
                 {"old": "return 298700; \/\/ 135,488 kg", "new": "return 284000; \/\/ 128,820 kg"},//operatingEmptyWeight
                 {"old": "return 425000; \/\/ 192,777 kg", "new": "return 400000; \/\/ 181,435kg"},//maxZeroFuelWeight
                 //{"old": "return 557000; \/\/ 252,651 kg", "new": "return 425500; \/\/ 193,000 kg"},//maxGrossWeight
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100,\/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //Rob
                 //---Below=ToDo---
@@ -274,7 +274,7 @@
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
                 //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100,\/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
                 //---Below=ToDo---
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //{"old": "defaultValue: ClimbThrustMode.CLB,", "new": "defaultValue: ClimbThrustMode.CLB1,"},//use CLB1 for def
@@ -354,7 +354,7 @@
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
                 //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100,\/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},
                 //---Below=ToDo---
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //{"old": "defaultValue: ClimbThrustMode.CLB,", "new": "defaultValue: ClimbThrustMode.CLB1,"},//use CLB1 for def
@@ -453,7 +453,7 @@
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
                 //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},//{"old": "static_thrust: 76100,", "new": "static_thrust: 74511,"},
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100,\/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},//{"old": "static_thrust: 76100,", "new": "static_thrust: 74511,"},
                 //---Below=ToDo---
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //END
@@ -614,7 +614,7 @@
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
                 //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
-                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100; \/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},//{"old": "static_thrust: 76100,", "new": "static_thrust: 74511,"},
+                {"old": "static_thrust: 76100,", "new": "static_thrust: 74100,\/\/ GEnX-1B74; 69194, \/\/ Trent1000-D2"},//{"old": "static_thrust: 76100,", "new": "static_thrust: 74511,"},
                 //---Below=ToDo---
                 {"old": "ThrustSpecificFuelConsumption: 0.265,", "new": "ThrustSpecificFuelConsumption: 0.2845,"},
                 //END
