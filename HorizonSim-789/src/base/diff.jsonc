@@ -778,14 +778,13 @@
                 //{"old": "station_load.5 = 2000, 12.341239", "new": "station_load.5 = 2000, 52.301239"},
                 //{"old": "station_load.6 = 2000, -47.822885", "new": "station_load.6 = 2000, -35.262885"},
                 //v2.0.1
-                //---Below=ToDo---
                 {"old": "station_load.0 = 170, 63.636722", "new": ";default payload on fully loaded aircraft based on British Airways (pax weight 85 kgs)\nstation_load.0 = 174, 65.636722"},
                 {"old": "station_load.1 = 170, 63.541398", "new": "station_load.1 = 174, 65.521398"},
-                {"old": "station_load.2 = 3000, 20.661644", "new": "station_load.2 = 6443, 42.621644"},
-                {"old": "station_load.3 = 8000, -10.927045", "new": "station_load.3 = 5154, 11.067045"},
-                {"old": "station_load.4 = 15000, -39.178078", "new": "station_load.4 = 27797, -29.618078"},
-                {"old": "station_load.5 = 2000, 12.341239", "new": "station_load.5 = 8257, 16.301239"},
-                {"old": "station_load.6 = 2000, -47.822885", "new": "station_load.6 = 3539, -53.262885"},
+                {"old": "station_load.2 = 3000, 20.661644", "new": "station_load.2 = 9204, 32.621644"},
+                {"old": "station_load.3 = 8000, -10.927045", "new": "station_load.3 = 8040, -8.932955"},
+                {"old": "station_load.4 = 15000, -39.178078", "new": "station_load.4 = 22923, -49.618078"},
+                {"old": "station_load.5 = 2000, 12.341239", "new": "station_load.5 = 11429, -3.698761"},
+                {"old": "station_load.6 = 2000, -47.822885", "new": "station_load.6 = 3539, -73.262885"},
                 //
                 //---Below=ToDo---
                 {"old": "static_pitch =0", "new": "static_pitch =-0.65"},
