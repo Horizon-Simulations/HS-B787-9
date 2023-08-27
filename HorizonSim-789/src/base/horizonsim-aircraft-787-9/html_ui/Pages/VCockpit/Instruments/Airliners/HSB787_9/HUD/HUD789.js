@@ -54665,7 +54665,7 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
             inlet_area: 68.4,
             low_idle_n1: 20,
             mach_influence_on_n1: 10,
-            static_thrust: 74100; // GEnX-1B74; 69194, // Trent1000-D2
+            static_thrust: 74100,// GEnX-1B74; 69194, // Trent1000-D2
             ThrustSpecificFuelConsumption: 0.2845,
             /** Output: Thrust scalar; Term 1: Mach; Term 2: CN1 */
             n1_and_mach_on_thrust_table: new LerpLookupTable([
