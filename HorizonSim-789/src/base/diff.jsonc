@@ -806,7 +806,6 @@
                 //{"old": "RightMain = -16, 28, -1, 5570, 0", "new": "RightMain = 7.68, 28, -1, 5570, 0"},//fuel tank cg
                 //{"old": "Center1 = -14, 0, -4, 22244, 0", "new": "Center1 = 16.98, 0, -4, 22244, 0"},//fuel tank cg
                 //v2.0.1
-                //---Below=ToDo---
                 {"old": "LeftMain = -16, -28, -1, 5570, 0", "new": "LeftMain = -10.5, -28, -1, 5570, 0"},//fuel tank cg
                 {"old": "RightMain = -16, 28, -1, 5570, 0", "new": "RightMain = -10.5, 28, -1, 5570, 0"},//fuel tank cg
                 {"old": "Center1 = -14, 0, -4, 22244, 0", "new": "Center1 = -4.5, 0, -4, 22244, 0"},//fuel tank cg
