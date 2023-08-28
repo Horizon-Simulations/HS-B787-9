@@ -3,6 +3,7 @@ export default new TaskOfTasks("Horizon Sim 787-9", [
     // A32NX Task
     new TaskOfTasks("All", [
         new TaskOfTasks("Preparation",[
+            new ExecTask("Install Dependencies", "npm i"),
             new ExecTask("Copy files", "npm run prep-HS789:copy-base-package"),
         ], false),
         new TaskOfTasks("Build", [            
