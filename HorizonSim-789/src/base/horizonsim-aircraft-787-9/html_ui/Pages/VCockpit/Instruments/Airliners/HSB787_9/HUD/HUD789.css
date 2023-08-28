@@ -9,9 +9,9 @@ html {
   --boeing-colors-black-translucent: rgba(0, 0, 0, 0.2);
   --boeing-colors-black-translucent-border: rgba(0, 0, 0, 0.5);
   --boeing-colors-white: white;
-  --boeing-colors-gray: hsl(0, 0%, 70%);
-  --boeing-colors-dark-gray: hsl(0, 0%, 60%);
-  --boeing-colors-darker-gray: hsl(0, 0%, 40%);
+  --boeing-colors-gray: #89869a;
+  --boeing-colors-dark-gray: #89869a;
+  --boeing-colors-darker-gray: #646474;
   --boeing-colors-blue: hsl(230, 100%, 51%);
   --boeing-colors-cyan: hsl(192, 100%, 50%);
   --boeing-colors-red: red;
@@ -35,8 +35,33 @@ html {
   font-style: normal;
 }
 
-#Electricity[state="off"] {
+@keyframes screenFadeIn {
+  0% {
+    display: none;
+    opacity: 0;
+  }
+
+  1% {
+    display: block;
+    opacity: 0;
+  }
+
+  85% {
+    opacity: 0.15;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+:not(.efb)>#Electricity {
+  animation: screenFadeIn 7s ease-out forwards;
+}
+
+#Electricity[state=off] {
   display: none;
+  opacity: 0;
 }
 
 /** HINT: Don't show the white highlight since the instruments is in general not interactive */
