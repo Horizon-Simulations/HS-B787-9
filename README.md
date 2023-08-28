@@ -23,22 +23,7 @@ To set up your enviroment run:
 ```shell
 npm i
 ```
-#### Models
-1. First you will need to run:
-```shell
-npm run build-HS780:models
-```
-2. Then you will need to navigate to the folder: HorizonSim-789/src/models/build
-3. Find the B787_lod1.gltf and open it in VS code
-4. Press Alt+Shift+F and save it once it has finished refatoring
-5. run:
-```shell
-cd HorizonSim-789/src/models/build
-python replace.py
-```
-DONE!
-
-#### Plane
+then execute
 run:
 ```shell
 npx igniter
