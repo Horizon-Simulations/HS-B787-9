@@ -760,7 +760,6 @@
                 {"old": "empty_weight_pitch_MOI =2816347", "new": "empty_weight_pitch_MOI =19047173"},//2706347
                 {"old": "empty_weight_roll_MOI =2217827", "new": "empty_weight_roll_MOI =9231005"},//2167827
                 {"old": "empty_weight_yaw_MOI =16117016", "new": "empty_weight_yaw_MOI =26746327"},//1517016
-                //---Below=ToDo---
                 {"old": "max_number_of_stations =7\nstation_load.0 = 170, 83.616722, -1.614532, 3.514503, TT:MENU.PAYLOAD.PILOT, 1\nstation_load.1 = 170, 83.521398, 1.716649, 4.155323, TT:MENU.PAYLOAD.COPILOT, 2\nstation_load.2 = 3000, 40.641644, 0, 5.000003, TT:MENU.PAYLOAD.BUSINESS_CLASS, 0\nstation_load.3 = 8000, -10.927045, 0, 5.000004, TT:MENU.PAYLOAD.PREMIUM_ECONOMY, 0\nstation_load.4 = 15000, -57.188078, 0, 3.082149, TT:MENU.PAYLOAD.ECONOMY_CLASS, 0\nstation_load.5 = 2000, 32.321239, 0, -2.726664, TT:MENU.PAYLOAD.FORWARD_BAGGAGE, 0\nstation_load.6 = 2000, -65.832885, 0.000002, -2.982455, TT:MENU.PAYLOAD.REAR_BAGGAGE, 0", "new": "max_number_of_stations =7\nstation_load.0 = 170, 63.636722, -1.614532, 3.514503, TT:MENU.PAYLOAD.PILOT, 1\nstation_load.1 = 170, 63.541398, 1.716649, 4.155323, TT:MENU.PAYLOAD.COPILOT, 2\nstation_load.2 = 3000, 20.661644, 0, 5.000003, TT:MENU.PAYLOAD.BUSINESS_CLASS, 3\nstation_load.3 = 8000, -10.927045, 0, 5.000004, TT:MENU.PAYLOAD.PREMIUM_ECONOMY, 3\nstation_load.4 = 15000, -39.178078, 0, 3.082149, TT:MENU.PAYLOAD.ECONOMY_CLASS, 3\nstation_load.5 = 2000, 12.341239, 0, -2.726664, TT:MENU.PAYLOAD.FORWARD_BAGGAGE, 6\nstation_load.6 = 2000, -47.822885, 0.000002, -2.982455, TT:MENU.PAYLOAD.REAR_BAGGAGE, 6"},
                 //cg
                 //v2.0.0
@@ -780,7 +779,6 @@
                 {"old": "station_load.5 = 2000, 12.341239", "new": "station_load.5 = 11429, -3.698761"},
                 {"old": "station_load.6 = 2000, -47.822885", "new": "station_load.6 = 3539, -73.262885"},
                 //
-                //---Below=ToDo---
                 {"old": "static_pitch =0", "new": "static_pitch =-0.65"},
                 {"old": "static_cg_height =14.41", "new": "static_cg_height =14.40"},
                 //{"old": "gear_locked_above_speed =270", "new": "gear_locked_above_speed =260"},
@@ -862,7 +860,6 @@
                 ///{"old": "roll_moment_delta_rudder =0.18561", "new": "roll_moment_delta_rudder =0.18561"},
                 //v2.0.0{"old": "aero_center_lift =-15", "new": "aero_center_lift =3.87"},//1st:4.98 2ndX: -5.01 =-15+19.98/2 3rd:3 =-15+(222-186)/2 4th:-1.98 =3-4.98 5th:7.992
                 //v2.0.1
-                //---Below=ToDo---
                 {"old": "aero_center_lift =-15", "new": "aero_center_lift =-23.5; -5.9;-13.5"},
                 ///{"old": "drag_coef_zero_lift_mach_tab =0.000000:0.000000, 0.500000:0.000000, 0.550000:0.000000, 0.600000:0.000000, 0.650000:0.000000, 0.700000:0.000000, 0.750000:0.000000, 0.800000:0.000000, 0.850000:0.000000, 0.900000:0.000000, 0.950000:0.100000, 1.000000:1.000000, 1.100000:0.532000, 1.500000:0.046000", "new": "drag_coef_zero_lift_mach_tab =0.000000:0.000000, 0.500000:0.000000, 0.550000:0.000000, 0.600000:0.000000, 0.650000:0.000000, 0.700000:0.000000, 0.750000:0.000000, 0.800000:0.000000, 0.850000:0.000000, 0.900000:0.000000, 0.950000:0.100000, 1.000000:1.000000, 1.100000:0.532000, 1.500000:0.046000"},
                 ///{"old": "pitch_moment_aoa_table =-3.150000:0.000000, -0.800000:-1.156000, -0.400000:-0.574000, -0.200000:-0.570000, -0.100000:-0.366000, 0.000000:0.000000, 0.200000:0.623000, 0.230000:0.636000, 0.260000:0.620000, 0.290000:0.656000, 0.310000:0.687000, 0.400000:0.667000, 0.800000:1.135000, 3.150000:0.000000", "new": "pitch_moment_aoa_table =-3.150000:0.000000, -0.800000:-1.156000, -0.400000:-0.574000, -0.200000:-0.570000, -0.100000:-0.366000, 0.000000:0.000000, 0.200000:0.623000, 0.230000:0.636000, 0.260000:0.620000, 0.290000:0.656000, 0.310000:0.687000, 0.400000:0.667000, 0.800000:1.135000, 3.150000:0.000000"},
@@ -912,7 +909,6 @@
                 {"old": "lift_coef_at_drag_zero =0.317", "new": "lift_coef_at_drag_zero =0.508"},
                 {"old": "lift_coef_at_drag_zero_flaps =0.317", "new": "lift_coef_at_drag_zero_flaps =0.508"},
                 //v2.2.0
-                //---Below=ToDo---
                 {"old": "wingflex_scalar =1.33", "new": "wingflex_scalar =0.995381216"},//1.1099525103859
                 {"old": "wingflex_offset =0", "new": "wingflex_offset =0.128784"},//0
                 {"old": "system_type_index=76\nspan-outboard=0.8", "new": "system_type_index=76\nspan-outboard=0.85"},
