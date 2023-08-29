@@ -834,19 +834,24 @@
                 //{"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =36.307648"},
                 //v2.0.1
                 //---Below=ToDo---
-                {"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =8.307648"},
+                {"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =18.307648"},
                 //v2.0.0
                 //{"old": "htail_pos_lon =-115", "new": "htail_pos_lon =-77.2"},
                 //v2.0.1
-                {"old": "htail_pos_lon =-115", "new": "htail_pos_lon =-105"},
+                //---Below=ToDo---
+                {"old": "htail_pos_lon =-115", "new": "htail_pos_lon =-95"},
                 {"old": "htail_incidence =5", "new": "htail_incidence =5"},//1st:5 2nd: 4.9
                 //v2.0.0
                 //{"old": "vtail_pos_lon =-100", "new": "vtail_pos_lon =-62.2"},
                 //v2.0.1
-                {"old": "vtail_pos_lon =-100", "new": "vtail_pos_lon =-90"},
+                //---Below=ToDo---
+                {"old": "vtail_pos_lon =-100", "new": "vtail_pos_lon =-80"},
+                //---Below=Done---
                 {"old": "fuselage_diameter =21.3", "new": "fuselage_diameter =18"},
+                //---Below=Done---
                 {"old": "fuselage_length =222", "new": "fuselage_length =206.1"},
-                {"old": "fuselage_center_pos = 0, 0, 2", "new": "fuselage_center_pos = -0.4, 0, 2 ; actual wing position not A/C center"},
+                //---Below=ToDo---
+                {"old": "fuselage_center_pos = 0, 0, 2", "new": "fuselage_center_pos = 9.6, 0, 2 ; actual wing position not A/C center"},
                 //
                 //v2 ref:MFD.js
                 {"old": "pitch_stability =1", "new": "pitch_stability =1.75"},//v2:2.75
