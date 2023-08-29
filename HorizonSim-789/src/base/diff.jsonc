@@ -799,9 +799,9 @@
                 //{"old": "Position:-9,-28,-4", "new": "Position:7.68,-28,-4"},
                 //{"old": "Position:-9,28,-4", "new": "Position:7.68,28,-4"},
                 //v2.0.1
-                {"old": "Position:0,0,-7", "new": "Position:-4.5,0,-4"},
-                {"old": "Position:-9,-28,-4", "new": "Position:-10.5,-28,-4"},
-                {"old": "Position:-9,28,-4", "new": "Position:-10.5,28,-4"},
+                {"old": "Position:0,0,-7", "new": "Position:-14.5,0,-4"},
+                {"old": "Position:-9,-28,-4", "new": "Position:-20.5,-28,-4"},
+                {"old": "Position:-9,28,-4", "new": "Position:-20.5,28,-4"},
                 //
                 //v2.0.1
                 {"old": "rudder_area =450", "new": "rudder_area =196"},
