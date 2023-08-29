@@ -153,7 +153,6 @@
                 //{"old": "{ label: 25, flapAngle: 25, slatAngle: 31, speedLimit: 180 },", "new": "{ label: 25, flapAngle: 37.5, slatAngle: 23.0, speedLimit: 190 },"},
                 //{"old": "{ label: 30, flapAngle: 30, slatAngle: 31.572958, speedLimit: 170 },", "new": "{ label: 30, flapAngle: 43, slatAngle: 23.0, speedLimit: 180 },"},
                 //v2.1.0 RA Altitude
-                //---Below=ToDo---
                 {"old": "the RADIO HEIGHT simvar is about +15 feet, so we use offset of -21. *\/\n        this.radioAltimeterOffset = -21;", "new": "the RADIO HEIGHT simvar is about +13 feet(+15 feet in -10), so we use offset of -19(-21 in -10). *\/\n        this.radioAltimeterOffset = -19;"},
                 {"old": "WTB78x_EFB", "new": "HSB789_EFB"},
                 //colors
@@ -209,7 +208,6 @@
                 //{"old": "{ label: 25, flapAngle: 25, slatAngle: 31, speedLimit: 180 },", "new": "{ label: 25, flapAngle: 37.5, slatAngle: 23.0, speedLimit: 190 },"},
                 //{"old": "{ label: 30, flapAngle: 30, slatAngle: 31.572958, speedLimit: 170 },", "new": "{ label: 30, flapAngle: 43, slatAngle: 23.0, speedLimit: 180 },"},
                 //v2.1.0 RA Altitude
-                //---Below=ToDo---
                 {"old": "the RADIO HEIGHT simvar is about +15 feet, so we use offset of -21. *\/\n        this.radioAltimeterOffset = -21;", "new": "the RADIO HEIGHT simvar is about +13 feet(+15 feet in -10), so we use offset of -19(-21 in -10). *\/\n        this.radioAltimeterOffset = -19;"},
                 {"old": "WTB78x_EFB", "new": "HSB789_EFB"},
                 //colors
@@ -310,7 +308,6 @@
                 //{"old": "{ label: 25, flapAngle: 25, slatAngle: 31, speedLimit: 180 },", "new": "{ label: 25, flapAngle: 37.5, slatAngle: 23.0, speedLimit: 190 },"},
                 //{"old": "{ label: 30, flapAngle: 30, slatAngle: 31.572958, speedLimit: 170 },", "new": "{ label: 30, flapAngle: 43, slatAngle: 23.0, speedLimit: 180 },"},
                 //v2.1.0 RA Altitude
-                //---Below=ToDo---
                 {"old": "the RADIO HEIGHT simvar is about +15 feet, so we use offset of -21. *\/\n        this.radioAltimeterOffset = -21;", "new": "the RADIO HEIGHT simvar is about +13 feet(+15 feet in -10), so we use offset of -19(-21 in -10). *\/\n        this.radioAltimeterOffset = -19;"},
                 //colors
                 {"old": "", "new": ""},
@@ -390,7 +387,6 @@
                 //{"old": "{ label: 25, flapAngle: 25, slatAngle: 31, speedLimit: 180 },", "new": "{ label: 25, flapAngle: 37.5, slatAngle: 23.0, speedLimit: 190 },"},
                 //{"old": "{ label: 30, flapAngle: 30, slatAngle: 31.572958, speedLimit: 170 },", "new": "{ label: 30, flapAngle: 43, slatAngle: 23.0, speedLimit: 180 },"},
                 //v2.1.0 RA Altitude
-                //---Below=ToDo---
                 {"old": "the RADIO HEIGHT simvar is about +15 feet, so we use offset of -21. *\/\n        this.radioAltimeterOffset = -21;", "new": "the RADIO HEIGHT simvar is about +13 feet(+15 feet in -10), so we use offset of -19(-21 in -10). *\/\n        this.radioAltimeterOffset = -19;"},
                 //v2.2.0
                 {"old": "\/**\n * Valid type arguments for Set\/GetSimVarValue\n *\/", "new": "\/*Changes by Horizon Simulations: \n-set Class Boeing Colors to top for easier tweaking\n-Change color codes of class Boeing Colors\n-Change PFD ground colors in line 77450\n-replace all --boeing-color with BoeingColor class\n*\/\n\/** Keep this in sync with WTB748_Common.css & WTB78x_Common.css *\/\nclass BoeingColors {\n}\nBoeingColors.black = 'black';\nBoeingColors.blackTranslucent = 'rgba(0, 0, 0, 0.2)';\nBoeingColors.white = 'white';\nBoeingColors.gray = '#89869a';\nBoeingColors.darkGray = '#89869a';\/\/darker grey is #646474\nBoeingColors.blue = 'hsl(230, 100%, 51%)';\nBoeingColors.red = 'red';\nBoeingColors.amber = '#ffd600';\nBoeingColors.green = '#00ff00';\nBoeingColors.magenta = '#ff5bff';\nBoeingColors.cyan = '#00ffff';\n\n\n\/**\n * Valid type arguments for Set\/GetSimVarValue\n *\/"},
@@ -516,7 +512,6 @@
                 //{"old": "{ label: 30, flapAngle: 30, slatAngle: 31.572958, speedLimit: 170 },", "new": "{ label: 30, flapAngle: 43, slatAngle: 23.0, speedLimit: 180 },"},
                 {"old": "super(bus, fms, 6000, 43000);", "new": "super(bus, fms, 6000, 43100);"},
                 //v2.1.0 RA Altitude
-                //---Below=ToDo---
                 {"old": "the RADIO HEIGHT simvar is about +15 feet, so we use offset of -21. *\/\n        this.radioAltimeterOffset = -21;", "new": "the RADIO HEIGHT simvar is about +13 feet(+15 feet in -10), so we use offset of -19(-21 in -10). *\/\n        this.radioAltimeterOffset = -19;"},
                 //---Below=ToDo---
                 {"old": "BoeingAutothrottle.RETARD_ACTIVATE_THRESHOLD = 2.2;", "new": "BoeingAutothrottle.RETARD_ACTIVATE_THRESHOLD = 4.0;"},
@@ -685,7 +680,6 @@
                 //{"old": "{ label: 30, flapAngle: 30, slatAngle: 31.572958, speedLimit: 170 },", "new": "{ label: 30, flapAngle: 43, slatAngle: 23.0, speedLimit: 180 },"},
                 //{"old": "super(bus, fms, 6000, 43000);", "new": "super(bus, fms, 6000, 43100);"},
                 //v2.1.0 RA Altitude
-                //---Below=ToDo---
                 {"old": "the RADIO HEIGHT simvar is about +15 feet, so we use offset of -21. *\/\n        this.radioAltimeterOffset = -21;", "new": "the RADIO HEIGHT simvar is about +13 feet(+15 feet in -10), so we use offset of -19(-21 in -10). *\/\n        this.radioAltimeterOffset = -19;"},
                 //---Below=ToDo---
                 {"old": "BoeingAutothrottle.RETARD_ACTIVATE_THRESHOLD = 2.2;", "new": "BoeingAutothrottle.RETARD_ACTIVATE_THRESHOLD = 4.0;"},
