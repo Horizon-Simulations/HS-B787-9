@@ -748,7 +748,7 @@
                 //{"old": "empty_weight_CG_position = -14.5, 0, 0", "new": "empty_weight_CG_position = 4.37, 0, 0 ; target 22.5% MAC empty weight CG (loac applied to main gear on ground)"},
                 //v2.0.1
                 //---Below=ToDo---
-                {"old": "empty_weight_CG_position = -14.5, 0, 0", "new": "empty_weight_CG_position = -13, 0, 0 ;-5.4, 0, 0;-13, 0, 0 ; target 23.5% MAC empty weight CG (loac applied to main gear on ground)"},
+                {"old": "empty_weight_CG_position = -14.5, 0, 0", "new": "empty_weight_CG_position = -23.1, 0, 0 ;-5.4, 0, 0;-13, 0, 0 ; target 23.5% MAC empty weight CG (loac applied to main gear on ground)"},
                 {"old": "empty_weight_pitch_MOI =2816347", "new": "empty_weight_pitch_MOI =19047173"},//2706347
                 {"old": "empty_weight_roll_MOI =2217827", "new": "empty_weight_roll_MOI =9231005"},//2167827
                 {"old": "empty_weight_yaw_MOI =16117016", "new": "empty_weight_yaw_MOI =26746327"},//1517016
@@ -822,7 +822,7 @@
                 //v2.0.0
                 //{"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =36.307648"},
                 //v2.0.1
-                {"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =-1.692352"},
+                {"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =-6.692352"},
                 //v2.0.0
                 //{"old": "htail_pos_lon =-115", "new": "htail_pos_lon =-77.2"},
                 //v2.0.1
@@ -834,7 +834,7 @@
                 {"old": "vtail_pos_lon =-100", "new": "vtail_pos_lon =-100"},
                 {"old": "fuselage_diameter =21.3", "new": "fuselage_diameter =18"},
                 {"old": "fuselage_length =222", "new": "fuselage_length =206.1"},
-                {"old": "fuselage_center_pos = 0, 0, 2", "new": "fuselage_center_pos = -0.4, 0, 2 ; actual wing position not A/C center"},
+                {"old": "fuselage_center_pos = 0, 0, 2", "new": "fuselage_center_pos = 4.6, 0, 2 ; actual wing position not A/C center"},
                 //
                 //v2 ref:MFD.js
                 {"old": "pitch_stability =1", "new": "pitch_stability =1.75"},//v2:2.75
