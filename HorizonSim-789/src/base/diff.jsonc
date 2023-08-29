@@ -814,17 +814,14 @@
                 {"old": "Position:-9,28,-4", "new": "Position:-10.5,28,-4"},
                 //
                 //v2.0.1
-                //---Below=ToDo---
                 {"old": "rudder_area =450", "new": "rudder_area =196"},
                 {"old": "elevator_effectiveness =0.75", "new": "elevator_effectiveness =1"},
-                {"old": "aileron_effectiveness =0.66", "new": "aileron_effectiveness =0.8"},
+                {"old": "aileron_effectiveness =0.66", "new": "aileron_effectiveness =1.2"},
                 {"old": "rudder_effectiveness =0.66", "new": "rudder_effectiveness =0.75"},
                 {"old": "wing_area =4058", "new": "wing_area =4028; excl. wing tip (3501)"},
                 {"old": "wing_root_chord =50", "new": "wing_root_chord =45"},
                 {"old": "wing_dihedral =9", "new": "wing_dihedral =6"},
-                //---Below=Done---
                 {"old": "wing_sweep =35", "new": "wing_sweep =32.2"},
-                //---Below=ToDo---
                 {"old": "htail_area =550", "new": "htail_area =428"},
                 {"old": "htail_sweep =45", "new": "htail_sweep =36"},
                 {"old": "htail_thickness_ratio =0.03", "new": "htail_thickness_ratio =0.025"},
@@ -857,8 +854,7 @@
                 {"old": "fuselage_center_pos = 0, 0, 2", "new": "fuselage_center_pos = 9.6, 0, 2 ; actual wing position not A/C center"},
                 //
                 //v2 ref:MFD.js
-                //---Below=ToDo---
-                {"old": "pitch_stability =1", "new": "pitch_stability =2.75"},//v2:2.75
+                {"old": "pitch_stability =1", "new": "pitch_stability =1.75"},//v2:2.75
                 //{"old": "roll_stability =1", "new": "roll_stability =2"},//v2:2.75
                 //
                 //---Below=ToDo---
