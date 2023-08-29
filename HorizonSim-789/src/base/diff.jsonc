@@ -833,7 +833,6 @@
                 //v2.0.0
                 //{"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =36.307648"},
                 //v2.0.1
-                //---Below=ToDo---
                 {"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =8.307648"},
                 //v2.0.0
                 //{"old": "htail_pos_lon =-115", "new": "htail_pos_lon =-77.2"},
