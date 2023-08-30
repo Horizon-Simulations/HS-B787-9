@@ -577,7 +577,7 @@
                 //
                 //option
                 {"old": "['', 'DRAG/FF '],", "new": "[' B789 VERSION', 'DRAG/FF '],"},
-                {"old": "['', '+1.1/-3.5', ''],", "new": "['HS v0.0.0', '+1.1/-3.5', ''],"},
+                {"old": "['', '+1.1/-3.5', ''],", "new": "['HORIZON v0.0.0', '+1.1/-3.5', ''],"},
                 {"old": "defaultValue: 'DM-ES',", "new": "defaultValue: 'HS-WT',"},
                 {"old": "return 'TRENT1000';", "new": "return 'GENX-1B74';"},//Genx-1B74
                 //{"old": "defaultValue: ClimbThrustMode.CLB,", "new": "defaultValue: ClimbThrustMode.CLB1,"},//use CLB1 for def
