@@ -38452,7 +38452,7 @@ class BoeingPerformancePage extends DisplayComponent {
                     FSComponent.buildComponent("span", null, "CDL")),
                 FSComponent.buildComponent(BoeingEfbProgressBar, { ref: this.progressBarRef, isHidden: this.isProgressBarVisible })),
             FSComponent.buildComponent("div", { class: 'efb-middle' },
-                FSComponent.buildComponent("div", { class: 'efb-middle-top-left-title' }, "TRENT1000-D2"),
+                FSComponent.buildComponent("div", { class: 'efb-middle-top-left-title' }, "TRENT1000-J2"),
                 FSComponent.buildComponent("div", { class: 'efb-middle-top-right-box' },
                     FSComponent.buildComponent("div", { class: 'right-side-dropdowns' },
                         FSComponent.buildComponent(BoeingEfbDropdownButton, { dropdownItems: this.rtgList, dropdownItemFormatter: RawFormatter, hasGreenOutline: false, hasArrow: true, dropdownButtonName: 'RTG', isNameOnLeftSide: false, dropDownDefaultName: 'THRUST RTG', onItemSelected: (thrustRTG) => this.pickedRtg.set(thrustRTG) }),
@@ -38505,7 +38505,7 @@ class BoeingPerformancePage extends DisplayComponent {
                                 }
                             }, unitForTextField: this.unitString }))),
                 FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box' },
-                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-8/TRENT1000-D2"),
+                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-8/TRENT1000-J22"),
                     FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-setting-buttons hidden', ref: this.textAreaSettingButtonsRefs },
                         FSComponent.buildComponent(BoeingEfbButton, { selected: this.isFullSettingActive, onClick: () => this.onMenuButtonClicked(textAreaSetting.Full) },
                             FSComponent.buildComponent("span", null, "FULL")),
