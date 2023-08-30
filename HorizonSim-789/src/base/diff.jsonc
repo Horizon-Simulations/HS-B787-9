@@ -705,7 +705,6 @@
                 //v2.0.0
                 //{"old": "empty_weight_CG_position = -14.5, 0, 0", "new": "empty_weight_CG_position = 4.37, 0, 0 ; target 22.5% MAC empty weight CG (loac applied to main gear on ground)"},
                 //v2.0.1
-                //---Below=ToDo---
                 {"old": "empty_weight_CG_position = -14.5, 0, 0", "new": "empty_weight_CG_position = -23.1, 0, 0 ;-5.4, 0, 0;-13, 0, 0 ; target 23.5% MAC empty weight CG (loac applied to main gear on ground)"},
                 {"old": "empty_weight_pitch_MOI =2816347", "new": "empty_weight_pitch_MOI =19047173"},//2706347
                 {"old": "empty_weight_roll_MOI =2217827", "new": "empty_weight_roll_MOI =9231005"},//2167827
