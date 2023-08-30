@@ -201,8 +201,8 @@
                 //{"old": "var(--boeing-colors-white)", "new": "BoeingColors.white"},
                 //{"old": "var(--boeing-colors-magenta)", "new": "BoeingColors.magenta"},
                 //EFB
-                {"old": "787-10/TRENT1000-J", "new": "787-8/TRENT1000-D2"},
-                {"old": "TRENT1000-J", "new": "TRENT1000-D2"},
+                {"old": "787-10/TRENT1000-J", "new": "787-8/TRENT1000-J2"},
+                {"old": "TRENT1000-J", "new": "TRENT1000-J2"},
                 {"old": "", "new": ""}
                 //END
             ]
@@ -256,7 +256,7 @@
                 //B787PerformanceMath-getAircraftFlightModel
                 ///no longer exist:beta3///{"old": "lift_coef_aoa_0: 0.317,", "new": "lift_coef_aoa_0: 0.288,"},//cruise_lift_scalar =0.91
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
-                //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
+                {"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 1,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
                 {"old": "static_thrust: 76100,", "new": "static_thrust: 78129,\/\/ Trent 1000-J2"},
                 //---Below=ToDo---
@@ -328,7 +328,7 @@
                 //B787PerformanceMath-getAircraftFlightModel
                 ///no longer exist:beta3///{"old": "lift_coef_aoa_0: 0.317,", "new": "lift_coef_aoa_0: 0.288,"},//cruise_lift_scalar =0.91
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
-                //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
+                {"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 1,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
                 {"old": "static_thrust: 76100,", "new": "static_thrust: 78129,\/\/ Trent 1000-J2"},
                 //---Below=ToDo---
@@ -419,7 +419,7 @@
                 //B787PerformanceMath-getAircraftFlightModel
                 ///no longer exist:beta3///{"old": "lift_coef_aoa_0: 0.317,", "new": "lift_coef_aoa_0: 0.288,"},//cruise_lift_scalar =0.91
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
-                //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
+                {"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 1,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
                 {"old": "static_thrust: 76100,", "new": "static_thrust: 78129,\/\/ Trent 1000-J2"},//{"old": "static_thrust: 76100,", "new": "static_thrust: 74511,"},
                 //---Below=ToDo---
@@ -431,7 +431,7 @@
                 {"old": "['', 'DRAG/FF '],", "new": "[' B789 VERSION', 'DRAG/FF '],"},
                 {"old": "['', '+1.1/-3.5', ''],", "new": "['HORIZON v0.0.0', '+1.1/-3.5', ''],"},
                 {"old": "defaultValue: 'DM-ES',", "new": "defaultValue: 'HS-WT',"},
-                {"old": "return 'TRENT1000';", "new": "return 'TRENT 1000-D';"},//trent100-D2
+                {"old": "return 'TRENT1000';", "new": "return 'TRENT 1000-D';"},//trent100-J2
                 //{"old": "defaultValue: ClimbThrustMode.CLB,", "new": "defaultValue: ClimbThrustMode.CLB1,"},//use CLB1 for def
                 //{"old": "defaultValue: TakeoffThrustMode.TO,", "new": "defaultValue: TakeoffThrustMode.TO1,"},//use TO1 for def
                 //{"old": "this.fadecThrustMode = ConsumerSubject.create(this.subs.on('fadec_thrust_mode'), TakeoffThrustMode.TO);", "new": "this.fadecThrustMode = ConsumerSubject.create(this.subs.on('fadec_thrust_mode'), TakeoffThrustMode.TO1);"},
@@ -567,7 +567,7 @@
                 //B787PerformanceMath-getAircraftFlightModel
                 ///no longer exist:beta3///{"old": "lift_coef_aoa_0: 0.317,", "new": "lift_coef_aoa_0: 0.288,"},//cruise_lift_scalar =0.91
                 //{"old": "drag_coef_zero_lift: 0.021,", "new": "drag_coef_zero_lift: 0.021,"},//where
-                //{"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 0.71,"},
+                {"old": "oswald_efficiency_factor: 0.73,", "new": "oswald_efficiency_factor: 1,"},
                 //{"old": "inlet_area: 68.4,", "new": "inlet_area: 68.4,"},
                 {"old": "static_thrust: 76100,", "new": "static_thrust: 78129,\/\/ Trent 1000-J2"},//{"old": "static_thrust: 76100,", "new": "static_thrust: 74511,"},
                 //---Below=ToDo---
@@ -775,7 +775,7 @@
                 {"old": "vtail_sweep =45", "new": "vtail_sweep =40"},
                 {"old": "vtail_thickness_ratio =0.03", "new": "vtail_thickness_ratio =0.025"},
                 //
-                //{"old": "oswald_efficiency_factor =0.73", "new": "oswald_efficiency_factor =0.71"},//
+                {"old": "oswald_efficiency_factor =0.73", "new": "oswald_efficiency_factor =1;0.73; target scalar is 0.51"},//
                 //v2.0.0
                 //{"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =36.307648"},
                 //v2.0.1
@@ -797,7 +797,6 @@
                 {"old": "pitch_stability =1", "new": "pitch_stability =1.75"},//v2:2.75
                 //{"old": "roll_stability =1", "new": "roll_stability =2"},//v2:2.75
                 //
-                //---Below=ToDo---
                 {"old": "drag_coef_flaps =0.1295", "new": "drag_coef_flaps =0.1285"},//1st:0.1285
                 {"old": "pitch_moment_delta_elevator =-3.58388", "new": "pitch_moment_delta_elevator =-3.51388"},//
                 {"old": "pitch_moment_delta_trim =-3.58388", "new": "pitch_moment_delta_trim =-3.59888"},//
@@ -830,30 +829,24 @@
                 //{"old": "lift_coef_ground_effect_mach_table =0.060000:0.25", "new": "lift_coef_ground_effect_mach_table =0.060000:0.22"}//better takeoff
                 //v2.0.0{"old": "cruise_lift_scalar =1", "new": "cruise_lift_scalar =1.179 ; target scalar is 0.51 (0.435)"},//1st:0.93//2md:0.91//3rd(Rob):1.179//better takeoff
                 //v2.0.1
-                //---Below=ToDo---
                 {"old": "cruise_lift_scalar =1", "new": "cruise_lift_scalar =1;1.179 ; target scalar is 0.51 (0.435)"},//1st:0.93//2md:0.91//3rd(Rob):1.179//better takeoff
                 //v2.0.0
                 //{"old": "drag_coef_zero_lift =0.028", "new": "drag_coef_zero_lift =0.02439 ; 0.026 ; for B787-9; based on piano software"},//better takeoff
                 //v2.0.1
-                //---Below=ToDo---
                 {"old": "drag_coef_zero_lift =0.028", "new": "drag_coef_zero_lift =0.01602; 0.02439 ; 0.026 ; for B787-9; based on piano software"},//better takeoff
                 //{"old": "lift_coef_flaps =1.6132", "new": "lift_coef_flaps =1.5432"},//better takeoff
                 //{"old": "side_force_roll_rate =1.73408", "new": "side_force_roll_rate =1.53408"}//better takeoff
                 //v2.0.0{"old": "induced_drag_scalar =1.3", "new": "induced_drag_scalar =1.1 ;1.52 ; B78X 1.3"},
                 //v2.0.1
-                //---Below=ToDo---
                 {"old": "\ninduced_drag_scalar =1.3", "new": "\ninduced_drag_scalar =1;1.115 ;1.52 ; B78X 1.3"},
                 //trim
                 //v2.0.0{"old": "lift_coef_aoa_table =-3.150000:0.000000, -0.800000:-0.300000, -0.400000:-0.628000, -0.200000:-0.45, -0.112000:-0.200000, 0.000000:0.317000, 0.153000:1.00000, 0.164000:1.055000, 0.175000:1.101000, 0.192500:1.00000, 0.210000:0.600000, 0.220000:0.441000, 0.300000:0.195000, 0.400000:0.100000, 3.150000:0.000000", "new": "lift_coef_aoa_table = -3.15:0,-0.8:-1.169,-0.4:-0.928,-0.2:-0.717,-0.1:-0.289,0:0.317,0.2:1.214,0.23:1.287,0.26:1.341,0.29:1.264,0.31:1.123,0.4:0.941,0.8:1.195"},
                 //v2.0.1
-                //---Below=ToDo---
                 {"old": "lift_coef_aoa_table =-3.150000:0.000000, -0.800000:-0.300000, -0.400000:-0.628000, -0.200000:-0.45, -0.112000:-0.200000, 0.000000:0.317000, 0.153000:1.00000, 0.164000:1.055000, 0.175000:1.101000, 0.192500:1.00000, 0.210000:0.600000, 0.220000:0.441000, 0.300000:0.195000, 0.400000:0.100000, 3.150000:0.000000", "new": "lift_coef_aoa_table =-3.141593:-0.05,-2.73948:0.3599,-2.34678:0.5,-1.95408:0.3599,-1.56138:-0.07,-0.976073:-0.35,-0.519672:-0.38,-0.326073:-0.380952,-0.139073:-0.25619,-0.059073:-0.169524,-0.011073:0,0.019635:0.216142,0.050702:0.432284,0.065886:0.540355,0.083689:0.648427,0.120864:0.864569,0.131685:0.918604,0.15961:1.080711,0.198532:1.296853,0.232182:1.469766,0.258182:1.546497,0.291182:1.590806,0.326182:1.605936,0.357182:1.591887,0.388182:1.556224,0.408182:1.465444,0.431182:1.324951,0.455182:1.068823,0.487182:0.753256,0.517182:0.485239,0.551182:0.302599,0.622182:0.18,0.776:0.12,1.58022:-0.07,2.36562:-0.2,3.141593:-0.05"},
                 //
-                //---Below=ToDo---
                 {"old": "lift_coef_ground_effect_mach_table =0.060000:0.25", "new": "lift_coef_ground_effect_mach_table = 0.005:1.012,0.065:1.008,0.16:1.004,0.23:1.002,0.3:1.001,0.4:1,0.49:1,0.62:1,0.71:1,0.8:1,0.9:1 ; based on TDS 787-8 profile for FSX/P3D"},
                 {"old": "lift_coef_mach_table =0.000000:1.000000", "new": "lift_coef_mach_table = 0.007:0.926,0.516:1.055,0.624:1.095,0.738:1.138,0.826:1.175,0.875:1.2,0.934:0.99,1.041:0.751,1.113:0.685,1.166:0.64,1.216:0.595,1.272:0.55,1.356:0.505,1.444:0.501,1.682:0.508,2.014:0.536,2.626:0.595"},
                 //v2.0.1
-                //---Below=ToDo---
                 {"old": "lift_coef_at_drag_zero =0.317", "new": "lift_coef_at_drag_zero =0.508"},
                 {"old": "lift_coef_at_drag_zero_flaps =0.317", "new": "lift_coef_at_drag_zero_flaps =0.508"},
                 //v2.2.0
@@ -899,7 +892,7 @@
                 //{"old": ";mach_hi_corrected_commanded_ne_table = 0.900000:1.000000:22.570000,0.000000:62.000000:82.500000,0.420000:77.000000:95.400002,0.510000:80.199997:98.500000,0.610000:84.800003:101.099998,0.700000:89.099998:103.099998,0.790000:92.199997:105.699997,0.930000:96.000000:108.059998,1.000000:98.199997:108.059998", "new": ";mach_hi_corrected_commanded_ne_table = 0.900000:1.000000:22.570000,0.000000:62.000000:82.500000,0.420000:77.000000:95.400002,0.510000:80.199997:98.500000,0.610000:84.800003:101.099998,0.700000:89.099998:103.099998,0.790000:92.199997:105.699997,0.930000:96.000000:108.059998,1.000000:98.199997:108.059998"},
                 //{"old": "corrected_airflow_table=0:0:.9,0:0:0,20:0.1:5,40:1:7.3,60:3:8.75,70:4:9.7,75:5:10.5,80:8:12,85:11.5:14.75,90:15:18,95:17:21,100:19:23,105:21:24.75,110:23:26.25", "new": ""},
                 //{"old": "fuel_flow_scalar = 1 ; Fuel flow scalar", "new": "fuel_flow_scalar = 0.98 ; Fuel flow scalar"},//1st:0.93
-                {"old": "static_thrust = 76100 ; Lbs, max rated static thrust at Sea Level", "new": "static_thrust = 78129; trent1000-J2; Lbs, max rated static thrust at Sea Level"},//trent100-D2
+                {"old": "static_thrust = 76100 ; Lbs, max rated static thrust at Sea Level", "new": "static_thrust = 78129; trent1000-J2; Lbs, max rated static thrust at Sea Level"},//trent100-J2
                 {"old": "-6, -32.4, -5", "new": "9.98, -32.4, -5"},
                 {"old": "-6, 32.4, -5", "new": "9.98, 32.4, -5"},
                 //{"old": "thrust_scalar = 1", "new": "thrust_scalar = 0.98"}
