@@ -1,10 +1,11 @@
 {
-    "name": "Horizon Sim 787-900",
+    "name": "Horizon Sim 787-9",
     "version": "1.0.0",
     "edition": "Stable",
     "author": "Yago Martínez(Qbit) & Horizon Sim",
     "scripts": {
         "prep-HS789:copy-base-package":".\\Scripts\\dev-env\\run.cmd ./Scripts/copy.sh",
+        "prep-HS789:setup":".\\Scripts\\dev-env\\run.cmd ./Scripts/setup.sh",
         "build-HS789:build":".\\Scripts\\dev-env\\run.cmd ./Scripts/build.sh",
         "build-HS780:models":"node HorizonSim-789/src/models/build.js && python ./HorizonSim-789/src/models/build/replace.py",
         "final-HS789:layout":"cd ./Scripts && MSFSLayoutGenerator.exe ..\\HorizonSim-789\\build\\horizonsim-aircraft-787-9\\layout.json"

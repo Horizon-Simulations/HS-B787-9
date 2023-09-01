@@ -20,10 +20,6 @@ FMS
     NodeJs v16
 ### How to build
 To set up your enviroment run: 
-```shell
-npm i
-```
-then execute
 run:
 ```shell
 npx igniter
