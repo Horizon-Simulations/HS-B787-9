@@ -705,7 +705,7 @@
                 //v2.0.0
                 //{"old": "empty_weight_CG_position = -14.5, 0, 0", "new": "empty_weight_CG_position = 4.37, 0, 0 ; target 22.5% MAC empty weight CG (loac applied to main gear on ground)"},
                 //v2.0.1
-                {"old": "empty_weight_CG_position = -14.5, 0, 0", "new": "empty_weight_CG_position = -23.1, 0, 0 ;-5.4, 0, 0;-13, 0, 0 ; target 23.5% MAC empty weight CG (loac applied to main gear on ground)"},
+                {"old": "empty_weight_CG_position = -14.5, 0, 0", "new": "empty_weight_CG_position = -23, 0, 0 ;-5.4, 0, 0;-13, 0, 0 ; target 23.5% MAC empty weight CG (loac applied to main gear on ground)"},
                 {"old": "empty_weight_pitch_MOI =2816347", "new": "empty_weight_pitch_MOI =19047173"},//2706347
                 {"old": "empty_weight_roll_MOI =2217827", "new": "empty_weight_roll_MOI =9231005"},//2167827
                 {"old": "empty_weight_yaw_MOI =16117016", "new": "empty_weight_yaw_MOI =26746327"},//1517016
@@ -767,7 +767,7 @@
                 {"old": "wing_area =4058", "new": "wing_area =4028; excl. wing tip (3501)"},
                 {"old": "wing_root_chord =50", "new": "wing_root_chord =45"},
                 {"old": "wing_dihedral =9", "new": "wing_dihedral =6"},
-                {"old": "wing_sweep =35", "new": "wing_sweep =32.2"},
+                {"old": "wing_sweep =35", "new": "wing_sweep =32"},
                 {"old": "htail_area =550", "new": "htail_area =428"},
                 {"old": "htail_sweep =45", "new": "htail_sweep =36"},
                 {"old": "htail_thickness_ratio =0.03", "new": "htail_thickness_ratio =0.025"},
@@ -775,26 +775,26 @@
                 {"old": "vtail_sweep =45", "new": "vtail_sweep =40"},
                 {"old": "vtail_thickness_ratio =0.03", "new": "vtail_thickness_ratio =0.025"},
                 //
-                {"old": "oswald_efficiency_factor =0.73", "new": "oswald_efficiency_factor =1;0.73; target scalar is 0.51"},//
+                {"old": "oswald_efficiency_factor =0.73", "new": "oswald_efficiency_factor =0.73; target scalar is 0.51"},//
                 //v2.0.0
                 //{"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =36.307648"},
                 //v2.0.1
-                {"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =-6.692352"},
+                {"old": "wing_pos_apex_lon =16.327648", "new": "wing_pos_apex_lon =18.307648"},
                 //v2.0.0
                 //{"old": "htail_pos_lon =-115", "new": "htail_pos_lon =-77.2"},
                 //v2.0.1
-                {"old": "htail_pos_lon =-115", "new": "htail_pos_lon =-115"},
+                {"old": "htail_pos_lon =-115", "new": "htail_pos_lon =-105 ; offset 20 ft streched -8 (20/2 = 10)"},
                 {"old": "htail_incidence =5", "new": "htail_incidence =5"},//1st:5 2nd: 4.9
                 //v2.0.0
                 //{"old": "vtail_pos_lon =-100", "new": "vtail_pos_lon =-62.2"},
                 //v2.0.1
-                {"old": "vtail_pos_lon =-100", "new": "vtail_pos_lon =-100"},
-                {"old": "fuselage_diameter =21.3", "new": "fuselage_diameter =18"},
-                {"old": "fuselage_length =222", "new": "fuselage_length =206.1"},
-                {"old": "fuselage_center_pos = 0, 0, 2", "new": "fuselage_center_pos = 4.6, 0, 2 ; actual wing position not A/C center"},
+                {"old": "vtail_pos_lon =-100", "new": "vtail_pos_lon =-90 ; offset 20 ft streched -8 (20/2 = 10)"},
+                {"old": "fuselage_diameter =21.3", "new": "fuselage_diameter =21.3"},
+                {"old": "fuselage_length =222", "new": "fuselage_length =206"},
+                {"old": "fuselage_center_pos = 0, 0, 2", "new": "fuselage_center_pos = -0.4, 0, 2 ; actual wing position not A/C center"},
                 //
                 //v2 ref:MFD.js
-                {"old": "pitch_stability =1", "new": "pitch_stability =1.75"},//v2:2.75
+                {"old": "pitch_stability =1", "new": "pitch_stability =2.55; 2.25 ;1.75 ;2.75"},//v2:2.75
                 //{"old": "roll_stability =1", "new": "roll_stability =2"},//v2:2.75
                 //
                 {"old": "drag_coef_flaps =0.1295", "new": "drag_coef_flaps =0.1285"},//1st:0.1285
