@@ -1,0 +1,52 @@
+name: main
+on:
+  push:
+    branches:
+      #- main
+jobs:
+  build-hs789:
+    runs-on: ubuntu-latest
+    env:
+      PRE_RELEASE_ID: 64125785
+      PRE_RELEASE_TAG: vmain
+      ZIP_NAME: hs-b787-9-${{ github.ref_name }}.zip
+      BUILD_DIR_NAME: main
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: false
+          haskell: false
+          large-packages: false
+          docker-images: false
+          swap-storage: false
+      - name: Checkout source
+        uses: actions/checkout@v3
+      - name: Set BUILT_DATE_TIME
+        run: echo "BUILT_DATE_TIME=$(date -u -Iseconds)" >> $GITHUB_ENV
+      - name: install required node dependencies
+        run: npm i
+      - name: install required node dependencies
+        run: npx igniter
+      - name: Delete old GitHub Pre-Release assets
+        uses: mknejp/delete-release-assets@v1
+        with:
+          token: ${{ github.token }}
+          tag: ${{ env.PRE_RELEASE_TAG }}
+          assets: "*"
+          fail-if-no-assets: false
+          fail-if-no-release: false
+      - name: Build Kuro-788 ZIP files
+        run: |
+          mkdir ./${{ env.BUILD_DIR_NAME }}
+          zip -r ./${{ env.BUILD_DIR_NAME }}/${{ env.ZIP_NAME }} ./Kuro_B787-8/
+          cd ..
+      - name: Upload to Google Drive
+        uses: adityak74/google-drive-upload-git-action@main
+        with:
+          credentials: ${{ secrets.GDRIVE_CREDS }}
+          filename: ./${{ env.BUILD_DIR_NAME }}/${{ env.ZIP_NAME}}
+          folderId: ${{ secrets.GDRIVEFOLDERID }}
+          overwrite: "true" # optional boolean
