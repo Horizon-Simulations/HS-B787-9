@@ -22,6 +22,10 @@
       {
         "gltf": "./add/belly.gltf",
         "bin": "./add/belly.bin"
+      },
+      {
+        "gltf": "./add/decals.gltf",
+        "bin": "./add/decals.bin"
       }
     ]
   }
