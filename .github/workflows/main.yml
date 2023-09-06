@@ -26,10 +26,6 @@ jobs:
         uses: actions/checkout@v3
       - name: Set BUILT_DATE_TIME
         run: echo "BUILT_DATE_TIME=$(date -u -Iseconds)" >> $GITHUB_ENV
-      - name: install required node dependencies
-        run: npm i
-      - name: install required node dependencies
-        run: npx igniter
       - name: Delete old GitHub Pre-Release assets
         uses: mknejp/delete-release-assets@v1
         with:
