@@ -40,14 +40,14 @@ jobs:
       - name: Copy Sources
         run: |
             ./scripts/dev-env/run.sh ./scripts/copy_hs789.sh
-      - name: Build A21NHS Package
+      - name: Build HS789 Package
         run: |
               ./scripts/dev-env/run.sh ./scripts/build_hs789.sh --no-tty -j 4
       - name: Generate HorizonSim-789 ZIP file
         run: |
           mkdir ./${{ env.BUILD_DIR_NAME }}
-          cd ./build-a321neo/out/
-          zip -r ../../${{ env.BUILD_DIR_NAME }}/${{ env.ZIP_NAME }} ./lvfr-horizonsim-airbus-a321-neo/
+          cd ./build-hs789/out/
+          zip -r ../../${{ env.BUILD_DIR_NAME }}/${{ env.ZIP_NAME }} ./horizonsim-aircraft-787-9/
           cd ../../
       - name: Upload to Google Drive
         uses: adityak74/google-drive-upload-git-action@main
