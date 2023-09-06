@@ -1,17 +1,19 @@
 import { ExecTask, TaskOfTasks } from "@flybywiresim/igniter";
-export default new TaskOfTasks("Horizon Sim 787-9", [
-    // A32NX Task
-    new TaskOfTasks("All", [
-        new TaskOfTasks("Preparation",[
-            new ExecTask("Enviroment Setup", "npm run prep-HS789:setup"),
-            new ExecTask("Install Dependencies", "npm ci"),            
-            new ExecTask("Copy files", "npm run prep-HS789:copy-base-package"),
-        ], false),
+export default new TaskOfTasks("all", [
+    new TaskOfTasks("HS789", [
+        // Prepare the out folder and any other pre tasks.
+        // Currently, these can be run in parallel but in the future, we may need to run them in sequence if there are any dependencies.
         new TaskOfTasks("Build", [            
-            new ExecTask("Build","npm run build-HS789:build")
+            //new ExecTask("model","npm run build-hs789:model")
         ],true),
-        new TaskOfTasks("Dist",[
-            new ExecTask("Layout Update", "npm run final-HS789:layout")
-        ])
-    ], false),    
+        // Create final package meta files.
+        new TaskOfTasks(
+            "dist",
+            [
+                new ExecTask("metadata", "npm run build-hs789:metadata"),
+                new ExecTask("manifests", "npm run build-hs789:manifest"),
+            ],
+            true
+        ), 
+    ]),
 ]);

@@ -1,13 +1,19 @@
 ![HS-Logo](https://cdn.discordapp.com/attachments/1067064704712843335/1142761104716603432/var_1.png)
 # Horizon Simulations 787-9
 
-We want to welcome you to the Horizon Simulations 787-900, this is a modified version of the default 787-10 that asobo offers with the premium delux version, as such you **MUST** own the premium deluxe version of Microsoft Flight Simulator in order to use this aircraft. We have also expanded upon this aircraft to ensure a better simulation of the aircraft.
+We want to welcome you to the Horizon Simulations 787-9, this is a modified version of the default 787-10 that asobo offers with the premium delux version, as such you **MUST** own the premium deluxe version of Microsoft Flight Simulator in order to use this aircraft. We have also expanded upon this aircraft to ensure a better simulation of the aircraft.
 
 ### Boeing 787-9
 
 ```
 Model  B787-9
 Engine Rolls Royce Trent 1000
+APU    APS5000
+FMS
+```
+```
+Model  B787-9
+Engine GEnx-1B70
 APU    APS5000
 FMS
 ```

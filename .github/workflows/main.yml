@@ -2,7 +2,7 @@ name: main
 on:
   push:
     branches:
-      #- main
+      - main
 jobs:
   build-hs789:
     runs-on: ubuntu-latest
@@ -38,15 +38,25 @@ jobs:
           assets: "*"
           fail-if-no-assets: false
           fail-if-no-release: false
-      - name: Build Kuro-788 ZIP files
+      - name: Setup Package
+        run:  |
+            ./scripts/dev-env/run.sh ./scripts/setup.sh
+      - name: Copy Sources
+        run: |
+            ./scripts/dev-env/run.sh ./scripts/copy_hs789.sh
+      - name: Build A21NHS Package
+        run: |
+              ./scripts/dev-env/run.sh ./scripts/build_hs789.sh --no-tty -j 4
+      - name: Generate HorizonSim-789 ZIP file
         run: |
           mkdir ./${{ env.BUILD_DIR_NAME }}
-          zip -r ./${{ env.BUILD_DIR_NAME }}/${{ env.ZIP_NAME }} ./Kuro_B787-8/
-          cd ..
+          cd ./build-a321neo/out/
+          zip -r ../../${{ env.BUILD_DIR_NAME }}/${{ env.ZIP_NAME }} ./lvfr-horizonsim-airbus-a321-neo/
+          cd ../../
       - name: Upload to Google Drive
         uses: adityak74/google-drive-upload-git-action@main
         with:
-          credentials: ${{ secrets.GDRIVE_CREDS }}
+          credentials: ${{ secrets.GDRIVE_CREDS_B789 }}
           filename: ./${{ env.BUILD_DIR_NAME }}/${{ env.ZIP_NAME}}
           folderId: ${{ secrets.GDRIVEFOLDERID }}
           overwrite: "true" # optional boolean

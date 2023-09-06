@@ -1,14 +1,15 @@
 {
-    "name": "Horizon Sim 787-9",
+    "name": "horizonsim-b787-9",
     "version": "1.0.0",
     "edition": "Stable",
-    "author": "Yago Martínez(Qbit) & Horizon Sim",
+    "author": "Yago Martínez(Qbit) & Horizon Simulations",
     "scripts": {
-        "prep-HS789:copy-base-package":".\\Scripts\\dev-env\\run.cmd ./Scripts/copy.sh",
-        "prep-HS789:setup":".\\Scripts\\dev-env\\run.cmd ./Scripts/setup.sh",
-        "build-HS789:build":".\\Scripts\\dev-env\\run.cmd ./Scripts/build.sh",
-        "build-HS780:models":"node HorizonSim-789/src/models/build.js && python ./HorizonSim-789/src/models/build/replace.py",
-        "final-HS789:layout":"cd ./Scripts && MSFSLayoutGenerator.exe ..\\HorizonSim-789\\build\\horizonsim-aircraft-787-9\\layout.json"
+        "prep-hs789:copy-base-package":"./scripts/copy_hs789.sh",
+        "prep-hs789:setup":"./scripts/setup.sh",
+        "build-hs789:build":"./scripts/build_hs789.sh",
+        "build-hs789:model":"node horizonsim-789/src/model/build.js && python ./horizonsim-789/src/model/build/replace.py",
+        "build-hs789:metadata": "node scripts/metadata.js build-hs789/out/horizonsim-aircraft-787-9 hs789",
+        "build-hs789:manifest": "node scripts/build-hs789.js"
     },
     "lint-staged": {
         "*.{js,mjs,jsx}": "eslint --cache --fix",
