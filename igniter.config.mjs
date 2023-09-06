@@ -3,9 +3,13 @@ export default new TaskOfTasks("all", [
     new TaskOfTasks("HS789", [
         // Prepare the out folder and any other pre tasks.
         // Currently, these can be run in parallel but in the future, we may need to run them in sequence if there are any dependencies.
-        new TaskOfTasks("Build", [            
-            //new ExecTask("model","npm run build-hs789:model")
-        ],true),
+        new TaskOfTasks("build", [            
+            new ExecTask("model","npm run build-hs789:model")
+        ],false),
+        
+        new TaskOfTasks("copy", [            
+            new ExecTask("model","npm run build-hs789:copy-model")
+        ],false),
         // Create final package meta files.
         new TaskOfTasks(
             "dist",
