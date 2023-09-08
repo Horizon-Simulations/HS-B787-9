@@ -46412,6 +46412,40 @@
                 "metallicFactor": 0,
                 "roughnessFactor": 0.5
             }
+        },
+		{
+			"name": "WINGS2",
+			"normalTexture": {
+				"index": 2
+			},
+			"occlusionTexture": {
+				"index": 80
+			},
+			"pbrMetallicRoughness": {
+				"baseColorTexture": {
+					"index": 78
+				},
+				"metallicRoughnessTexture": {
+					"index": 80
+				}
+			}
+		},
+        {
+            "name": "ENGINE2",
+            "normalTexture": {
+                "index": 44
+            },
+            "occlusionTexture": {
+                "index": 81
+            },
+            "pbrMetallicRoughness": {
+                "baseColorTexture": {
+                    "index": 79
+                },
+                "metallicRoughnessTexture": {
+                    "index": 81
+                }
+            }
         }
     ],
     "meshes": [
@@ -50602,7 +50636,7 @@
                         "TEXCOORD_1": 2087
                     },
                     "indices": 2089,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -50648,7 +50682,7 @@
                         "TEXCOORD_1": 2094
                     },
                     "indices": 2096,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -50673,7 +50707,7 @@
                         "TEXCOORD_1": 2101
                     },
                     "indices": 2103,
-                    "material": 19,
+                    "material": 58,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -50740,7 +50774,7 @@
                         "TEXCOORD_1": 2108
                     },
                     "indices": 2110,
-                    "material": 19,
+                    "material": 58,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -50884,7 +50918,7 @@
                         "WEIGHTS_0": 3047
                     },
                     "indices": 3049,
-                    "material": 19,
+                    "material": 58,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51049,7 +51083,7 @@
                         "TEXCOORD_1": 2157
                     },
                     "indices": 2159,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51120,7 +51154,7 @@
                         "TEXCOORD_1": 2171
                     },
                     "indices": 2173,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51145,7 +51179,7 @@
                         "TEXCOORD_1": 2178
                     },
                     "indices": 2180,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51241,7 +51275,7 @@
                         "TEXCOORD_1": 2199
                     },
                     "indices": 2201,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51266,7 +51300,7 @@
                         "TEXCOORD_1": 2206
                     },
                     "indices": 2208,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51291,7 +51325,7 @@
                         "TEXCOORD_1": 2213
                     },
                     "indices": 2215,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51316,7 +51350,7 @@
                         "TEXCOORD_1": 2220
                     },
                     "indices": 2222,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51341,7 +51375,7 @@
                         "TEXCOORD_1": 2227
                     },
                     "indices": 2229,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51366,7 +51400,7 @@
                         "TEXCOORD_1": 2234
                     },
                     "indices": 2236,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51391,7 +51425,7 @@
                         "TEXCOORD_1": 2241
                     },
                     "indices": 2243,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51416,7 +51450,7 @@
                         "TEXCOORD_1": 2248
                     },
                     "indices": 2250,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51441,7 +51475,7 @@
                         "TEXCOORD_1": 2255
                     },
                     "indices": 2257,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51466,7 +51500,7 @@
                         "TEXCOORD_1": 2262
                     },
                     "indices": 2264,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51491,7 +51525,7 @@
                         "TEXCOORD_1": 2269
                     },
                     "indices": 2271,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51516,7 +51550,7 @@
                         "TEXCOORD_1": 2276
                     },
                     "indices": 2278,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51562,7 +51596,7 @@
                         "TEXCOORD_1": 2283
                     },
                     "indices": 2285,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51587,7 +51621,7 @@
                         "TEXCOORD_1": 2290
                     },
                     "indices": 2292,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51612,7 +51646,7 @@
                         "TEXCOORD_1": 2297
                     },
                     "indices": 2299,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51637,7 +51671,7 @@
                         "TEXCOORD_1": 2304
                     },
                     "indices": 2306,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51662,7 +51696,7 @@
                         "TEXCOORD_1": 2311
                     },
                     "indices": 2313,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51687,7 +51721,7 @@
                         "TEXCOORD_1": 2318
                     },
                     "indices": 2320,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51712,7 +51746,7 @@
                         "TEXCOORD_1": 2325
                     },
                     "indices": 2327,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51737,7 +51771,7 @@
                         "TEXCOORD_1": 2332
                     },
                     "indices": 2334,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51762,7 +51796,7 @@
                         "TEXCOORD_1": 2339
                     },
                     "indices": 2341,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51787,7 +51821,7 @@
                         "TEXCOORD_1": 2346
                     },
                     "indices": 2348,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51887,7 +51921,7 @@
                         "TEXCOORD_1": 2374
                     },
                     "indices": 2376,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51914,7 +51948,7 @@
                         "WEIGHTS_0": 3074
                     },
                     "indices": 3076,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -51939,7 +51973,7 @@
                         "TEXCOORD_1": 2381
                     },
                     "indices": 2383,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -54027,7 +54061,7 @@
                         "WEIGHTS_0": 3164
                     },
                     "indices": 3166,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -54076,7 +54110,7 @@
                         "WEIGHTS_0": 3182
                     },
                     "indices": 3184,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -54125,7 +54159,7 @@
                         "WEIGHTS_0": 3200
                     },
                     "indices": 3202,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -54174,7 +54208,7 @@
                         "WEIGHTS_0": 3218
                     },
                     "indices": 3220,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -55210,7 +55244,7 @@
                         "WEIGHTS_0": 3326
                     },
                     "indices": 3328,
-                    "material": 0,
+                    "material": 57,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
@@ -69627,7 +69661,35 @@
                     "source": 72
                 }
             }
-        }
+        },
+		{
+			"extensions": {
+				"MSFT_texture_dds": {
+					"source": 73
+				}
+			}
+		},
+		{
+			"extensions": {
+				"MSFT_texture_dds": {
+					"source": 74
+				}
+			}
+		},
+		{
+			"extensions": {
+				"MSFT_texture_dds": {
+					"source": 75
+				}
+			}
+		},
+		{
+			"extensions": {
+				"MSFT_texture_dds": {
+					"source": 76
+				}
+			}
+		}
     ],
     "extensionsUsed": [
         "ASOBO_normal_map_convention",
@@ -69938,6 +70000,22 @@
         {
             "extras": "ASOBO_image_converted_meta",
             "uri": "787_8_COCKPIT_TEXTS1_ALBD.TIF.DDS"
+        },
+		{
+			"extras": "ASOBO_image_converted_meta",
+			"uri": "787_9_AIRFRAME_WINGSR_ALBD.PNG.DDS"
+		},
+		{
+			"extras": "ASOBO_image_converted_meta",
+			"uri": "787_9_AIRFRAME_ENGINER_ALBD.PNG.DDS"
+		},
+        {
+            "uri": "787_9_AIRFRAME_WINGSR_COMP.PNG.DDS",
+            "extras": "ASOBO_image_converted_meta"
+        },
+        {
+            "uri": "787_9_AIRFRAME_ENGINER_COMP.PNG.DDS",
+            "extras": "ASOBO_image_converted_meta"
         }
     ]
 }
