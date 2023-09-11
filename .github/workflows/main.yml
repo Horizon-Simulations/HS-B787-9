@@ -34,9 +34,6 @@ jobs:
           assets: "*"
           fail-if-no-assets: false
           fail-if-no-release: false
-      - name: Setup Package
-        run:  |
-            npm run prep-hs789:setup
       - name: Copy Sources
         run: |
             npm run prep-hs789:copy-base-package
