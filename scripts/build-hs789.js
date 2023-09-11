@@ -41,7 +41,7 @@ const titleSuffix = ` (${titlePostfix})`;
 const MS_FILETIME_EPOCH = 116444736000000000n;
 
 const B789_SRC = path.resolve(__dirname, '..', 'horizonsim-789/src');
-const B789_OUT = path.resolve(__dirname, '..', 'build-hs789/out/horizonsim-aircraft-787-9');
+const B789_OUT = path.resolve(__dirname, '..', 'horizonsim-789/build/horizonsim-aircraft-787-9');
 
 function createPackageFiles(baseDir, manifestBaseFilename) {
     const contentEntries = [];

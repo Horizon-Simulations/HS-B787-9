@@ -4,12 +4,13 @@
     "edition": "Stable",
     "author": "Yago Martínez(Qbit) & Horizon Simulations",
     "scripts": {
-        "prep-hs789:copy-base-package":"./scripts/copy_hs789.sh",
-        "prep-hs789:setup":"./scripts/setup.sh",
+        "prep-hs789:copy-base-package":".\\scripts\\copy_hs789.cmd",
+        "prep-hs789:setup":".\\scripts\\setup.cmd",
         "build-hs789:build":"./scripts/build_hs789.sh",
         "build-hs789:model":"node build-hs789/src/model/build.js && python3 scripts/replace.py",
-        "build-hs789:copy-model": "cp -au build-hs789/src/model/build/B787_lod1.* build-hs789/out/horizonsim-aircraft-787-9/SimObjects/Airplanes/HS_B787_9/model.GE && cp -au build-hs789/src/model/build/B787_lod1.* build-hs789/out/horizonsim-aircraft-787-9/SimObjects/Airplanes/HS_B787_9/model.RR",
-        "build-hs789:metadata": "node scripts/metadata.js build-hs789/out/horizonsim-aircraft-787-9 hs789",
+        "build-hs789:copy-model": ".\\scripts\\copy-model.cmd",
+        "build-hs789:update-layout":"cd ./scripts && MSFSLayoutGenerator.exe ..\\HorizonSim-789\\build\\horizonsim-aircraft-787-9\\layout.json",
+        "build-hs789:metadata": "node scripts/metadata.js horizonsim-789/build/horizonsim-aircraft-787-9 hs789",
         "build-hs789:manifest": "node scripts/build-hs789.js"
     },
     "lint-staged": {
