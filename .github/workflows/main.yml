@@ -36,10 +36,7 @@ jobs:
           fail-if-no-release: false
       - name: Copy Sources
         run: |
-            npm run prep-hs789:copy-base-package
-      - name: Build HS789 Package
-        run: |
-              npm run build-hs789:copy-model
+            npm run prep-hs789:copy-base-package-linux
       - name: Generate HorizonSim-789 ZIP file
         run: |
           mkdir ./${{ env.BUILD_DIR_NAME }}
