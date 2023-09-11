@@ -36,17 +36,17 @@ jobs:
           fail-if-no-release: false
       - name: Setup Package
         run:  |
-            ./scripts/dev-env/run.sh ./scripts/setup.sh
+            npm run prep-hs789:setup
       - name: Copy Sources
         run: |
-            ./scripts/dev-env/run.sh ./scripts/copy_hs789.sh
+            npm run prep-hs789:copy-base-package
       - name: Build HS789 Package
         run: |
-              ./scripts/dev-env/run.sh ./scripts/build_hs789.sh --no-tty -j 4
+              npm run build-hs789:copy-model
       - name: Generate HorizonSim-789 ZIP file
         run: |
           mkdir ./${{ env.BUILD_DIR_NAME }}
-          cd ./build-hs789/out/
+          cd ./horizonsim-789/build/
           zip -r ../../${{ env.BUILD_DIR_NAME }}/${{ env.ZIP_NAME }} ./horizonsim-aircraft-787-9/
           cd ../../
       - name: Upload to Google Drive
