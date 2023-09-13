@@ -476,7 +476,7 @@
             //{"old": "{ label: 20, flapAngle: 20, slatAngle: 18.437747, speedLimit: 210 },", "new": "{ label: 20, flapAngle: 30, slatAngle: 19.5, speedLimit: 215 },"},
             //{"old": "{ label: 25, flapAngle: 25, slatAngle: 31, speedLimit: 180 },", "new": "{ label: 25, flapAngle: 37.5, slatAngle: 23.0, speedLimit: 190 },"},
             //{"old": "{ label: 30, flapAngle: 30, slatAngle: 31.572958, speedLimit: 170 },", "new": "{ label: 30, flapAngle: 43, slatAngle: 23.0, speedLimit: 180 },"},
-            {"old": "super(bus, fms, 6000, 43000);", "new": "super(bus, fms, 6000, 43100);"},
+            {"old": "super(bus, fms, 6000, 43000, 9650);", "new": "super(bus, fms, 6000, 43100, 9650);"},
             //v2.1.0 RA Altitude
             {"old": "the RADIO HEIGHT simvar is about +15 feet, so we use offset of -21. *\/\n        this.radioAltimeterOffset = -21;", "new": "the RADIO HEIGHT simvar is about +13 feet(+15 feet in -10), so we use offset of -19(-21 in -10). *\/\n        this.radioAltimeterOffset = -19;"},
             {"old": "BoeingAutothrottle.RETARD_ACTIVATE_THRESHOLD = 2.2;", "new": "BoeingAutothrottle.RETARD_ACTIVATE_THRESHOLD = 3.3;"},//4.0
@@ -636,7 +636,7 @@
             //{"old": "{ label: 20, flapAngle: 20, slatAngle: 18.437747, speedLimit: 210 },", "new": "{ label: 20, flapAngle: 30, slatAngle: 19.5, speedLimit: 215 },"},
             //{"old": "{ label: 25, flapAngle: 25, slatAngle: 31, speedLimit: 180 },", "new": "{ label: 25, flapAngle: 37.5, slatAngle: 23.0, speedLimit: 190 },"},
             //{"old": "{ label: 30, flapAngle: 30, slatAngle: 31.572958, speedLimit: 170 },", "new": "{ label: 30, flapAngle: 43, slatAngle: 23.0, speedLimit: 180 },"},
-            //{"old": "super(bus, fms, 6000, 43000);", "new": "super(bus, fms, 6000, 43100);"},
+            {"old": "super(bus, fms, 6000, 43000, 9650);", "new": "super(bus, fms, 6000, 43100, 9650);"},
             //v2.1.0 RA Altitude
             {"old": "the RADIO HEIGHT simvar is about +15 feet, so we use offset of -21. *\/\n        this.radioAltimeterOffset = -21;", "new": "the RADIO HEIGHT simvar is about +13 feet(+15 feet in -10), so we use offset of -19(-21 in -10). *\/\n        this.radioAltimeterOffset = -19;"},
             {"old": "BoeingAutothrottle.RETARD_ACTIVATE_THRESHOLD = 2.2;", "new": "BoeingAutothrottle.RETARD_ACTIVATE_THRESHOLD = 3.3;"},//4.0
