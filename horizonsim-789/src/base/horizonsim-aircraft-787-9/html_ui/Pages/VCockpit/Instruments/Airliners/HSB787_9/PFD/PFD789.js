@@ -71190,7 +71190,7 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
     }
     /** @inheritDoc */
     get maxGrossWeight() {
-        return 557000; // 252,651 kg
+        return 561500; // 254,700 kg
     }
     /** @inheritDoc */
     get maxReserveFuel() {
@@ -71217,7 +71217,7 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
             cl_cd: [[0.317, 0.028], [0.5282, 0.0447], [0.5714, 0.526], [0.6147, 0.0620], [0.6580, 0.0729],
                 [0.6801, 0.0788], [0.6952, 0.0830], [0.7173, 0.0898], [0.7109, 0.1041], [0.7284, 0.1280]],
             induced_drag_scalar: 1,
-            oswald_efficiency_factor: 1,
+            oswald_efficiency_factor: 0.73,
             inlet_area: 68.4,
             low_idle_n1: 20,
             mach_influence_on_n1: 10,

@@ -43982,7 +43982,7 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
     }
     /** @inheritDoc */
     get maxGrossWeight() {
-        return 557000; // 252,651 kg
+        return 561500; // 254,700 kg
     }
     /** @inheritDoc */
     get maxReserveFuel() {
