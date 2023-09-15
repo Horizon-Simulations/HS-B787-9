@@ -1,0 +1,219 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SimBase.Document Type="Checklist" version="1,0">
+	<Checklist.Checklist>
+		<IncludeCheckpointLibrary FileName="CheckpointsLibrary\\Asobo_DefaultCheckpointLibrary.xml" />
+		<IncludeCheckpointLibrary FileName="SimObjects\\Airplanes\\Kuro_B787_8\\Checklist\\Library.xml" />
+		<Step ChecklistStepId="PREFLIGHT_GATE">
+			<Page SubjectTT="TT:GAME.CHECKLIST_POWER">
+				<Checkpoint ReferenceId="Battery_Switch_On_B789" />
+				<Checkpoint ReferenceId="C1_C2_ELEC_HYD_PUMPS_OFF_B789" />
+				<Checkpoint ReferenceId="L_R_ELEC_DEMAND_HYD_PUMPS_OFF_B789" />
+				<Checkpoint ReferenceId="External_Power_On_If_Avail">
+					<Instrument Id="ELECTRICAL_Switch_ExternalPower_FWD_1" />
+					<Instrument Id="ELECTRICAL_Switch_ExternalPower_FWD_2" />
+					<Instrument Id="ELECTRICAL_Switch_ExternalPower_AFT" />
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+			</Page>
+			<Page SubjectTT="TT:GAME.CHECKLIST_PREFLIGHT_1_4">
+				<Checkpoint ReferenceId="IRS_SELECTORS_ON_B789" />
+				<Checkpoint ReferenceId="PRIMARY_FLIGHT_COMPUTERS_GUARD_CLOSED_B789" />
+				<Checkpoint ReferenceId="IFE_PASS_SEATS_ON_B789" />
+				<Checkpoint ReferenceId="CABIN_UTILITY_POWER_ON_B789" />
+				<Checkpoint ReferenceId="APU_Gen_Switches_On_B789" />
+				<Checkpoint ReferenceId="Generator_Control_Switches_On_B789" />
+				<Checkpoint ReferenceId="APU_START_ON_B789" />
+				<Checkpoint ReferenceId="WIPERS_OFF_B789" />
+				<Checkpoint ReferenceId="FD_DOOR_POWER_ON_B789" />
+				<Checkpoint ReferenceId="Emergency_Lights_Armed_B789" />
+				<Checkpoint ReferenceId="WINDOW_HEAT_ON_B789" />
+				<Checkpoint ReferenceId="L_R_ENGINE_PRIMARY_HYD_PUMPS_ON_B789" />
+				<Checkpoint ReferenceId="C1_C2_ELEC_HYD_PUMPS_OFF_B789" />
+				<Checkpoint ReferenceId="L_R_ELEC_DEMAND_HYD_PUMPS_OFF_B789" />
+				<Checkpoint ReferenceId="SEATBELTS_SELECTOR_ON_B789" />
+				<Checkpoint ReferenceId="FUEL_PUMPS_AIRLINER_2_ENGINES_OFF_B789" />
+				<Checkpoint ReferenceId="ANTI_ICE_AUTO_B789" />
+				<Checkpoint ReferenceId="Navigation_Lights_On">
+					<ForceCamera name="Instrument07" />
+					<Instrument Id="LIGHTING_Push_Light_NAV" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="Logo_Light_As_Required">
+					<ForceCamera name="Instrument07" />
+					<Instrument Id="LIGHTING_Push_Light_Logo" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="PACK_SWITCHES_AUTO_B789" />
+				<Checkpoint ReferenceId="TRIM_AIR_SWITCHES_ON_B789" />
+				<Checkpoint ReferenceId="FLIGHT_DIRECTOR_ON_B789" />
+				<Checkpoint ReferenceId="AUTOTHROTTLE_ARM_B789" />
+				<Checkpoint ReferenceId="AP_DISENGAGE_BAR_UP_B789" />
+				<Checkpoint ReferenceId="BANK_LIMIT_AUTO_B789" />
+				<Checkpoint ReferenceId="Landing_Gear_Down">
+					<ForceCamera name="Instrument02" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="Autobrakes_Selector_RTO">
+					<ForceCamera name="Instrument02" />
+					<Instrument Id="HANDLING_Knob_Autobrake" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="Parking_Brake_Set">
+					<ForceCamera name="Instrument04" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="SPEEDBRAKE_DN_B789" />
+				<Checkpoint ReferenceId="FLAPS_UP_B789" />
+				<Checkpoint ReferenceId="ENGINE_FUEL_CONTROL_SWITCHES_CUTOFF_B789" />
+				<Checkpoint ReferenceId="TCAS_ATC_SELECTOR_STBY_B789" />
+			</Page>
+			<Page SubjectTT="TT:GAME.CHECKLIST_BEFORE_STARTING_ENGINES">
+				<Checkpoint ReferenceId="C1_C2_ELEC_HYD_PUMPS_AUTO_B789" />
+				<Checkpoint ReferenceId="L_R_ELEC_DEMAND_HYD_PUMPS_AUTO_B789" />
+				<Checkpoint ReferenceId="FUEL_PUMPS_AIRLINER_2_ENGINES">
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="Beacon_Light_On">
+					<Instrument Id="LIGHTING_PUSH_Light_BEACON" />
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="TCAS_ATC_SELECTOR_XPDR_B789" />
+			</Page>
+			<Page SubjectTT="TT:GAME.CHECKLIST_STARTING_ENGINES">
+				<Checkpoint ReferenceId="POWER_LEVERS_IDLE_2ENGINES">
+					<CheckpointDesc SubjectTT="TT:GAME.CHECKLIST_THRUST_LEVERS"
+						ExpectationTT="TT:GAME.CHECKLIST_IDLE" />
+					<Clue name="TT:CLUE.THRUST_LEVERS_IDLE" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="RIGHT_ENGINE_START_IGNITION_SWITCH_START_B789" />
+				<Checkpoint ReferenceId="RIGHT_ENGINE_FUEL_CONTROL_SWITCH_RUN_B789" />
+				<Checkpoint ReferenceId="LEFT_ENGINE_START_REPEAT_PROCEDURE_B789" />
+				<Checkpoint ReferenceId="WAIT_ENGINES_STARTED_B789" />
+			</Page>
+			<Page SubjectTT="TT:GAME.CHECKLIST_BEFORE_TAXI">
+				<Checkpoint ReferenceId="APU_SELECTOR_OFF">
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="FLAPS_TAKEOFF_B789" />
+				<Checkpoint ReferenceId="Taxi_Lights_On_B789">
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+			</Page>
+		</Step>
+		<Step ChecklistStepId="PREFLIGHT_TAXI_OUT">
+			<Page SubjectTT="TT:GAME.CHECKLIST_BEFORE_TAKE_OFF">
+				<Checkpoint ReferenceId="Strobe_Light_On">
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="Landing_Light_On">
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="TCAS_ATC_SELECTOR_TA_RA_B789" />
+			</Page>
+		</Step>
+		<Step ChecklistStepId="FLIGHT_RUNWAY">
+		</Step>
+		<Step ChecklistStepId="FLIGHT_TAKEOFF">
+			<Page SubjectTT="TT:GAME.CHECKLIST_TAKEOFF">
+				<Checkpoint ReferenceId="Brakes_Released" />
+				<Checkpoint ReferenceId="POWER_LEVER_PRESS_TOGA_BUTTON_B789" />
+			</Page>
+			<Page SubjectTT="TT:GAME.CHECKLIST_AFTER_TAKE_OFF">
+				<Checkpoint ReferenceId="LANDING_GEAR_UP" />
+				<Checkpoint ReferenceId="FLAPS_UP_B789" />
+			</Page>
+			<Page SubjectTT="TT:GAME.CHECKLIST_CLIMB">
+				<Checkpoint ReferenceId="TAXI_AND_LANDING_LIGHTS_OFF_ABOVE_10000FT">
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="SEATBELTS_SELECTOR_AS_REQUIRED_B789" />
+			</Page>
+		</Step>
+		<Step ChecklistStepId="FLIGHT_CRUISE">
+			<Page SubjectTT="TT:GAME.CHECKLIST_CRUISE">
+			</Page>
+		</Step>
+		<Step ChecklistStepId="FLIGHT_DESCENT">
+			<Page SubjectTT="TT:GAME.CHECKLIST_DESCENT">
+				<Checkpoint ReferenceId="CANCEL_RECALL_PUSH_B789" />
+				<Checkpoint ReferenceId="AUTOBRAKES_SELECTOR_AS_NEEDED_B789" />
+			</Page>
+		</Step>
+		<Step ChecklistStepId="LANDING_APPROACH">
+			<Page SubjectTT="TT:GAME.CHECKLIST_APPROACH">
+				<Checkpoint ReferenceId="SEATBELTS_SELECTOR_AS_REQUIRED_B789" />
+				<Checkpoint ReferenceId="TAXI_AND_LANDING_LIGHTS_ON_BELOW_10000FT_B789" />
+			</Page>
+			<Page SubjectTT="TT:GAME.CHECKLIST_LANDING">
+				<Checkpoint ReferenceId="Landing_Gear_Down" />
+				<Checkpoint ReferenceId="FLAPS_20_B789" />
+				<Checkpoint ReferenceId="SPEEDBRAKE_ARMED_B789" />
+				<Checkpoint ReferenceId="AUTOBRAKES_SELECTOR_AS_NEEDED_B789" />
+				<Checkpoint ReferenceId="FLAPS_LANDING_B789" />
+			</Page>
+		</Step>
+		<Step ChecklistStepId="LANDING_TOUCHDOWN">
+		</Step>
+		<Step ChecklistStepId="LANDING_GROUNDROLL">
+		</Step>
+		<Step ChecklistStepId="LANDING_TAXI_IN">
+			<Page SubjectTT="TT:GAME.CHECKLIST_RUNWAY_CLEAR">
+				<Checkpoint ReferenceId="SPEEDBRAKE_DN_B789" />
+				<Checkpoint ReferenceId="APU_START_ON_B789" />
+				<Checkpoint ReferenceId="Landing_Light_Off">
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="Strobe_Light_Off">
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="Taxi_Lights_On_B789">
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="AUTOBRAKES_SELECTOR_OFF">
+					<ForceCamera name="Instrument02" />
+					<Instrument Id="HANDLING_Knob_Autobrake" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="FLAPS_UP_B789" />
+				<Checkpoint ReferenceId="TCAS_ATC_SELECTOR_XPDR_B789" />
+			</Page>
+		</Step>
+		<Step ChecklistStepId="LANDING_GATE">
+			<Page SubjectTT="TT:GAME.CHECKLIST_SHUTDOWN_1_2">
+				<Checkpoint ReferenceId="Parking_Brake_Set" />
+				<Checkpoint ReferenceId="External_Power_On_If_Avail">
+					<Instrument Id="ELECTRICAL_Switch_ExternalPower_FWD_1" />
+					<Instrument Id="ELECTRICAL_Switch_ExternalPower_FWD_2" />
+					<Instrument Id="ELECTRICAL_Switch_ExternalPower_AFT" />
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="ENGINE_FUEL_CONTROL_SWITCHES_CUTOFF_B789" />
+				<Checkpoint ReferenceId="SEATBELTS_SELECTOR_OFF_B789" />
+				<Checkpoint ReferenceId="C1_C2_ELEC_HYD_PUMPS_OFF_B789" />
+				<Checkpoint ReferenceId="L_R_ELEC_DEMAND_HYD_PUMPS_OFF_B789" />
+				<Checkpoint ReferenceId="FUEL_PUMPS_AIRLINER_2_ENGINES_OFF_B789" />
+				<Checkpoint ReferenceId="Beacon_Light_Off">
+					<Instrument Id="LIGHTING_PUSH_Light_BEACON" />
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="Taxi_Lights_Off_B789">
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="FLIGHT_DIRECTOR_OFF_B789" />
+				<Checkpoint ReferenceId="TCAS_ATC_SELECTOR_STBY_B789" />
+			</Page>
+			<Page SubjectTT="TT:GAME.CHECKLIST_SECURE">
+				<Checkpoint ReferenceId="EXTERNAL_POWER_OFF">
+					<Instrument Id="ELECTRICAL_Switch_ExternalPower_FWD_1" />
+					<Instrument Id="ELECTRICAL_Switch_ExternalPower_FWD_2" />
+					<Instrument Id="ELECTRICAL_Switch_ExternalPower_AFT" />
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="IRS_SELECTORS_OFF_B789" />
+				<Checkpoint ReferenceId="FD_DOOR_POWER_OFF_B789" />
+				<Checkpoint ReferenceId="Emergency_Lights_OFF_B789" />
+				<Checkpoint ReferenceId="PACK_SWITCHES_OFF_B789" />
+				<Checkpoint ReferenceId="LOWER_RECIRC_FAN_OFF_B789" />
+				<Checkpoint ReferenceId="HUD_STOW_B789" />
+				<Checkpoint ReferenceId="APU_SELECTOR_OFF">
+					<ForceCamera name="Instrument07" />
+				</Checkpoint>
+				<Checkpoint ReferenceId="Battery_Switch_Off_B789" />
+			</Page>
+		</Step>
+	</Checklist.Checklist>
+</SimBase.Document>
