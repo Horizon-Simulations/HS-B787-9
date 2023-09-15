@@ -2,3 +2,4 @@ node_modules
 .blend
 build-hs789
 horizonsim-789/build
+horizonsim-789/model/build
