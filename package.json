@@ -4,21 +4,22 @@
     "edition": "Stable",
     "author": "Yago Martínez(Qbit) & Horizon Simulations",
     "scripts": {
-        "prep-hs789:copy-base-package":".\\scripts\\copy_hs789.cmd",
+        "prep-hs789:copy-base-package": ".\\scripts\\copy_hs789.cmd",
         "prep-hs789:copy-base-package-linux": "scripts/copy_hs789.sh",
-        "prep-hs789:setup":".\\scripts\\setup.cmd",
-        "build-hs789:build":"./scripts/build_hs789.sh",
-        "build-hs789:model":"node build-hs789/src/model/build.js && python3 scripts/replace.py",
+        "prep-hs789:setup": ".\\scripts\\setup.cmd",
+        "build-hs789:build": "./scripts/build_hs789.sh",
+        "build-hs789:model": "node horizonsim-789/src/model/build.js && python3 scripts/replace.py",
         "build-hs789:copy-model": ".\\scripts\\copy-model.cmd",
-        "build-hs789:update-layout":"cd ./scripts && MSFSLayoutGenerator.exe ..\\HorizonSim-789\\build\\horizonsim-aircraft-787-9\\layout.json",
+        "build-hs789:copy-model-linux": "./scripts/copy_model.sh",
+        "build-hs789:update-layout": "cd ./scripts && MSFSLayoutGenerator.exe ..\\HorizonSim-789\\build\\horizonsim-aircraft-787-9\\layout.json",
         "build-hs789:metadata": "node scripts/metadata.js horizonsim-789/build/horizonsim-aircraft-787-9 hs789",
         "build-hs789:manifest": "node scripts/build-hs789.js"
     },
     "lint-staged": {
         "*.{js,mjs,jsx}": "eslint --cache --fix",
         "*.{json,yml,css,scss}": "prettier --write"
-      },
-      "devDependencies": {
+    },
+    "devDependencies": {
         "@babel/core": "^7.12.3",
         "@babel/eslint-parser": "^7.12.1",
         "@babel/plugin-proposal-class-properties": "~7.12.1",
@@ -84,11 +85,12 @@
         "webpack": "^5.12.2",
         "webpack-cli": "^4.3.1",
         "webpack-dev-server": "^3.11.1"
-      },
-      "dependencies": {
+    },
+    "dependencies": {
         "@flybywiresim/api-client": "^0.16.2",
         "@flybywiresim/tailwind-config": "^0.5.0",
         "@localazy/cli": "^1.6.0",
+        "@microsoft/msfs-sdk": "^0.4.0",
         "@reduxjs/toolkit": "^1.6.2",
         "@rollup/plugin-json": "^4.1.0",
         "@sentry/browser": "^6.17.7",
@@ -104,7 +106,6 @@
         "immer": "^9.0.3",
         "lodash": "^4.17.20",
         "msfs-geo": "^0.1.0-alpha3",
-        "@microsoft/msfs-sdk": "^0.4.0",
         "nanoid": "^3.3.1",
         "network": "^0.6.1",
         "pdf-to-printer": "^5.1.1",
@@ -121,5 +122,5 @@
         "type-to-reducer": "^1.2.0",
         "uuid": "^9.0.0",
         "ws": "^7.4.5"
-      }
+    }
 }
