@@ -34,6 +34,9 @@ jobs:
           assets: "*"
           fail-if-no-assets: false
           fail-if-no-release: false
+      - name: Install required dependencies
+        run: |
+            npm i --save-dev
       - name: Copy Sources & execute build script
         run: |
             npm run prep-hs789:copy-base-package-linux
