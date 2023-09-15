@@ -18924,7 +18924,9 @@ class EISPublisher extends SimVarPublisher {
             ['rpm', { name: 'GENERAL ENG RPM', type: SimVarValueType.RPM }],
             ['prop_rpm', { name: 'PROP RPM', type: SimVarValueType.RPM }],
             ['n1', { name: 'TURB ENG CORRECTED N1', type: SimVarValueType.Percent }],
+            ['n1_uncorrected', { name: 'TURB ENG N1', type: SimVarValueType.Percent }],
             ['n2', { name: 'TURB ENG CORRECTED N2', type: SimVarValueType.Percent }],
+            ['n2_uncorrected', { name: 'TURB ENG N2', type: SimVarValueType.Percent }],
             ['torque', { name: 'TURB ENG MAX TORQUE PERCENT', type: SimVarValueType.Percent }],
             ['fuel_flow', { name: 'ENG FUEL FLOW GPH', type: SimVarValueType.GPH }],
             ['recip_ff', { name: 'RECIP ENG FUEL FLOW', type: SimVarValueType.PPH }],
@@ -37039,6 +37041,7 @@ class BoeingEfbStore {
         this.takeoffRunwayCondition = Subject.create(null);
         this.takeoffRunwayDisplacement = Subject.create(null);
         this.takeoffOatCelsius = Subject.create(null);
+        this.takeoffWind = Subject.create(null);
         this.takeoffQnhHpa = Subject.create(null);
         this.takeoffGwLbs = Subject.create(null);
         this.takeoffZfwKg = Subject.create(null);
@@ -37058,6 +37061,7 @@ class BoeingEfbStore {
         data.rwyCondition && this.takeoffRunwayCondition.set(data.rwyCondition);
         data.runwayDisplacement && this.takeoffRunwayDisplacement.set(data.runwayDisplacement);
         data.oatCelsius && this.takeoffOatCelsius.set(data.oatCelsius);
+        data.takeoffRunwayWind && this.takeoffWind.set(data.takeoffRunwayWind);
         data.qnhHpa && this.takeoffQnhHpa.set(data.qnhHpa);
         data.gwLbs && this.takeoffGwLbs.set(data.gwLbs);
         data.zfwLbs && this.takeoffZfwKg.set(UnitType.POUND.convertTo(data.zfwLbs, UnitType.KILOGRAM));
@@ -37475,6 +37479,12 @@ class BoeingEfbTextField extends DisplayComponent {
         this.isDisabled = SubscribableUtils.toSubscribable(this.props.isDisabled, true);
         this.unitForTextField = SubscribableUtils.toSubscribable(this.props.unitForTextField, true);
         this.inputId = this.genGuid();
+        this.setValueFromOS = (text) => {
+            this.textBox.instance.value = text.toUpperCase();
+            this.onTextTyped();
+            this.textBox.instance.blur();
+            Coherent.off('SetInputTextFromOS', this.setValueFromOS);
+        };
         if (this.props.children) {
             for (const child of this.props.children) {
                 this.buttonText.push(typeof child === 'string' ? FSComponent.buildComponent("span", null, child) : child);
@@ -37585,6 +37595,7 @@ class BoeingEfbTextField extends DisplayComponent {
         this.textBox.instance.value = '';
         this.textBox.instance.focus({ preventScroll: true });
         this.textFieldState.set(TextFieldState.Typing);
+        Coherent.on('SetInputTextFromOS', this.setValueFromOS);
         Coherent.trigger('FOCUS_INPUT_FIELD', this.inputId, '', '', false);
         Coherent.on('mousePressOutsideView', () => {
             this.textBox.instance.blur();
@@ -37599,6 +37610,7 @@ class BoeingEfbTextField extends DisplayComponent {
         var _a;
         e.preventDefault();
         this.textFieldState.set(TextFieldState.Inactive);
+        Coherent.off('SetInputTextFromOS', this.setValueFromOS);
         Coherent.trigger('UNFOCUS_INPUT_FIELD', '');
         Coherent.off('mousePressOutsideView');
         const parsed = await this.props.validator.parse(this.textBox.instance.value);
@@ -38110,7 +38122,7 @@ class BoeingPerformancePage extends DisplayComponent {
                 this.runwayInformationValue.set('No valid assumed temp found for these conditions. No assumed temp allowed.');
             }
             else {
-                this.runwayInformationValue.set('No takeoff allowed. Planned weight exceeds max allowable weight of ' + maxTakeoffWeightOut.toFixed(0) + ' ' + this.unitString.get() + '.');
+                this.runwayInformationValue.set('No takeoff allowed. Planned weight exceeds max allowable weight of ' + Math.trunc(UnitType.POUND.convertTo(maxTakeoffWeightOut, this.unit.get())) + ' ' + this.unitString.get() + '.');
             }
             this.sendDataDisabled.set(true);
             this.textAreaSettingRef.instance.classList.remove('hidden');
@@ -38328,6 +38340,11 @@ class BoeingPerformancePage extends DisplayComponent {
         takeoffRunway !== null && this.rwyDropdownRef.instance.pickItem(takeoffRunway);
         const takeoffOat = this.props.store.takeoffOatCelsius.get();
         takeoffOat !== null && this.oatFieldRef.instance.typeValue(takeoffOat.toFixed(0));
+        const takeoffWind = this.props.store.takeoffWind.get();
+        if (takeoffWind) {
+            const direction = (takeoffWind.direction.toFixed(0) === '0' ? '360' : takeoffWind.direction.toFixed(0)).padStart(3, '0');
+            this.windTextFieldRef.instance.typeValue(direction + '/' + takeoffWind.speed.toFixed(0));
+        }
         const takeoffQnh = this.props.store.takeoffQnhHpa.get();
         if (takeoffQnh !== null) {
             if (this.gameUnitsMetric.get()) {
@@ -43982,7 +43999,7 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
     }
     /** @inheritDoc */
     get maxGrossWeight() {
-        return 557000; // 252,651 kg
+        return 561500; // 254,700 kg
     }
     /** @inheritDoc */
     get maxReserveFuel() {
