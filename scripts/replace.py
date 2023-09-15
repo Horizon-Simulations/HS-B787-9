@@ -1,6 +1,6 @@
 from pathlib import Path
 
-path = Path("build-hs789/src/model/build/")
+path = Path("horizonsim-789/src/model/build/")
 file_name = "B787_lod1.gltf"
 file_path = path / file_name
 
