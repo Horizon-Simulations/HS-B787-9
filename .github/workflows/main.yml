@@ -34,9 +34,11 @@ jobs:
           assets: "*"
           fail-if-no-assets: false
           fail-if-no-release: false
-      - name: Copy Sources
+      - name: Copy Sources & execute build script
         run: |
             npm run prep-hs789:copy-base-package-linux
+            npm run build-hs789:model
+            npm run build-hs789:copy-model-linux
       - name: Generate HorizonSim-789 ZIP file
         run: |
           mkdir ./${{ env.BUILD_DIR_NAME }}

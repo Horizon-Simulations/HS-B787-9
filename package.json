@@ -10,6 +10,7 @@
         "build-hs789:build":"./scripts/build_hs789.sh",
         "build-hs789:model":"node build-hs789/src/model/build.js && python3 scripts/replace.py",
         "build-hs789:copy-model": ".\\scripts\\copy-model.cmd",
+        "build-hs789:copy-model-linux": "./scripts/copy_model.sh",
         "build-hs789:update-layout":"cd ./scripts && MSFSLayoutGenerator.exe ..\\HorizonSim-789\\build\\horizonsim-aircraft-787-9\\layout.json",
         "build-hs789:metadata": "node scripts/metadata.js horizonsim-789/build/horizonsim-aircraft-787-9 hs789",
         "build-hs789:manifest": "node scripts/build-hs789.js"
