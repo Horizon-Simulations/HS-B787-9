@@ -26,6 +26,10 @@
       {
         "gltf": "./add/decals.gltf",
         "bin": "./add/decals.bin"
+      },
+      {
+        "gltf": "./add/window-mesh.gltf",
+        "bin": "./add/window-mesh.bin"
       }
     ]
   }
