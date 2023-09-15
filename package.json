@@ -8,7 +8,7 @@
         "prep-hs789:copy-base-package-linux": "scripts/copy_hs789.sh",
         "prep-hs789:setup":".\\scripts\\setup.cmd",
         "build-hs789:build":"./scripts/build_hs789.sh",
-        "build-hs789:model":"node build-hs789/src/model/build.js && python3 scripts/replace.py",
+        "build-hs789:model":"node horizonsim-789/src/model/build.js && python3 scripts/replace.py",
         "build-hs789:copy-model": ".\\scripts\\copy-model.cmd",
         "build-hs789:copy-model-linux": "./scripts/copy_model.sh",
         "build-hs789:update-layout":"cd ./scripts && MSFSLayoutGenerator.exe ..\\HorizonSim-789\\build\\horizonsim-aircraft-787-9\\layout.json",
