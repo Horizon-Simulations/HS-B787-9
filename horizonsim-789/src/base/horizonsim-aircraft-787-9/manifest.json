@@ -1,25 +1,25 @@
 {
-  "creator": "Horizon Simulations, Qbit Simulations \u0026 Kuro",
+  "dependencies": [
+    {
+      "name": "asobo-aircraft-b787-10",
+      "package_version": "0.1.56"
+    },
+    {
+      "name": "fs-base-aircraft-common",
+      "package_version": "0.1.74"
+    }
+  ],
+  "content_type": "AIRCRAFT",
+  "title": "HS B787-9",
+  "manufacturer": "Boeing",
+  "creator": "Horizon Sim, Qbit & Kuro",
+  "package_version": "1.0.0",
+  "minimum_game_version": "1.27.5",
   "release_notes": {
     "neutral": {
       "LastUpdate": "",
       "OlderHistory": ""
     }
   },
-  "title": "Horizon B789 (Development)",
-  "dependencies": [
-    {
-      "package_version": "0.1.129",
-      "name": "asobo-vcockpits-instruments-airliners"
-    },
-    {
-      "package_version": "0.1.125",
-      "name": "fs-base-aircraft-common"
-    }
-  ],
-  "content_type": "AIRCRAFT",
-  "minimum_game_version": "1.26.5",
-  "manufacturer": "Boeing",
-  "package_version": "1.0.0-f89cbfab7651428a96c0df9301bf874a44143721",
-  "total_package_size": "00000000000535862853"
+  "total_package_size": "00000000000540978524"
 }
