@@ -48068,34 +48068,6 @@
         },
         {
             "name": "Tail_Decals",
-            "doubleSided": true,
-            "pbrMetallicRoughness": {
-                "baseColorFactor": [
-                    0.800000011920929,
-                    0.800000011920929,
-                    0.800000011920929,
-                    1
-                ],
-                "metallicFactor": 0,
-                "roughnessFactor": 0.5
-            }
-        },
-        {
-            "name": "0F1-w2",
-            "doubleSided": true,
-            "pbrMetallicRoughness": {
-                "baseColorFactor": [
-                    0.800000011920929,
-                    0.800000011920929,
-                    0.800000011920929,
-                    1
-                ],
-                "metallicFactor": 0,
-                "roughnessFactor": 0.5
-            }
-        },
-        {
-            "name": "Tail_Decals",
             "alphaMode": "BLEND",
             "normalTexture": { "index": 11, "scale": 0.5 },
             "occlusionTexture": { "index": 10 },
@@ -48113,6 +48085,20 @@
                 },
                 "ASOBO_material_draw_order": { "drawOrderOffset": 16 }
             }        
+        },
+        {
+            "name": "0F1-w2",
+            "doubleSided": true,
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [
+                    0.800000011920929,
+                    0.800000011920929,
+                    0.800000011920929,
+                    1
+                ],
+                "metallicFactor": 0,
+                "roughnessFactor": 0.5
+            }
         }
     ],
     "meshes": [
