@@ -48093,6 +48093,26 @@
                 "metallicFactor": 0,
                 "roughnessFactor": 0.5
             }
+        },
+        {
+            "name": "Tail_Decals",
+            "alphaMode": "BLEND",
+            "normalTexture": { "index": 11, "scale": 0.5 },
+            "occlusionTexture": { "index": 10 },
+            "pbrMetallicRoughness": {
+                "baseColorTexture": { "index": 85 },
+                "metallicRoughnessTexture": { "index": 10 }
+            },
+            "extensions": {
+                "ASOBO_material_blend_gbuffer": {
+                    "baseColorBlendFactor": 0,
+                    "emissiveBlendFactor": 0,
+                    "metallicBlendFactor": 0,
+                    "occlusionBlendFactor": 0,
+                    "roughnessBlendFactor": 0
+                },
+                "ASOBO_material_draw_order": { "drawOrderOffset": 16 }
+            }        
         }
     ],
     "meshes": [
@@ -72126,6 +72146,13 @@
                     "source": 79
                 }
             }
+        },
+        {
+            "extensions": {
+                "MSFT_texture_dds": {
+                    "source": 80
+                }
+            }
         }
     ],
     "extensionsUsed": [
@@ -72464,6 +72491,10 @@
         },
         {
             "uri": "787_9_M_BELLY_NORM.PNG.DDS",
+            "extras": "ASOBO_image_converted_meta"
+        },
+        {
+            "uri": "787_9_TAIL_DECALS.PNG.DDS",
             "extras": "ASOBO_image_converted_meta"
         }
     ]
