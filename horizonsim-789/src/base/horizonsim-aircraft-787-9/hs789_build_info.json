@@ -1,9 +1,0 @@
-{
-    "built": "2023-09-18T02:13:30+00:00",
-    "ref": "refs/heads/main",
-    "sha": "aa8fd87494643967fbe6f74fc6d782fcd05a8000",
-    "actor": "Kurorin-fs",
-    "event_name": "push",
-    "pretty_release_name": "main:aa8fd874",
-    "version": "v1.0.0-dev.aa8fd87"
-}
