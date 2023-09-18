@@ -84,29 +84,29 @@
         "LocalizationStatus": "TranslationNeeded",
         "Languages": {
           "en-US": {
-            "Text": "787-10 Dreamliner",
+            "Text": "787-9 (RR) Dreamliner",
             "LocalizationStatus": "TranslationNeeded"
           },
           "fr-FR": {
-            "Text": "787-10 Dreamliner"
+            "Text": "787-9 (RR) Dreamliner"
           },
           "es-ES": {
-            "Text": "787-10 Dreamliner"
+            "Text": "787-9 (RR) Dreamliner"
           },
           "de-DE": {
-            "Text": "787-10 Dreamliner"
+            "Text": "787-9 (RR) Dreamliner"
           },
           "it-IT": {
-            "Text": "787-10 Dreamliner"
+            "Text": "787-9 (RR) Dreamliner"
           },
           "pl-PL": {
-            "Text": "787-10 Dreamliner"
+            "Text": "787-9 (RR) Dreamliner"
           },
           "pt-BR": {
-            "Text": "787-10 Dreamliner"
+            "Text": "787-9 (RR) Dreamliner"
           },
           "ru-RU": {
-            "Text": "787-10 Dreamliner"
+            "Text": "787-9 (RR) Dreamliner"
           }
         }
       }

@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <ModelInfo>
 	<LODS>
+<<<<<<<< HEAD:horizonsim-789/src/base/horizonsim-aircraft-787-9/SimObjects/Airplanes/HorizonSim_B787_9_GENX/model/B787.xml
+		<LOD minSize="4" ModelFile="..\..\HorizonSim_B787_9_SHARED\model\B787_lod1.gltf"/>
+		<LOD minSize="1" ModelFile="..\..\HorizonSim_B787_9_SHARED\model\B787_lod1.gltf"/>
+========
 		<LOD minSize="4" ModelFile="B787_lod1.gltf"/>
 		<LOD minSize="1" ModelFile="B787_lod1.gltf"/>
+>>>>>>>> origin/main:horizonsim-789/src/base/horizonsim-aircraft-787-9/SimObjects/Airplanes/HS_B787_9/model.RR/B787.xml
 	</LODS>
 	<!-- Custom animation definition. -->
 	<!-- This can be used when node movement depends on the simvars in a more complex way. -->
