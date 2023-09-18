@@ -181,13 +181,6 @@ We are not affiliated, associated, authorized, ednorsed by, or in any way offici
 
 Content within distribution packages built from the soures in this repository are licensed as follows:
 - Original source code or complicated artifacts from Horizon simulatons: GNU GPLv3.
-- Original assets from Horizon simulations or Qbit simulations: CC BY-NC 4.0.
+- Original assets from Horizon simulations: CC BY-NC 4.0.
 - Assets covered by the "Game Content Usage RUles": Under the license granted by those rules.
 
-## Qbit Simulations
-This project is actively supported by the Qbit Simulations Team who work on the following areas actively:
-- Modeling
-- Texture design
-- Paint Kit development
-- Ecosystem setup
-- Comprehensive building process powered by Igniter, a FlyByWire Simulations product.

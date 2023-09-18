@@ -37,10 +37,9 @@ jobs:
       - name: Install required dependencies
         run: |
             npm i --save-dev
-      - name: Copy Sources & execute build script
+      - name: Copy Sources
         run: |
             npm run prep-hs789:copy-base-package-linux
-            npm run build-hs789:model
             npm run build-hs789:copy-model-linux
       - name: Finalize built package
         run: |

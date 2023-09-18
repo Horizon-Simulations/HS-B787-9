@@ -28,6 +28,10 @@
         "bin": "./add/decals.bin"
       },
       {
+        "gltf": "./add/window-mesh.gltf",
+        "bin": "./add/window-mesh.bin"
+      },
+      {
         "gltf": "./add/aft-hinge.gltf",
         "bin": "./add/aft-hinge.bin"
       }
