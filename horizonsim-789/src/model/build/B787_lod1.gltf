@@ -38776,6 +38776,77 @@
             "count": 24,
             "type": "SCALAR",
             "name": "x0_Body_front_center.011_indices#0"
+        },
+        {
+            "bufferView": 76,
+            "byteOffset": 28,
+            "componentType": 5123,
+            "count": 228,
+            "type": "VEC4",
+            "name": "node339.005_vertices#0_COLOR_0"
+        },
+        {
+            "bufferView": 76,
+            "byteOffset": 16,
+            "componentType": 5120,
+            "count": 228,
+            "type": "VEC4",
+            "name": "node339.005_vertices#0_NORMAL"
+        },
+        {
+            "bufferView": 76,
+            "componentType": 5126,
+            "count": 228,
+            "min": [
+                -2.833381175994873,
+                -0.032592788338661194,
+                -16.1800479888916
+            ],
+            "max": [
+                -2.743051052093506,
+                0.2760574221611023,
+                -13.43792724609375
+            ],
+            "type": "VEC3",
+            "name": "node339.005_vertices#0_POSITION"
+        },
+        {
+            "bufferView": 76,
+            "byteOffset": 12,
+            "componentType": 5120,
+            "count": 228,
+            "type": "VEC4",
+            "name": "node339.005_vertices#0_TANGENT"
+        },
+        {
+            "bufferView": 76,
+            "byteOffset": 20,
+            "componentType": 5122,
+            "count": 228,
+            "type": "VEC2",
+            "name": "node339.005_vertices#0_TEXCOORD_0"
+        },
+        {
+            "bufferView": 76,
+            "byteOffset": 24,
+            "componentType": 5122,
+            "count": 228,
+            "type": "VEC2",
+            "name": "node339.005_vertices#0_TEXCOORD_1"
+        },
+        {
+            "bufferView": 76,
+            "componentType": 5122,
+            "count": 228,
+            "type": "VEC2",
+            "name": "node339.005_vertices#0_TEXCOORD_2"
+        },
+        {
+            "bufferView": 75,
+            "componentType": 5123,
+            "count": 570,
+            "type": "SCALAR",
+            "name": "node339.005_indices#0"
         }
     ],
     "animations": [
@@ -46806,6 +46877,21 @@
             "byteOffset": 60192716,
             "target": 34962,
             "name": "BufferViewVertexND"
+        },
+        {
+            "buffer": 0,
+            "byteLength": 1140,
+            "byteOffset": 60193148,
+            "target": 34963,
+            "name": "BufferViewIndex"
+        },
+        {
+            "buffer": 0,
+            "byteLength": 8208,
+            "byteStride": 36,
+            "byteOffset": 60194288,
+            "target": 34962,
+            "name": "BufferViewVertexND"
         }
     ],
     "extensionsRequired": [
@@ -48069,11 +48155,20 @@
         {
             "name": "Tail_Decals",
             "alphaMode": "BLEND",
-            "normalTexture": { "index": 11, "scale": 0.5 },
-            "occlusionTexture": { "index": 10 },
+            "normalTexture": {
+                "index": 11,
+                "scale": 0.5
+            },
+            "occlusionTexture": {
+                "index": 10
+            },
             "pbrMetallicRoughness": {
-                "baseColorTexture": { "index": 85 },
-                "metallicRoughnessTexture": { "index": 10 }
+                "baseColorTexture": {
+                    "index": 85
+                },
+                "metallicRoughnessTexture": {
+                    "index": 10
+                }
             },
             "extensions": {
                 "ASOBO_material_blend_gbuffer": {
@@ -48083,8 +48178,10 @@
                     "occlusionBlendFactor": 0,
                     "roughnessBlendFactor": 0
                 },
-                "ASOBO_material_draw_order": { "drawOrderOffset": 16 }
-            }        
+                "ASOBO_material_draw_order": {
+                    "drawOrderOffset": 16
+                }
+            }
         },
         {
             "name": "0F1-w2",
@@ -48098,6 +48195,23 @@
                 ],
                 "metallicFactor": 0,
                 "roughnessFactor": 0.5
+            }
+        },
+        {
+            "name": "RIGHT",
+            "normalTexture": {
+                "index": 88
+            },
+            "occlusionTexture": {
+                "index": 87
+            },
+            "pbrMetallicRoughness": {
+                "baseColorTexture": {
+                    "index": 86
+                },
+                "metallicRoughnessTexture": {
+                    "index": 87
+                }
             }
         }
     ],
@@ -58932,6 +59046,32 @@
                 }
             ],
             "name": "x0_Body_front_center.011"
+        },
+        {
+            "primitives": [
+                {
+                    "attributes": {
+                        "COLOR_0": 3962,
+                        "NORMAL": 3963,
+                        "POSITION": 3964,
+                        "TANGENT": 3965,
+                        "TEXCOORD_0": 3966,
+                        "TEXCOORD_1": 3967,
+                        "TEXCOORD_2": 3968
+                    },
+                    "indices": 3969,
+                    "material": 75,
+                    "mode": 4,
+                    "extras": {
+                        "ASOBO_primitive": {
+                            "PrimitiveCount": 190,
+                            "VertexType": "VTX",
+                            "VertexVersion": 2
+                        }
+                    }
+                }
+            ],
+            "name": "node339.005"
         }
     ],
     "nodes": [
@@ -71043,6 +71183,10 @@
         {
             "mesh": 358,
             "name": "Body_front_center.014"
+        },
+        {
+            "mesh": 359,
+            "name": "node339.005"
         }
     ],
     "scene": 0,
@@ -71087,7 +71231,8 @@
                 685,
                 686,
                 687,
-                688
+                688,
+                689
             ]
         }
     ],
@@ -72139,6 +72284,27 @@
                     "source": 80
                 }
             }
+        },
+        {
+            "extensions": {
+                "MSFT_texture_dds": {
+                    "source": 81
+                }
+            }
+        },
+        {
+            "extensions": {
+                "MSFT_texture_dds": {
+                    "source": 82
+                }
+            }
+        },
+        {
+            "extensions": {
+                "MSFT_texture_dds": {
+                    "source": 83
+                }
+            }
         }
     ],
     "extensionsUsed": [
@@ -72154,7 +72320,7 @@
     ],
     "buffers": [
         {
-            "byteLength": 60193148,
+            "byteLength": 60202496,
             "uri": "B787_lod1.bin"
         }
     ],
@@ -72481,6 +72647,18 @@
         },
         {
             "uri": "787_9_TAIL_DECALS.PNG.DDS",
+            "extras": "ASOBO_image_converted_meta"
+        },
+        {
+            "uri": "787_9_RIGHT_ALBD.PNG.DDS",
+            "extras": "ASOBO_image_converted_meta"
+        },
+        {
+            "uri": "787_9_RIGHT_COMP.PNG.DDS",
+            "extras": "ASOBO_image_converted_meta"
+        },
+        {
+            "uri": "787_9_RIGHT_NORM.PNG.DDS",
             "extras": "ASOBO_image_converted_meta"
         }
     ]
