@@ -48145,16 +48145,33 @@
         },
         {
             "name": "Tail_Decals",
-            "doubleSided": true,
+            "alphaMode": "BLEND",
+            "normalTexture": {
+                "index": 11,
+                "scale": 0.5
+            },
+            "occlusionTexture": {
+                "index": 10
+            },
             "pbrMetallicRoughness": {
-                "baseColorFactor": [
-                    0.800000011920929,
-                    0.800000011920929,
-                    0.800000011920929,
-                    1
-                ],
-                "metallicFactor": 0,
-                "roughnessFactor": 0.5
+                "baseColorTexture": {
+                    "index": 90
+                },
+                "metallicRoughnessTexture": {
+                    "index": 10
+                }
+            },
+            "extensions": {
+                "ASOBO_material_blend_gbuffer": {
+                    "baseColorBlendFactor": 0,
+                    "emissiveBlendFactor": 0,
+                    "metallicBlendFactor": 0,
+                    "occlusionBlendFactor": 0,
+                    "roughnessBlendFactor": 0
+                },
+                "ASOBO_material_draw_order": {
+                    "drawOrderOffset": 16
+                }
             }
         },
         {
@@ -72150,6 +72167,13 @@
                     "source": 81
                 }
             }
+        },
+        {
+            "extensions": {
+                "MSFT_texture_dds": {
+                    "source": 83
+                }
+            }
         }
     ],
     "extensionsUsed": [
@@ -72501,6 +72525,10 @@
         {
             "extras": "ASOBO_image_converted_meta",
             "uri": "787_9_RIGHT_ALBD.PNG.DDS"
+        },
+        {
+            "extras": "ASOBO_image_converted_meta",
+            "uri": "787_9_TAIL_DECALS.PNG.DDS"
         }
     ]
 }
