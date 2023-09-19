@@ -48146,31 +48146,21 @@
         {
             "name": "Tail_Decals",
             "alphaMode": "BLEND",
-            "normalTexture": {
-                "index": 11,
-                "scale": 0.5
-            },
-            "occlusionTexture": {
-                "index": 10
-            },
             "pbrMetallicRoughness": {
+                "metallicFactor": 0,
+                "roughnessFactor": 0.05,
                 "baseColorTexture": {
                     "index": 90
-                },
-                "metallicRoughnessTexture": {
-                    "index": 10
                 }
             },
             "extensions": {
                 "ASOBO_material_blend_gbuffer": {
-                    "baseColorBlendFactor": 0,
                     "emissiveBlendFactor": 0,
-                    "metallicBlendFactor": 0,
-                    "occlusionBlendFactor": 0,
-                    "roughnessBlendFactor": 0
+                    "normalBlendFactor": 0,
+                    "occlusionBlendFactor": 0
                 },
                 "ASOBO_material_draw_order": {
-                    "drawOrderOffset": 16
+                    "drawOrderOffset": 1
                 }
             }
         },
