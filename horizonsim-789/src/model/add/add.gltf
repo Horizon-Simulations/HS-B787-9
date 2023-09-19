@@ -1703,7 +1703,7 @@
             }
         },
         {
-            "name": "FUSELAGE1",
+            "name": "0F1",
             "doubleSided": true,
             "pbrMetallicRoughness": {
                 "baseColorFactor": [
@@ -1776,20 +1776,6 @@
                 "metallicRoughnessTexture": {
                     "index": 7
                 }
-            }
-        },
-        {
-            "name": "Tail_Decals.002",
-            "doubleSided": true,
-            "pbrMetallicRoughness": {
-                "baseColorFactor": [
-                    0.800000011920929,
-                    0.800000011920929,
-                    0.800000011920929,
-                    1
-                ],
-                "metallicFactor": 0,
-                "roughnessFactor": 0.5
             }
         }
     ],
@@ -2329,7 +2315,7 @@
                         "TEXCOORD_1": 146
                     },
                     "indices": 147,
-                    "material": 17,
+                    "material": 14,
                     "mode": 4,
                     "extras": {
                         "ASOBO_primitive": {
