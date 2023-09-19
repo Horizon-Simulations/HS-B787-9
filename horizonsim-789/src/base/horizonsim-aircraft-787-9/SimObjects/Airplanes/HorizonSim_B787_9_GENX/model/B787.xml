@@ -227,6 +227,10 @@
 				<ANIM_NAME>rudder_percent_key2</ANIM_NAME>
 				<USE_INTEGRATED_TRIM>True</USE_INTEGRATED_TRIM>
 			</UseTemplate>
+			<UseTemplate Name="ASOBO_HANDLING_Rudder_Template">
+				<ANIM_NAME>Rudder_Decal_2</ANIM_NAME>
+				<USE_INTEGRATED_TRIM>True</USE_INTEGRATED_TRIM>
+			</UseTemplate>
 			<UseTemplate Name="ASOBO_HANDLING_Spoilers_Template">
 				<ANIM_EVENT_EFFECT_NAME>CAM_SPOILERS</ANIM_EVENT_EFFECT_NAME>
 				<NORMALIZED_TIME>0.5</NORMALIZED_TIME>
