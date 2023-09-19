@@ -4,7 +4,7 @@
 <SoundInfo Version="0.1">
 
 	<WwisePackages>
-		<MainPackage Name="..\..\HorizonSim_B787_9_SHARED\sound\Asobo_B787_10.PC.PCK"/>
+		<MainPackage Name="Asobo_B787_10"/>
 	</WwisePackages>
 
   <AcousticParameters>
