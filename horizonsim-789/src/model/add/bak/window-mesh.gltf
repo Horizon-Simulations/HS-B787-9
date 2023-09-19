@@ -1,0 +1,176 @@
+{
+    "accessors": [
+        {
+            "bufferView": 1,
+            "byteOffset": 28,
+            "componentType": 5123,
+            "count": 12,
+            "type": "VEC4",
+            "name": "x0_Body_front_center.011_vertices#0_COLOR_0"
+        },
+        {
+            "bufferView": 1,
+            "byteOffset": 16,
+            "componentType": 5120,
+            "count": 12,
+            "type": "VEC4",
+            "name": "x0_Body_front_center.011_vertices#0_NORMAL"
+        },
+        {
+            "bufferView": 1,
+            "componentType": 5126,
+            "count": 12,
+            "min": [
+                -2.7922799587249756,
+                1.1984500885009766,
+                -21.482160568237305
+            ],
+            "max": [
+                2.7925798892974854,
+                1.865840196609497,
+                20.413963317871094
+            ],
+            "type": "VEC3",
+            "name": "x0_Body_front_center.011_vertices#0_POSITION"
+        },
+        {
+            "bufferView": 1,
+            "byteOffset": 12,
+            "componentType": 5120,
+            "count": 12,
+            "type": "VEC4",
+            "name": "x0_Body_front_center.011_vertices#0_TANGENT"
+        },
+        {
+            "bufferView": 1,
+            "byteOffset": 20,
+            "componentType": 5122,
+            "count": 12,
+            "type": "VEC2",
+            "name": "x0_Body_front_center.011_vertices#0_TEXCOORD_0"
+        },
+        {
+            "bufferView": 1,
+            "byteOffset": 24,
+            "componentType": 5122,
+            "count": 12,
+            "type": "VEC2",
+            "name": "x0_Body_front_center.011_vertices#0_TEXCOORD_1"
+        },
+        {
+            "bufferView": 0,
+            "componentType": 5123,
+            "count": 24,
+            "type": "SCALAR",
+            "name": "x0_Body_front_center.011_indices#0"
+        }
+    ],
+    "asset": {
+        "generator": "Khronos glTF Blender I/O v1.7.5",
+        "version": "2.0",
+        "extensions": {
+            "ASOBO_asset_optimized": {
+                "BoundingBoxMax": [
+                    2.7925798892974854,
+                    1.865840196609497,
+                    20.413963317871094
+                ],
+                "BoundingBoxMin": [
+                    -2.7922799587249756,
+                    0,
+                    -21.482160568237305
+                ],
+                "MajorVersion": 4,
+                "MinorVersion": 2
+            },
+            "ASOBO_normal_map_convention": {
+                "tangent_space_convention": "DirectX"
+            }
+        }
+    },
+    "bufferViews": [
+        {
+            "buffer": 0,
+            "byteLength": 48,
+            "byteOffset": 0,
+            "target": 34963,
+            "name": "BufferViewIndex"
+        },
+        {
+            "buffer": 0,
+            "byteLength": 432,
+            "byteStride": 36,
+            "byteOffset": 48,
+            "target": 34962,
+            "name": "BufferViewVertexND"
+        }
+    ],
+    "extensionsUsed": [
+        "ASOBO_asset_optimized",
+        "ASOBO_normal_map_convention"
+    ],
+    "materials": [
+        {
+            "name": "0F1-w2",
+            "doubleSided": true,
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [
+                    0.800000011920929,
+                    0.800000011920929,
+                    0.800000011920929,
+                    1
+                ],
+                "metallicFactor": 0,
+                "roughnessFactor": 0.5
+            }
+        }
+    ],
+    "meshes": [
+        {
+            "primitives": [
+                {
+                    "attributes": {
+                        "COLOR_0": 0,
+                        "NORMAL": 1,
+                        "POSITION": 2,
+                        "TANGENT": 3,
+                        "TEXCOORD_0": 4,
+                        "TEXCOORD_1": 5
+                    },
+                    "indices": 6,
+                    "material": 0,
+                    "mode": 4,
+                    "extras": {
+                        "ASOBO_primitive": {
+                            "PrimitiveCount": 8,
+                            "VertexType": "VTX",
+                            "VertexVersion": 2
+                        }
+                    }
+                }
+            ],
+            "name": "x0_Body_front_center.011"
+        }
+    ],
+    "nodes": [
+        {
+            "mesh": 0,
+            "name": "Body_front_center.014"
+        }
+    ],
+    "scene": 0,
+    "scenes": [
+        {
+            "name": "Scene",
+            "nodes": [
+                0
+            ]
+        }
+    ],
+    "buffers": [
+        {
+            "byteLength": 480,
+            "uri": "window-mesh.bin"
+        }
+    ]
+}
