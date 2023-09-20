@@ -56100,7 +56100,7 @@
                     }
                 }
             ],
-            "name": "LIGHT_ASOBO_Beacon_Top"
+            "name": "LIGHT_ASOBO_Beacon_Top2"
         },
         {
             "primitives": [
@@ -68994,7 +68994,7 @@
                 7.54979e-8
             ],
             "mesh": 252,
-            "name": "LIGHT_ASOBO_Beacon_Top"
+            "name": "LIGHT_ASOBO_Beacon_Top2"
         },
         {
             "translation": [
@@ -70959,6 +70959,11 @@
             "name": "Glass_center"
         },
         {
+            "translation": [
+                0,
+                0,
+                13.325
+            ],
             "mesh": 342,
             "name": "LIGHT_ASOBO_Beacon_Top"
         },
