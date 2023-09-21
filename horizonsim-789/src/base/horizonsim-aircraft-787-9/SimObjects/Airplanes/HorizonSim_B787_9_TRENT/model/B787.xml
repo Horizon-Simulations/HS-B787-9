@@ -288,8 +288,8 @@
 					<BLURRED_NODE_ID_COUNT>2</BLURRED_NODE_ID_COUNT>
 				</DefaultTemplateParameters>
 				<UseTemplate Name="ASOBO_GT_Anim">
-					<!-- 2726 is the max rated N1 of the GEnx-1B64 -->                 
-					<ANIM_CODE>0.01 3 2726 (A:TURB ENG N1:1, Percent) (A:ANIMATION DELTA TIME, seconds) * * * *</ANIM_CODE>
+					<!-- 2683 is the max rated N1 of the Trent 1000 J3 -->                 
+					<ANIM_CODE>0.01 3 2683 (A:TURB ENG N1:1, Percent) (A:ANIMATION DELTA TIME, seconds) * * * *</ANIM_CODE>
 					<ANIM_LENGTH>360</ANIM_LENGTH>
 					<ANIM_WRAP>1</ANIM_WRAP>
 					<ANIM_DELTA>1</ANIM_DELTA>
