@@ -38469,7 +38469,7 @@ class BoeingPerformancePage extends DisplayComponent {
                     FSComponent.buildComponent("span", null, "CDL")),
                 FSComponent.buildComponent(BoeingEfbProgressBar, { ref: this.progressBarRef, isHidden: this.isProgressBarVisible })),
             FSComponent.buildComponent("div", { class: 'efb-middle' },
-                FSComponent.buildComponent("div", { class: 'efb-middle-top-left-title' }, "TRENT1000-J2"),
+                FSComponent.buildComponent("div", { class: 'efb-middle-top-left-title' }, "TRENT1000-D"),
                 FSComponent.buildComponent("div", { class: 'efb-middle-top-right-box' },
                     FSComponent.buildComponent("div", { class: 'right-side-dropdowns' },
                         FSComponent.buildComponent(BoeingEfbDropdownButton, { dropdownItems: this.rtgList, dropdownItemFormatter: RawFormatter, hasGreenOutline: false, hasArrow: true, dropdownButtonName: 'RTG', isNameOnLeftSide: false, dropDownDefaultName: 'THRUST RTG', onItemSelected: (thrustRTG) => this.pickedRtg.set(thrustRTG) }),
@@ -38522,7 +38522,7 @@ class BoeingPerformancePage extends DisplayComponent {
                                 }
                             }, unitForTextField: this.unitString }))),
                 FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box' },
-                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-8/TRENT1000-J22"),
+                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-9/TRENT1000-D"),
                     FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-setting-buttons hidden', ref: this.textAreaSettingButtonsRefs },
                         FSComponent.buildComponent(BoeingEfbButton, { selected: this.isFullSettingActive, onClick: () => this.onMenuButtonClicked(textAreaSetting.Full) },
                             FSComponent.buildComponent("span", null, "FULL")),
@@ -43380,7 +43380,7 @@ class CockpitVarsPublisher extends SimVarPublisher {
 
 /* eslint-disable max-len */
 /**
- * B787-9 Trent 1000-J Engine Data Utility Class.
+ * B787-9 Trent 1000-D Engine Data Utility Class.
  */
 class B787EngineData {
     /**
@@ -44030,8 +44030,8 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
             inlet_area: 68.4,
             low_idle_n1: 20,
             mach_influence_on_n1: 10,
-            static_thrust: 78129,// Trent 1000-J2
-            ThrustSpecificFuelConsumption: 0.2845,
+            static_thrust: 69533,// Trent 1000-D
+            ThrustSpecificFuelConsumption: 0.273,
             /** Output: Thrust scalar; Term 1: Mach; Term 2: CN1 */
             n1_and_mach_on_thrust_table: new LerpLookupTable([
                 [0, 0, 0], [0, 0.4, 0], [0, 0.8, 0], [0, 0.9, 0],
