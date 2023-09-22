@@ -18,6 +18,10 @@
       {
         "gltf": "./add/add.gltf",
         "bin": "./add/add.bin"
+      },
+      {
+        "gltf": "./add/satcom.gltf",
+        "bin": "./add/satcom.bin"
       }
     ]
   }
