@@ -494,5 +494,10 @@
 		<Component ID="FX">
 			<UseTemplate Name="ASOBO_B787_FX"/>
 		</Component>
+		<Component ID="SatCom" Node="Satcom">
+            	<UseTemplate Name="ASOBO_GT_Visibility_Code">
+                	<VISIBILITY_CODE>(L:B789_SATCOM_ENABLED, bool)</VISIBILITY_CODE>
+     		</UseTemplate>
+   		</Component>
 	</Behaviors>	
 </ModelInfo>
