@@ -42709,7 +42709,7 @@ const boeingMsfsUserSettings = [
     },
     {
         name: 'boeingMsfsSelcal',
-        defaultValue: 'HS-WT',
+        defaultValue: 'HS-KR',
     },
     {
         name: 'boeingMsfsSatCom',
@@ -42717,7 +42717,7 @@ const boeingMsfsUserSettings = [
     },
     {
         name: 'boeingMsfsVBar',
-        defaultValue: '0',
+        defaultValue: BoeingMsfsVBar.XPTR,
     },
     {
         name: 'boeingMsfsAutoFuelManagement',
@@ -71856,7 +71856,7 @@ class WTB78xFsInstrument {
         this.aiPilotPublisher = new AiPilotPublisher(this.bus);
         this.fmsOperatingPhasePublisher = new FmsOperatingPhasePublisher(this.bus);
         this.irsSystemGroupStatusPublisher = new IrsSystemGroupStatusPublisher(this.bus, 2);
-        // TODO check placard speeds are correct for -8 (from flight_model.cfg)
+        // TODO check placard speeds are correct for -9 (from flight_model.cfg)
         // -9 is 260, 240, 230, *220*, *215*, 215, 210, 190, 180
         this.flapConfig = {
             flap_positions: [

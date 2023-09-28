@@ -42717,7 +42717,7 @@ const boeingMsfsUserSettings = [
     },
     {
         name: 'boeingMsfsVBar',
-        defaultValue: '0',
+        defaultValue: BoeingMsfsVBar.XPTR,
     },
     {
         name: 'boeingMsfsAutoFuelManagement',

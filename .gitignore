@@ -6,3 +6,4 @@ horizonsim-789/build
 horizonsim-789/src/base/horizonsim-aircraft-787-9/hs789_build_info.json
 horizonsim-789/src/base/horizonsim-aircraft-787-9/layout.json
 horizonsim-789/src/base/horizonsim-aircraft-787-9/manifest.json
+*.bak

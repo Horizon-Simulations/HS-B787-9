@@ -31161,7 +31161,7 @@ const boeingMsfsUserSettings = [
     },
     {
         name: 'boeingMsfsSelcal',
-        defaultValue: 'HS-WT',
+        defaultValue: 'HS-KR',
     },
     {
         name: 'boeingMsfsAutoFuelManagement',
