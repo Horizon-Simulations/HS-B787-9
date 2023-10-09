@@ -288,8 +288,8 @@
 					<BLURRED_NODE_ID_COUNT>2</BLURRED_NODE_ID_COUNT>
 				</DefaultTemplateParameters>
 				<UseTemplate Name="ASOBO_GT_Anim">
-					<!-- 2560 is the max rated N1 of the GEnx-1B74 -->                 
-					<ANIM_CODE>0.01 3 2560 (A:TURB ENG N1:1, Percent) (A:ANIMATION DELTA TIME, seconds) * * * *</ANIM_CODE>
+					<!-- 2778 is the max rated N1 of the GEnx-1B series. 100% does not equal max rated, max rated should be taken from the certificate as the Max rotational speeds -->                 
+					<ANIM_CODE>0.01 3 2778 (A:TURB ENG N1:1, Percent) (A:ANIMATION DELTA TIME, seconds) * * * *</ANIM_CODE>
 					<ANIM_LENGTH>360</ANIM_LENGTH>
 					<ANIM_WRAP>1</ANIM_WRAP>
 					<ANIM_DELTA>1</ANIM_DELTA>
