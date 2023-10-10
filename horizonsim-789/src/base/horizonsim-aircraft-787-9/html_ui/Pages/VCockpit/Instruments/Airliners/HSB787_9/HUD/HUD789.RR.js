@@ -47572,9 +47572,9 @@ class BoeingPerformanceDataProvider {
      */
     calculateFuelFlowFromThrust(thrust, ramDrag) {
         if (ramDrag !== undefined) {
-            return (thrust + ramDrag) * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.8441;
+            return (thrust + ramDrag) * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.6;
         }
-        return thrust * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.8441;
+        return thrust * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.6;
     }
     /**
      * Calculates corrected gross thrust from corrected N1 and mach.
