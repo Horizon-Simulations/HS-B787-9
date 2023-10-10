@@ -797,3 +797,312 @@ html {
   left: 0px;
   top: 0px;
 }
+/* k-EFB-Doors */
+.door-label {
+  color: var(--boeing-colors-cyan);
+  font-size: 30px;
+}
+
+.door-label.nose {
+  position: absolute;
+  top: 226px;
+  left: 297px;
+}
+
+.door-label.main {
+  position: absolute;
+  top: 353px;
+  left: -75px;
+}
+
+.hottest-brake {
+  background: var(--boeing-colors-white);
+}
+
+.brake-overtemp {
+  background: var(--boeing-colors-amber);
+  border: 3px solid var(--boeing-colors-amber);
+}
+
+.gear-door-transit {
+  background-image: linear-gradient(-45deg, white 10%, black 10%, black 50%, white 50%, white 60%, black 60%, black 100%);
+  background-size: 18px 18px;
+}
+.doors-page-container {
+  position: absolute;
+  left: 0px;
+  top: 0px;
+  transform: scale(0.775);
+  font-size: 30px;
+  margin-top: -150px;
+  margin-left: -90px;
+  color: var(--boeing-colors-cyan);
+}
+
+.doors-page-left-column-grid {
+  position: absolute;
+  top: 250px;
+  left: 50px;
+  display: grid;
+  grid-template-rows: 80px 110px 420px 60px 120px 60px;
+}
+
+.doors-page-lavatory {
+  position: absolute;
+  top: 150px;
+  left: 50px;
+  color: var(--boeing-colors-green);
+}
+
+.doors-page-lavatory.occupied {
+  color: var(--boeing-colors-white);
+}
+
+.doors-page-grid-container {
+  display: flex;
+  width: 340px;
+}
+
+.doors-page-grid-container>div {
+  padding-right: 10px;
+}
+
+.doors-page-pointer {
+  flex-grow: 1;
+  margin-top: 10px;
+  height: 1px;
+  border: 2px solid var(--boeing-colors-cyan);
+  margin-right: 0px;
+}
+
+.doors-page-right-column-grid {
+  position: absolute;
+  top: 160px;
+  right: 50px;
+  display: grid;
+  grid-template-rows: 60px 110px 50px 60px 480px 60px 120px;
+}
+
+.right-aligned>div {
+  text-align: right;
+  padding-left: 10px;
+  margin-right: -0px;
+}
+
+.doors-page-refuel {
+  position: absolute;
+  top: 555px;
+  left: 50px;
+}
+
+.doors-page-refuel-pointer {
+  border-right: 4px solid var(--boeing-colors-cyan);
+  height: 65px;
+  width: 45px;
+}
+
+.doors-page-refuel-panel {
+  position: absolute;
+  top: 662px;
+  left: 70px;
+  width: 60px;
+  height: 25px;
+  transform: rotate(-28deg);
+}
+
+.doors-page-fd-ovhd {
+  position: absolute;
+  top: 214px;
+  left: 503px;
+}
+
+.doors-page-fwd-ee-access {
+  position: absolute;
+  top: 244px;
+  left: 465px;
+}
+
+.doors-page-entry-1L {
+  position: absolute;
+  top: 323px;
+  left: 420px;
+}
+
+.doors-page-entry-1R {
+  position: absolute;
+  top: 323px;
+  left: 510px;
+}
+
+.doors-page-entry-2L {
+  position: absolute;
+  top: 433px;
+  left: 420px;
+}
+
+.doors-page-fwd-cargo {
+  position: absolute;
+  top: 367px;
+  left: 463px;
+  width: 80px;
+  height: 55px;
+}
+
+.doors-page-entry-2R {
+  position: absolute;
+  top: 433px;
+  left: 510px;
+}
+
+.doors-page-aft-ee-access {
+  position: absolute;
+  top: 613px;
+  left: 450px;
+}
+
+.doors-page-entry-3L {
+  position: absolute;
+  top: 913px;
+  left: 420px;
+}
+
+.doors-page-entry-3R {
+  position: absolute;
+  top: 913px;
+  left: 510px;
+}
+
+.doors-page-aft-cargo {
+  position: absolute;
+  top: 964px;
+  left: 463px;
+  width: 80px;
+  height: 55px;
+}
+
+.doors-page-bulk-cargo {
+  position: absolute;
+  top: 1035px;
+  left: 415px;
+  width: 70px;
+  height: 35px;
+}
+
+.doors-page-entry-4L {
+  position: absolute;
+  top: 1093px;
+  left: 420px;
+}
+
+.doors-page-entry-4R {
+  position: absolute;
+  top: 1093px;
+  left: 510px;
+}
+
+.doors-page-entry-1L.entry-door-unlocked,
+.doors-page-entry-2L.entry-door-unlocked,
+.doors-page-entry-3L.entry-door-unlocked {
+  left: 412px;
+}
+
+.doors-page-entry-4L.entry-door-unlocked {
+  left: 415px;
+}
+
+.doors-page-entry-1R.entry-door-unlocked,
+.doors-page-entry-2R.entry-door-unlocked,
+.doors-page-entry-3R.entry-door-unlocked {
+  left: 485px;
+}
+
+
+.doors-page-entry-4R.entry-door-unlocked {
+  left: 482px;
+}
+
+.square-sized-door {
+  width: 28px;
+  height: 34px;
+}
+
+.entry-door-closed {
+  width: 28px;
+  height: 34px;
+  background: black;
+  text-align: center;
+  padding-top: 3px;
+  font-size: 34px;
+}
+
+.entry-door-closed.entry-door-auto {
+  color: var(--boeing-colors-green);
+}
+
+.entry-door-closed.entry-door-manual {
+  color: var(--boeing-colors-white);
+}
+
+.entry-door-unlocked {
+  background-color: var(--boeing-colors-black);
+  border-radius: 17px;
+  border: 3px solid var(--boeing-colors-amber);
+  width: 60px;
+  height: 34px;
+}
+
+.other-door-closed {
+  border: none;
+  background: none;
+}
+
+.door-not-locked {
+  border: 3px solid var(--boeing-colors-amber);
+  background: black;
+}
+
+.door-refuel-unlocked {
+  border: 3px solid var(--boeing-colors-cyan);
+  border-top: none;
+  background: black;
+}
+
+.efb-main-menu-blankL {
+  height: 117px;
+}
+.efb-main-menu-blankR {
+  height: 117px;
+}
+
+.efb-left-side2 {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  top: 80px;
+  padding: 0 10px;
+  justify-content: space-between;
+  width: 138px;
+}
+
+.efb-right-side2 {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  top: 80px;
+  padding: 0 10px;
+  justify-content: space-between;
+  width: 145px;
+  left: 632px;
+  text-align: right;
+  padding-left: 7px;
+}
+.efb-title-page2 {
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 32px;
+  top: 15px;
+  position: absolute;
+  text-align: center;
+}

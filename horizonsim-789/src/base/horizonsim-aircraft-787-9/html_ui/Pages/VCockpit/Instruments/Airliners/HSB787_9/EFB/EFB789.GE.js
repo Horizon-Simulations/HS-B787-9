@@ -1,3 +1,25 @@
+/*Changes by Horizon Simulations: 
+-set Class Boeing Colors to top for easier tweaking
+-Change color codes of class Boeing Colors
+-Change PFD ground colors in line 77450
+-replace all --boeing-color with BoeingColor class
+*/
+/** Keep this in sync with WTB748_Common.css & WTB78x_Common.css */
+class BoeingColors {
+}
+BoeingColors.black = 'black';
+BoeingColors.blackTranslucent = 'rgba(0, 0, 0, 0.2)';
+BoeingColors.white = 'white';
+BoeingColors.gray = '#89869a';
+BoeingColors.darkGray = '#89869a';//darker grey is #646474
+BoeingColors.blue = 'hsl(230, 100%, 51%)';
+BoeingColors.red = 'red';
+BoeingColors.amber = '#ffd600';
+BoeingColors.green = '#00ff00';
+BoeingColors.magenta = '#ff5bff';
+BoeingColors.cyan = '#00ffff';
+
+
 /**
  * Valid type arguments for Set/GetSimVarValue
  */
@@ -35543,9 +35565,9 @@ class BoeingPerformanceDataProvider {
      */
     calculateFuelFlowFromThrust(thrust, ramDrag) {
         if (ramDrag !== undefined) {
-            return (thrust + ramDrag) * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.6;
+            return (thrust + ramDrag) * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.8441;
         }
-        return thrust * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.6;
+        return thrust * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.8441;
     }
     /**
      * Calculates corrected gross thrust from corrected N1 and mach.
@@ -38432,7 +38454,7 @@ class BoeingPerformancePage extends DisplayComponent {
     /** @inheritDoc */
     render() {
         return (FSComponent.buildComponent("div", { ref: this.containerRef },
-            FSComponent.buildComponent("div", { class: 'efb-title-page' }, "PERFORMACE-TAKEOFF"),
+            FSComponent.buildComponent("div", { class: 'efb-title-page' }, "PERFORMANCE-TAKEOFF"),
             FSComponent.buildComponent("div", { class: 'efb-left-side' },
                 FSComponent.buildComponent(BoeingEfbSideButton, { isDisabled: true },
                     FSComponent.buildComponent("span", null, "ARPT"),
@@ -38469,7 +38491,7 @@ class BoeingPerformancePage extends DisplayComponent {
                     FSComponent.buildComponent("span", null, "CDL")),
                 FSComponent.buildComponent(BoeingEfbProgressBar, { ref: this.progressBarRef, isHidden: this.isProgressBarVisible })),
             FSComponent.buildComponent("div", { class: 'efb-middle' },
-                FSComponent.buildComponent("div", { class: 'efb-middle-top-left-title' }, "GENX-1B70"),
+                FSComponent.buildComponent("div", { class: 'efb-middle-top-left-title' }, "GENX-1B74"),
                 FSComponent.buildComponent("div", { class: 'efb-middle-top-right-box' },
                     FSComponent.buildComponent("div", { class: 'right-side-dropdowns' },
                         FSComponent.buildComponent(BoeingEfbDropdownButton, { dropdownItems: this.rtgList, dropdownItemFormatter: RawFormatter, hasGreenOutline: false, hasArrow: true, dropdownButtonName: 'RTG', isNameOnLeftSide: false, dropDownDefaultName: 'THRUST RTG', onItemSelected: (thrustRTG) => this.pickedRtg.set(thrustRTG) }),
@@ -38522,7 +38544,7 @@ class BoeingPerformancePage extends DisplayComponent {
                                 }
                             }, unitForTextField: this.unitString }))),
                 FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box' },
-                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-9/GENX-1B70"),
+                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-9/GENX-1B74"),
                     FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-setting-buttons hidden', ref: this.textAreaSettingButtonsRefs },
                         FSComponent.buildComponent(BoeingEfbButton, { selected: this.isFullSettingActive, onClick: () => this.onMenuButtonClicked(textAreaSetting.Full) },
                             FSComponent.buildComponent("span", null, "FULL")),
@@ -38574,6 +38596,7 @@ var EfbPages;
 (function (EfbPages) {
     EfbPages[EfbPages["MainMenu"] = 0] = "MainMenu";
     EfbPages[EfbPages["Performance"] = 1] = "Performance";
+EfbPages[EfbPages["Doors"] = 2] = "Doors";
 })(EfbPages || (EfbPages = {}));
 /**
  * EFB MAIN MENU page
@@ -38629,7 +38652,8 @@ class EfbMainMenuPage extends DisplayComponent {
                     FSComponent.buildComponent("span", null, "DOCUMENTS")),
                 FSComponent.buildComponent(BoeingEfbSideButton, { width: 300, height: 70, onClick: () => this.props.onPageSelect(EfbPages.Performance) },
                     FSComponent.buildComponent("span", null, "PERFORMANCE")),
-                FSComponent.buildComponent("div", { class: "efb-main-menu-blank" }),
+                FSComponent.buildComponent(BoeingEfbSideButton, { width: 300, height: 70, onClick: () => this.props.onPageSelect(EfbPages.Doors) },
+                    FSComponent.buildComponent("span", null, "DOORS")),
                 FSComponent.buildComponent("div", { class: "efb-main-menu-blank" }),
                 FSComponent.buildComponent(BoeingEfbSideButton, { width: 300, height: 70, isDisabled: true },
                     FSComponent.buildComponent("span", null, "VIDEO")),
@@ -43380,7 +43404,7 @@ class CockpitVarsPublisher extends SimVarPublisher {
 
 /* eslint-disable max-len */
 /**
- * B787-9 GEnx-1B70 Engine Data Utility Class.
+ * B787-9 GEnx-1B74 Engine Data Utility Class.
  */
 class B787EngineData {
     /**
@@ -44027,71 +44051,56 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
                 [0.6801, 0.0788], [0.6952, 0.0830], [0.7173, 0.0898], [0.7109, 0.1041], [0.7284, 0.1280]],
             induced_drag_scalar: 1,
             oswald_efficiency_factor: 0.73,
-            inlet_area: 67.32,
+            inlet_area: 68.4,
             low_idle_n1: 20,
             mach_influence_on_n1: 10,
-            static_thrust: 72299,// GEnx-1B70/75/P2
+            static_thrust: 68589,// GEnx-1B74
             ThrustSpecificFuelConsumption: 0.276,
             /** Output: Thrust scalar; Term 1: Mach; Term 2: CN1 */
             n1_and_mach_on_thrust_table: new LerpLookupTable([
-                [0, 0, 0], [0, 0.021, 0], [0, 0.045, 0], [0, 0.24, 0], [0, 0.37, 0], [0, 0.57, 0], [0, 0.68, 0], [0, 0.765, 0], [0, 0.825, 0], [0, 0.862, 0], 
-                [0.215, 0, 20], [0.189, 0.021, 20], [0.14, 0.045, 20], [0.11, 0.24, 20], [0.12, 0.37, 20], [0.14, 0.57, 20], [0.16, 0.68, 20], [0.16, 0.765, 20], [0.16, 0.825, 20], [0.16, 0.862, 20], 
-                [0.239, 0, 25], [0.228, 0.021, 25], [0.195, 0.045, 25], [0.195, 0.24, 25], [0.19, 0.37, 25], [0.26, 0.57, 25], [0.29, 0.68, 25], [0.3, 0.765, 25], [0.32, 0.825, 25], [0.33, 0.862, 25], 
-                [0.26, 0, 30], [0.26, 0.021, 30], [0.24, 0.045, 30], [0.26, 0.24, 30], [0.27, 0.37, 30], [0.34, 0.57, 30], [0.38, 0.68, 30], [0.39, 0.765, 30], [0.4, 0.825, 30], [0.44, 0.862, 30], 
-                [0.27, 0, 35], [0.28, 0.021, 35], [0.29, 0.045, 35], [0.29, 0.24, 35], [0.31, 0.37, 35], [0.41, 0.57, 35], [0.46, 0.68, 35], [0.5, 0.765, 35], [0.52, 0.825, 35], [0.55, 0.862, 35], 
-                [0.3, 0, 40], [0.32, 0.021, 40], [0.33, 0.045, 40], [0.33, 0.24, 40], [0.36, 0.37, 40], [0.5, 0.57, 40], [0.56, 0.68, 40], [0.59, 0.765, 40], [0.62, 0.825, 40], [0.66, 0.862, 40], 
-                [0.32, 0, 45], [0.35, 0.021, 45], [0.37, 0.045, 45], [0.38, 0.24, 45], [0.4, 0.37, 45], [0.6, 0.57, 45], [0.64, 0.68, 45], [0.68, 0.765, 45], [0.74, 0.825, 45], [0.78, 0.862, 45], 
-                [0.34, 0, 50], [0.37, 0.021, 50], [0.4, 0.045, 50], [0.43, 0.24, 50], [0.45, 0.37, 50], [0.66, 0.57, 50], [0.7, 0.68, 50], [0.76, 0.765, 50], [0.81, 0.825, 50], [0.828, 0.862, 50], 
-                [0.38, 0, 55], [0.43, 0.021, 55], [0.46, 0.045, 55], [0.49, 0.24, 55], [0.5, 0.37, 55], [0.69, 0.57, 55], [0.72, 0.68, 55], [0.77, 0.765, 55], [0.82, 0.825, 55], [0.838, 0.862, 55], 
-                [0.43, 0, 60], [0.47, 0.021, 60], [0.49, 0.045, 60], [0.54, 0.24, 60], [0.56, 0.37, 60], [0.7, 0.57, 60], [0.74, 0.68, 60], [0.79, 0.765, 60], [0.84, 0.825, 60], [0.868, 0.862, 60], 
-                [0.49, 0, 65], [0.51, 0.021, 65], [0.54, 0.045, 65], [0.58, 0.24, 65], [0.62, 0.37, 65], [0.7, 0.57, 65], [0.75, 0.68, 65], [0.8, 0.765, 65], [0.86, 0.825, 65], [0.9, 0.862, 65], 
-                [0.57, 0, 70], [0.59, 0.021, 70], [0.6, 0.045, 70], [0.64, 0.24, 70], [0.67, 0.37, 70], [0.74, 0.57, 70], [0.78, 0.68, 70], [0.83, 0.765, 70], [0.92, 0.825, 70], [0.97, 0.862, 70], 
-                [0.76, 0, 75], [0.76, 0.021, 75], [0.76, 0.045, 75], [0.76, 0.24, 75], [0.76, 0.37, 75], [0.83, 0.57, 75], [0.85, 0.68, 75], [0.9, 0.765, 75], [1.02, 0.825, 75], [1.08, 0.862, 75], 
-                [0.86, 0, 80], [0.86, 0.021, 80], [0.86, 0.045, 80], [0.86, 0.24, 80], [0.82, 0.37, 80], [0.9, 0.57, 80], [0.96, 0.68, 80], [1.02, 0.765, 80], [1.105, 0.825, 80], [1.17, 0.862, 80], 
-                [0.98, 0, 85], [0.98, 0.021, 85], [0.98, 0.045, 85], [0.98, 0.24, 85], [0.88, 0.37, 85], [0.96, 0.57, 85], [1.045, 0.68, 85], [1.12, 0.765, 85], [1.19, 0.825, 85], [1.25, 0.862, 85], 
-                [1.08, 0, 90], [1.08, 0.021, 90], [1.08, 0.045, 90], [1.07, 0.24, 90], [0.93, 0.37, 90], [1.03, 0.57, 90], [1.13, 0.68, 90], [1.22, 0.765, 90], [1.28, 0.825, 90], [1.34, 0.862, 90], 
-                [1.18, 0, 95], [1.18, 0.021, 95], [1.18, 0.045, 95], [1.16, 0.24, 95], [1, 0.37, 95], [1.1, 0.57, 95], [1.22, 0.68, 95], [1.32, 0.765, 95], [1.4, 0.825, 95], [1.45, 0.862, 95], 
-                [1.31, 0, 100], [1.31, 0.021, 100], [1.31, 0.045, 100], [1.31, 0.24, 100], [1.15, 0.37, 100], [1.155, 0.57, 100], [1.28, 0.68, 100], [1.395, 0.765, 100], [1.49, 0.825, 100], [1.54, 0.862, 100], 
-                [1.35, 0, 103], [1.35, 0.021, 103], [1.35, 0.045, 103], [1.35, 0.24, 103], [1.18, 0.37, 103], [1.205, 0.57, 103], [1.34, 0.68, 103], [1.46, 0.765, 103], [1.555, 0.825, 103], [1.61, 0.862, 103], 
-                [1.38, 0, 108], [1.38, 0.021, 108], [1.38, 0.045, 108], [1.38, 0.24, 108], [1.22, 0.37, 108], [1.25, 0.57, 108], [1.39, 0.68, 108], [1.52, 0.765, 108], [1.6, 0.825, 108], [1.66, 0.862, 108],
+                [0, 0, 0], [0, 0.4, 0], [0, 0.8, 0], [0, 0.9, 0],
+                [0.0705, 0, 20], [0, 0.4, 20], [0.0705, 0.8, 20], [0.0705, 0.9, 20],
+                [0.087562, 0, 26], [0, 0.4, 26], [0.221344, 0.8, 26], [0.225566, 0.9, 26],
+                [0.265, 0, 50], [0.29, 0.4, 50], [0.315, 0.8, 50], [0.315, 0.9, 50],
+                [0.43, 0, 65], [0.44, 0.4, 65], [0.45, 0.8, 65], [0.45, 0.9, 65],
+                [0.68, 0, 80], [0.715, 0.4, 80], [0.75, 0.8, 80], [0.76, 0.9, 80],
+                [0.82, 0, 85], [0.86, 0.4, 85], [0.9, 0.8, 85], [0.91, 0.9, 85],
+                [0.98, 0, 90], [1.02, 0.4, 90], [1.06, 0.8, 90], [1.11, 0.9, 90],
+                [1.1, 0, 95], [1.165, 0.4, 95], [1.23, 0.8, 95], [1.24, 0.9, 95],
+                [1.18, 0, 100], [1.25, 0.4, 100], [1.32, 0.8, 100], [1.32, 0.9, 100],
+                [1.25, 0, 105], [1.335, 0.4, 105], [1.42, 0.8, 105], [1.42, 0.9, 105],
+                [1.3, 0, 110], [1.395, 0.4, 110], [1.49, 0.8, 110], [1.49, 0.9, 110]
             ]),
             /** Output: CN1; Term 1: Mach; Term 2: Thrust Scalar */
             thrust_and_mach_on_n1_table: new LerpLookupTable([
-                [0, 0, 0], [0, 0.021, 0], [0, 0.045, 0], [0, 0.24, 0], [0, 0.37, 0], [0, 0.57, 0], [0, 0.68, 0], [0, 0.765, 0], [0, 0.825, 0], [0, 0.862, 0],
-                [20, 0, 0.215], [20, 0.021, 0.189], [20, 0.045, 0.14], [20, 0.24, 0.11], [20, 0.37, 0.12], [20, 0.57, 0.14], [20, 0.68, 0.16], [20, 0.765, 0.16], [20, 0.825, 0.16], [20, 0.862, 0.16],
-                [25, 0, 0.239], [25, 0.021, 0.228], [25, 0.045, 0.195], [25, 0.24, 0.195], [25, 0.37, 0.19], [25, 0.57, 0.26], [25, 0.68, 0.29], [25, 0.765, 0.3], [25, 0.825, 0.32], [25, 0.862, 0.33],
-                [30, 0, 0.26], [30, 0.021, 0.26], [30, 0.045, 0.24], [30, 0.24, 0.26], [30, 0.37, 0.27], [30, 0.57, 0.34], [30, 0.68, 0.38], [30, 0.765, 0.39], [30, 0.825, 0.4], [30, 0.862, 0.44],
-                [35, 0, 0.27], [35, 0.021, 0.28], [35, 0.045, 0.29], [35, 0.24, 0.29], [35, 0.37, 0.31], [35, 0.57, 0.41], [35, 0.68, 0.46], [35, 0.765, 0.5], [35, 0.825, 0.52], [35, 0.862, 0.55],
-                [40, 0, 0.3], [40, 0.021, 0.32], [40, 0.045, 0.33], [40, 0.24, 0.33], [40, 0.37, 0.36], [40, 0.57, 0.5], [40, 0.68, 0.56], [40, 0.765, 0.59], [40, 0.825, 0.62], [40, 0.862, 0.66],
-                [45, 0, 0.32], [45, 0.021, 0.35], [45, 0.045, 0.37], [45, 0.24, 0.38], [45, 0.37, 0.4], [45, 0.57, 0.6], [45, 0.68, 0.64], [45, 0.765, 0.68], [45, 0.825, 0.74], [45, 0.862, 0.78],
-                [50, 0, 0.34], [50, 0.021, 0.37], [50, 0.045, 0.4], [50, 0.24, 0.43], [50, 0.37, 0.45], [50, 0.57, 0.66], [50, 0.68, 0.7], [50, 0.765, 0.76], [50, 0.825, 0.81], [50, 0.862, 0.828],
-                [55, 0, 0.38], [55, 0.021, 0.43], [55, 0.045, 0.46], [55, 0.24, 0.49], [55, 0.37, 0.5], [55, 0.57, 0.69], [55, 0.68, 0.72], [55, 0.765, 0.77], [55, 0.825, 0.82], [55, 0.862, 0.838],
-                [60, 0, 0.43], [60, 0.021, 0.47], [60, 0.045, 0.49], [60, 0.24, 0.54], [60, 0.37, 0.56], [60, 0.57, 0.7], [60, 0.68, 0.74], [60, 0.765, 0.79], [60, 0.825, 0.84], [60, 0.862, 0.868],
-                [65, 0, 0.49], [65, 0.021, 0.51], [65, 0.045, 0.54], [65, 0.24, 0.58], [65, 0.37, 0.62], [65, 0.57, 0.7], [65, 0.68, 0.75], [65, 0.765, 0.8], [65, 0.825, 0.86], [65, 0.862, 0.9],
-                [70, 0, 0.57], [70, 0.021, 0.59], [70, 0.045, 0.6], [70, 0.24, 0.64], [70, 0.37, 0.67], [70, 0.57, 0.74], [70, 0.68, 0.78], [70, 0.765, 0.83], [70, 0.825, 0.92], [70, 0.862, 0.97],
-                [75, 0, 0.76], [75, 0.021, 0.76], [75, 0.045, 0.76], [75, 0.24, 0.76], [75, 0.37, 0.76], [75, 0.57, 0.83], [75, 0.68, 0.85], [75, 0.765, 0.9], [75, 0.825, 1.02], [75, 0.862, 1.08],
-                [80, 0, 0.86], [80, 0.021, 0.86], [80, 0.045, 0.86], [80, 0.24, 0.86], [80, 0.37, 0.82], [80, 0.57, 0.9], [80, 0.68, 0.96], [80, 0.765, 1.02], [80, 0.825, 1.105], [80, 0.862, 1.17],
-                [85, 0, 0.98], [85, 0.021, 0.98], [85, 0.045, 0.98], [85, 0.24, 0.98], [85, 0.37, 0.88], [85, 0.57, 0.96], [85, 0.68, 1.045], [85, 0.765, 1.12], [85, 0.825, 1.19], [85, 0.862, 1.25],
-                [90, 0, 1.08], [90, 0.021, 1.08], [90, 0.045, 1.08], [90, 0.24, 1.07], [90, 0.37, 0.93], [90, 0.57, 1.03], [90, 0.68, 1.13], [90, 0.765, 1.22], [90, 0.825, 1.28], [90, 0.862, 1.34],
-                [95, 0, 1.18], [95, 0.021, 1.18], [95, 0.045, 1.18], [95, 0.24, 1.16], [95, 0.37, 1], [95, 0.57, 1.1], [95, 0.68, 1.22], [95, 0.765, 1.32], [95, 0.825, 1.4], [95, 0.862, 1.45],
-                [100, 0, 1.31], [100, 0.021, 1.31], [100, 0.045, 1.31], [100, 0.24, 1.31], [100, 0.37, 1.15], [100, 0.57, 1.155], [100, 0.68, 1.28], [100, 0.765, 1.395], [100, 0.825, 1.49], [100, 0.862, 1.54],
-                [103, 0, 1.35], [103, 0.021, 1.35], [103, 0.045, 1.35], [103, 0.24, 1.35], [103, 0.37, 1.18], [103, 0.57, 1.205], [103, 0.68, 1.34], [103, 0.765, 1.46], [103, 0.825, 1.555], [103, 0.862, 1.61],
-                [108, 0, 1.38], [108, 0.021, 1.38], [108, 0.045, 1.38], [108, 0.24, 1.38], [108, 0.37, 1.22], [108, 0.57, 1.25], [108, 0.68, 1.39], [108, 0.765, 1.52], [108, 0.825, 1.6], [108, 0.862, 1.66],
+                [0, 0, 0], [0, 0.4, 0], [0, 0.8, 0], [0, 0.9, 0],
+                [20, 0, 0.0705], [20, 0.4, 0], [20, 0.8, 0.0705], [20, 0.9, 0.0705],
+                [26, 0, 0.087562], [26, 0.4, 0], [26, 0.8, 0.221344], [26, 0.9, 0.225566],
+                [50, 0, 0.265], [50, 0.4, 0.29], [50, 0.8, 0.315], [50, 0.9, 0.315],
+                [65, 0, 0.43], [65, 0.4, 0.44], [65, 0.8, 0.45], [65, 0.9, 0.45],
+                [80, 0, 0.68], [80, 0.4, 0.715], [80, 0.8, 0.75], [80, 0.9, 0.76],
+                [85, 0, 0.82], [85, 0.4, 0.86], [85, 0.8, 0.9], [85, 0.9, 0.91],
+                [90, 0, 0.98], [90, 0.4, 1.02], [90, 0.8, 1.06], [90, 0.9, 1.11],
+                [95, 0, 1.1], [95, 0.4, 1.165], [95, 0.8, 1.23], [95, 0.9, 1.24],
+                [100, 0, 1.18], [100, 0.4, 1.25], [100, 0.8, 1.32], [100, 0.9, 1.32],
+                [105, 0, 1.25], [105, 0.4, 1.335], [105, 0.8, 1.42], [105, 0.9, 1.42],
+                [110, 0, 1.3], [110, 0.4, 1.395], [110, 0.8, 1.49], [110, 0.9, 1.49]
             ]),
             corrected_airflow_table: new LerpLookupTable([
                 // updated 2/22/23 CWB
-                [0, 0, 0], [5, 0, 0.28], [10, 0, 0.4], [11, 0, 0.57], [11, 0, 0.65], [11, 0, 0.74], [11, 0, 0.82], [11, 0, 0.865], 
-                [0, 25, 0], [9.5, 25, 0.28], [15, 25, 0.4], [21, 25, 0.57], [21, 25, 0.65], [21, 25, 0.74], [21, 25, 0.82], [21, 25, 0.865],
-                [6, 30, 0], [13, 30, 0.28], [18.6, 30, 0.4], [22, 30, 0.57], [22, 30, 0.65], [22, 30, 0.74], [23, 30, 0.82], [23, 30, 0.865],
-                [11, 38, 0], [20, 38, 0.28], [22.5, 38, 0.4], [23, 38, 0.57], [23, 38, 0.65], [23, 38, 0.74], [25, 38, 0.82], [25, 38, 0.865],
-                [17, 50, 0], [25, 50, 0.28], [29, 50, 0.4], [29, 50, 0.57], [29, 50, 0.65], [29, 50, 0.74], [29, 50, 0.82], [29, 50, 0.865],
-                [23, 65, 0], [26, 65, 0.28], [29, 65, 0.4], [28.5, 65, 0.57], [28, 65, 0.65], [28, 65, 0.74], [29, 65, 0.82], [29, 65, 0.865],
-                [25, 80, 0], [26, 80, 0.28], [29, 80, 0.4], [29, 80, 0.57], [29, 80, 0.65], [29, 80, 0.74], [29, 80, 0.82], [30, 80, 0.865],
-                [25, 90, 0], [26, 90, 0.28], [29, 90, 0.4], [29, 90, 0.57], [29, 90, 0.65], [29, 90, 0.74], [29.5, 90, 0.82], [30, 90, 0.865],
-                [25, 95, 0], [28, 95, 0.28], [29, 95, 0.4], [29, 95, 0.57], [29, 95, 0.65], [29, 95, 0.74], [30, 0, 0.82], [30, 0, 0.865],
-                [25, 100, 0], [28, 100, 0.28], [29, 100, 0.4], [29, 100, 0.57], [29, 100, 0.65], [29, 100, 0.74], [30, 100, 0.82], [30, 100, 0.865],
-                [25, 105, 0], [28, 105, 0.28], [29, 105, 0.4], [29, 105, 0.57], [29, 105, 0.65], [29, 105, 0.74], [30, 105, 0.82], [30, 105, 0.865],
-                [25, 110, 0], [28, 110, 0.28], [29, 110, 0.4], [29, 110, 0.57], [29, 110, 0.65], [29, 110, 0.74], [30, 110, 0.82], [30, 110, 0.865],
+                [0, 0, 0], [0, 0, 0.9],
+                [0.1, 20, 0], [5, 20, 0.9],
+                [1, 40, 0], [7.3, 40, 0.9],
+                [3, 60, 0], [8.75, 60, 0.9],
+                [4, 70, 0], [9.7, 70, 0.9],
+                [5, 75, 0], [10.5, 75, 0.9],
+                [8, 80, 0], [12, 80, 0.9],
+                [11.5, 85, 0], [14.75, 85, 0.9],
+                [15, 90, 0], [18, 90, 0.9],
+                [17, 95, 0], [21, 95, 0.9],
+                [19, 100, 0], [23, 100, 0.9],
+                [21, 105, 0], [24.75, 105, 0.9],
+                [23, 110, 0], [26.25, 110, 0.9]
             ])
         };
     }
@@ -44917,6 +44926,309 @@ class B787PerformancePage extends DisplayComponent {
 }
 
 /**
+ * A component that represents a 787 Systems Page.
+ */
+var B78DoorStatus;
+(function (B78DoorStatus) {
+    B78DoorStatus[B78DoorStatus["BLANK"] = 0] = "BLANK";
+    B78DoorStatus[B78DoorStatus["OPEN"] = 1] = "OPEN";
+    B78DoorStatus[B78DoorStatus["MANUAL"] = 2] = "MANUAL";
+    B78DoorStatus[B78DoorStatus["AUTO"] = 3] = "AUTO";
+})(B78DoorStatus || (B78DoorStatus = {}));
+
+
+/* eslint-disable @typescript-eslint/no-unused-vars */
+/** A DisplayPaneView component */
+class DisplayPaneView extends DisplayComponent {
+    constructor() {
+        super(...arguments);
+        this._title = Subject.create('');
+        /** The title of this display pane view. */
+        this.title = this._title;
+    }
+    /**
+     * Called when this view is made visible.
+     * @param size The size of this view's parent pane.
+     * @param width The width of this view's parent pane, in pixels.
+     * @param height The height of this view's parent pane, in pixels.
+     */
+    onResume(size, width, height) {
+        // noop
+    }
+    /**
+     * Called when this view is hidden.
+     */
+    onPause() {
+        // noop
+    }
+    /**
+     * Called when this view's parent pane is resized while this view is visible.
+     * @param size The size of this view's parent pane.
+     * @param width The width of this view's parent pane, in pixels.
+     * @param height The height of this view's parent pane, in pixels.
+     */
+    onResize(size, width, height) {
+        // noop
+    }
+    /**
+     * Called every update cycle.
+     * @param time The current real (operating system) time, as a UNIX timestamp in milliseconds.
+     */
+    onUpdate(time) {
+        // noop
+    }
+    /**
+     * Called when a display pane view event is received by this view.
+     * @param event The event.
+     */
+    onEvent(event) {
+        // noop
+    }
+}
+
+class B787DoorsPageE extends DisplayPaneView {
+    constructor() {
+        super(...arguments);
+        this.containerRef = FSComponent.createRef();
+        this.doorSub = this.props.bus.getSubscriber();
+        this.engineSub = this.props.bus.getSubscriber();
+        this.engine1N1 = ConsumerValue.create(this.engineSub.on('n1_1').whenChanged().withPrecision(1), 0);
+        this.entry1LStatus = ConsumerSubject.create(this.doorSub.on('entry_1l_status').whenChanged(), this.getInitialDoorValue());
+this.entry1RStatus = ConsumerSubject.create(this.doorSub.on('entry_1r_status').whenChanged(), this.getInitialDoorValue());
+        this.entry2LStatus = ConsumerSubject.create(this.doorSub.on('entry_2l_status').whenChanged(), this.getInitialDoorValue());
+        this.entry2RStatus = ConsumerSubject.create(this.doorSub.on('entry_2r_status').whenChanged(), this.getInitialDoorValue());
+        this.entry3LStatus = ConsumerSubject.create(this.doorSub.on('entry_3l_status').whenChanged(), this.getInitialDoorValue());
+        this.entry3RStatus = ConsumerSubject.create(this.doorSub.on('entry_3r_status').whenChanged(), this.getInitialDoorValue());
+        this.entry4LStatus = ConsumerSubject.create(this.doorSub.on('entry_4l_status').whenChanged(), this.getInitialDoorValue());
+        this.entry4RStatus = ConsumerSubject.create(this.doorSub.on('entry_4r_status').whenChanged(), this.getInitialDoorValue());
+        this.fwdCargoStatus = ConsumerSubject.create(this.doorSub.on('fwd_cargo_status').whenChanged(), B78DoorStatus.BLANK);
+this.aftCargoStatus = ConsumerSubject.create(this.doorSub.on('aft_cargo_status').whenChanged(), B78DoorStatus.BLANK);
+        this.refuelDoorStatus = ConsumerSubject.create(this.doorSub.on('refuel_door_status').whenChanged(), B78DoorStatus.BLANK);
+        this.lavatoryRef = FSComponent.createRef();
+        this.entry1LRef = FSComponent.createRef();
+this.entry1RRef = FSComponent.createRef();
+        this.entry2LRef = FSComponent.createRef();
+        this.entry2RRef = FSComponent.createRef();
+        this.entry3LRef = FSComponent.createRef();
+        this.entry3RRef = FSComponent.createRef();
+        this.entry4LRef = FSComponent.createRef();
+        this.entry4RRef = FSComponent.createRef();
+        this.fwdCargoRef = FSComponent.createRef();
+this.aftCargoRef = FSComponent.createRef();
+        this.refuelDoorRef = FSComponent.createRef();
+        this.subs = [];
+        this.DoorButtonDisabled = Subject.create(false);
+    }
+    /** @inheritDoc */
+    onAfterRender(node) {
+        super.onAfterRender(node);
+        this.props.visible.sub((visible) => {
+            this.containerRef.instance.style.visibility = visible ? 'inherit' : 'hidden';
+        }, true);
+        this.subs.push(this.doorSub.on('lavatory_occupied').whenChanged().handle(this.updateLavatoryOccupancy.bind(this)));
+        this.subs.push(this.entry1LStatus.sub(v => this.updateEntryDoorDisplay(v, this.entry1LRef), true));
+this.subs.push(this.entry1RStatus.sub(v => this.updateEntryDoorDisplay(v, this.entry1RRef), true));
+        this.subs.push(this.entry2LStatus.sub(v => this.updateEntryDoorDisplay(v, this.entry2LRef), true));
+        this.subs.push(this.entry2RStatus.sub(v => this.updateEntryDoorDisplay(v, this.entry2RRef), true));
+        this.subs.push(this.entry3LStatus.sub(v => this.updateEntryDoorDisplay(v, this.entry3LRef), true));
+        this.subs.push(this.entry3RStatus.sub(v => this.updateEntryDoorDisplay(v, this.entry3RRef), true));
+        this.subs.push(this.entry4LStatus.sub(v => this.updateEntryDoorDisplay(v, this.entry4LRef), true));
+        this.subs.push(this.entry4RStatus.sub(v => this.updateEntryDoorDisplay(v, this.entry4RRef), true));
+        this.subs.push(this.fwdCargoStatus.sub(v => this.updateOtherDoorDisplay(v, this.fwdCargoRef), true));
+this.subs.push(this.aftCargoStatus.sub(v => this.updateOtherDoorDisplay(v, this.aftCargoRef), true));
+        this.subs.push(this.refuelDoorStatus.sub(v => this.updateRefuelDoorDisplay(v, this.refuelDoorRef), true));
+        /** const isAircraftOnGround = !!SimVar.GetSimVarValue('SIM ON GROUND', SimVarValueType.Bool);
+        if (isAircraftOnGround) {
+            this.DoorButtonDisabled.set(false);
+        }
+        else {
+            this.DoorButtonDisabled.set(true);
+        }*/
+    }
+    /** @inheritDoc */
+    onSuspend() {
+        super.onSuspend();
+        this.subs.forEach(sub => sub.pause());
+    }
+    /** @inheritDoc */
+    onResume() {
+        super.onResume();
+        this.subs.forEach(sub => sub.resume(true));
+    }
+    /**
+     * Updates lavatory occupancy display
+     * @param isOccupied whether the lavatory is occupied
+     * @private
+     */
+    updateLavatoryOccupancy(isOccupied) {
+        this.lavatoryRef.instance.classList.toggle('occupied', isOccupied);
+        this.lavatoryRef.instance.textContent = isOccupied ? 'LAV OCCUPIED' : 'LAV VACANT';
+    }
+    /**
+     * Returns initial door value for the current engine conditions. Used on page init.
+     * @returns B78DoorStatus
+     */
+    getInitialDoorValue() {
+        return this.engine1N1.get() > 1 ? B78DoorStatus.AUTO : B78DoorStatus.MANUAL;
+    }
+    /**
+     * Updates Entry door status display (with randomized delay on closing doors)
+     * @param doorStatus the new door status
+     * @param door the door div reference to update
+     * @param force whether to force immediate change (skip the random timeout)
+     * @private
+     */
+    updateEntryDoorDisplay(doorStatus, door, force = false) {
+        switch (doorStatus) {
+            case B78DoorStatus.OPEN:
+                door.instance.classList.add('entry-door-unlocked');
+                door.instance.classList.remove('entry-door-closed', 'entry-door-auto', 'entry-door-manual');
+                door.instance.textContent = '';
+                break;
+            case B78DoorStatus.AUTO:
+                setTimeout(() => {
+                    door.instance.classList.remove('entry-door-unlocked', 'entry-door-manual');
+                    door.instance.classList.add('entry-door-closed', 'entry-door-auto');
+                    door.instance.textContent = 'A';
+                }, force ? 0 : Math.random() * 5000);
+                break;
+            case B78DoorStatus.MANUAL:
+                setTimeout(() => {
+                    door.instance.classList.remove('entry-door-unlocked', 'entry-door-auto');
+                    door.instance.classList.add('entry-door-closed', 'entry-door-manual');
+                    door.instance.textContent = 'M';
+                }, force ? 0 : Math.random() * 5000);
+                break;
+        }
+    }
+    /**
+     * Updates other (cargo/e-bay etc.) door status display
+     * @param doorStatus the new door status
+     * @param door the door div reference to update
+     * @private
+     */
+    updateOtherDoorDisplay(doorStatus, door) {
+        switch (doorStatus) {
+            case B78DoorStatus.BLANK:
+                door.instance.classList.add('other-door-closed');
+                door.instance.classList.remove('door-not-locked');
+                break;
+            case B78DoorStatus.OPEN:
+                door.instance.classList.remove('other-door-closed');
+                door.instance.classList.add('door-not-locked');
+                break;
+        }
+    }
+    /**
+     * Updates refueling panel status display
+     * @param doorStatus the new door status
+     * @param door the door div reference to update
+     * @private
+     */
+    updateRefuelDoorDisplay(doorStatus, door) {
+        switch (doorStatus) {
+            case B78DoorStatus.BLANK:
+                door.instance.classList.add('other-door-closed');
+                door.instance.classList.remove('door-refuel-unlocked');
+                break;
+            case B78DoorStatus.OPEN:
+                door.instance.classList.remove('other-door-closed');
+                door.instance.classList.add('door-refuel-unlocked');
+                break;
+        }
+    }
+    async SimVarDoorSet(index) {
+        const isON = SimVar.GetSimVarValue(`A:INTERACTIVE POINT OPEN:${index}`, SimVarValueType.Percent);
+        switch (isON) {
+            case 100:
+                SimVar.SetSimVarValue(`K:TOGGLE_AIRCRAFT_EXIT`, SimVarValueType.Enum, index);
+                break;
+            default:
+                SimVar.SetSimVarValue(`K:TOGGLE_AIRCRAFT_EXIT`, SimVarValueType.Enum, index);
+                break;
+        }
+    }
+    async SimVarDoorCommand(index) {
+        this.SimVarDoorSet(index);
+    }
+    //There are CSS classes at the bottom to toggle for a given door state.
+    //For the entry doors, toggle "entry-door-closed-auto" and "entry-door-unlocked"
+    //For the cargo doors & e-bay access, toggle "door-not-locked" and "other-door-closed"
+    //For the refuel panel, toggle "door-refuel-unlocked" and "other-door-closed"
+    /** @inheritdoc */
+    render() {
+        return (FSComponent.buildComponent("div", { ref: this.containerRef},
+        FSComponent.buildComponent("div", { class: 'efb-title-page2' }, "DOORS"),
+        FSComponent.buildComponent("div", {class: "doors-page-container" },
+            FSComponent.buildComponent("svg", { width: "954", height: "1375" },
+            FSComponent.buildComponent("path", { d: "M 249 585 c 9 -26 14 -56 0 -93 l -70 0 c -16 29 -11 57 -2 93 l 6 0 l 15 27 l 51 -27", fill: BoeingColors.darkGray, stroke: BoeingColors.cyan, "stroke-width": "5px" }),
+            FSComponent.buildComponent("path", { d: "M 249 586 l -66 0", stroke: BoeingColors.cyan, "stroke-width": "3px" }),
+            FSComponent.buildComponent("path", { d: "M 705 585 c -9 -26 -14 -56 0 -93 l 70 0 c 16 29 11 57 2 93 l -6 0 l -17 27 z", fill: BoeingColors.darkGray, stroke: BoeingColors.cyan, "stroke-width": "5px" }),
+            FSComponent.buildComponent("path", { d: "M 771 586 l -66 0", stroke: BoeingColors.cyan, "stroke-width": "3px" }),
+            FSComponent.buildComponent("path", { d: "M 409 478 c -1.256 8.294 -4.184 14.532 -11.611 18.48 l -397.389 217.52 l 0 132 l 266 -33 l 422 0 l 266 33 l 0 -132 l -394.829 -216.859 c -6.897 -4.492 -10.44 -10.856 -11.171 -19.141 z", fill: BoeingColors.darkGray, stroke: BoeingColors.cyan, "stroke-width": "5px" }),
+            FSComponent.buildComponent("path", { d: "M 425 1190 c -4 12 -7 12 -12 16 l -178 114 c -6 4 -9 8 -10 13 l -3 42 l 228.939 -50.035 l 52.22 0.038 l 228.841 50.997 l -4 -44 c -1 -6 -4.981 -9.032 -11 -13 l -175 -112 c -6 -5 -9 -7 -12 -17", fill: BoeingColors.darkGray, stroke: BoeingColors.cyan, "stroke-width": "5px" }),
+            FSComponent.buildComponent("path", { d: "M 409 304 l 0 772 c 2 50 4 64 15 131 c 12 51 29 101 47.66 137.019 l 10.811 -0.019 c 18.529 -35 38.529 -88 49.637 -136.452 c 9.892 -60.548 12.892 -81.548 15.592 -131.548 l 0.3 -772 c -3 -90 -39 -192 -71 -192 c -28 0 -65 102 -68 192", fill: BoeingColors.darkGray, stroke: BoeingColors.cyan, "stroke-width": "5px" }),
+            FSComponent.buildComponent("path", { d: "M 390 340 l -220 -190", stroke: BoeingColors.cyan, "stroke-width": "4px" }),
+            FSComponent.buildComponent("path", { d: "M 390 450 l -220 0", stroke: BoeingColors.cyan, "stroke-width": "4px" }),
+            FSComponent.buildComponent("path", { d: "M 390 930 l -220 0", stroke: BoeingColors.cyan, "stroke-width": "4px" }),
+            FSComponent.buildComponent("path", { d: "M 390 1110 l -220 100", stroke: BoeingColors.cyan, "stroke-width": "4px" }),
+            FSComponent.buildComponent("path", { d: "M 565 340 l 220 -190", stroke: BoeingColors.cyan, "stroke-width": "4px" }),
+            FSComponent.buildComponent("path", { d: "M 565 395 l 220 -90", stroke: BoeingColors.cyan, "stroke-width": "4px" }),
+            FSComponent.buildComponent("path", { d: "M 565 450 l 220 0", stroke: BoeingColors.cyan, "stroke-width": "4px" }),
+            FSComponent.buildComponent("path", { d: "M 565 930 l 220 0", stroke: BoeingColors.cyan, "stroke-width": "4px" }),
+            FSComponent.buildComponent("path", { d: "M 565 1000 l 220 60", stroke: BoeingColors.cyan, "stroke-width": "4px" }),
+            FSComponent.buildComponent("path", { d: "M 565 1110 l 220 100", stroke: BoeingColors.cyan, "stroke-width": "4px" })),
+            FSComponent.buildComponent("div", { class: "doors-page-refuel-panel door-refuel-unlocked" }),
+            FSComponent.buildComponent("div", { class: "doors-page-fd-ovhd square-sized-door other-door-closed" }),
+            FSComponent.buildComponent("div", { class: "doors-page-fwd-ee-access square-sized-door other-door-closed" }),
+            FSComponent.buildComponent("div", { class: "doors-page-entry-1L entry-door-closed entry-door-manual", ref: this.entry1LRef }),
+FSComponent.buildComponent("div", { class: "doors-page-entry-1R entry-door-closed entry-door-manual", ref: this.entry1RRef }),
+            FSComponent.buildComponent("div", { class: "doors-page-entry-2L entry-door-closed entry-door-manual", ref: this.entry2LRef }),
+            FSComponent.buildComponent("div", { class: "doors-page-fwd-cargo other-door-closed", ref: this.fwdCargoRef }),
+FSComponent.buildComponent("div", { class: "doors-page-entry-2R entry-door-closed entry-door-auto", ref: this.entry2RRef }),
+            FSComponent.buildComponent("div", { class: "doors-page-refuel", ref: this.refuelDoorRef }),
+            FSComponent.buildComponent("div", { class: "doors-page-aft-ee-access other-door-closed" }),
+FSComponent.buildComponent("div", { class: "doors-page-entry-3L entry-door-closed entry-door-manual", ref: this.entry3LRef }),
+            FSComponent.buildComponent("div", { class: "doors-page-entry-3R entry-door-closed entry-door-manual", ref: this.entry3RRef }),
+            FSComponent.buildComponent("div", { class: "doors-page-aft-cargo other-door-closed", ref: this.aftCargoRef }),
+            FSComponent.buildComponent("div", { class: "doors-page-bulk-cargo other-door-closed" }),
+FSComponent.buildComponent("div", { class: "doors-page-entry-4L entry-door-closed entry-door-manual", ref: this.entry4LRef }),
+            FSComponent.buildComponent("div", { class: "doors-page-entry-4R entry-door-closed entry-door-manual", ref: this.entry4RRef })),
+        FSComponent.buildComponent("div", { class: 'efb-left-side2' },
+            FSComponent.buildComponent(BoeingEfbSideButton, { onClick: this.SimVarDoorCommand.bind(this, 1), isDisabled: this.DoorButtonDisabled },
+                FSComponent.buildComponent("span", null, "ENTRY 1L")),
+            FSComponent.buildComponent("div", { class: "efb-main-menu-blankL" }),
+FSComponent.buildComponent(BoeingEfbSideButton, { onClick: this.SimVarDoorCommand.bind(this, 3), isDisabled: this.DoorButtonDisabled },
+                FSComponent.buildComponent("span", null, "ENTRY 2L")),
+            FSComponent.buildComponent("div", { class: "efb-main-menu-blankL" }),
+            FSComponent.buildComponent("div", { class: "efb-main-menu-blankL" }),
+            FSComponent.buildComponent(BoeingEfbSideButton, { onClick: this.SimVarDoorCommand.bind(this, 5), isDisabled: this.DoorButtonDisabled },
+                FSComponent.buildComponent("span", null, "ENTRY 3L")),
+            FSComponent.buildComponent("div", { class: "efb-main-menu-blankL" }),
+            FSComponent.buildComponent(BoeingEfbSideButton, { onClick: this.SimVarDoorCommand.bind(this, 7), isDisabled: this.DoorButtonDisabled },
+                FSComponent.buildComponent("span", null, "ENTRY 4L"))),
+        FSComponent.buildComponent("div", { class: 'efb-right-side2' },
+            FSComponent.buildComponent(BoeingEfbSideButton, { onClick: this.SimVarDoorCommand.bind(this, 2), isDisabled: this.DoorButtonDisabled },
+                FSComponent.buildComponent("span", null, "ENTRY 1R")),
+            FSComponent.buildComponent(BoeingEfbSideButton, { onClick: this.SimVarDoorCommand.bind(this, 9), isDisabled: this.DoorButtonDisabled },
+                FSComponent.buildComponent("span", null, "FWD&thinsp;CARGO")),
+FSComponent.buildComponent(BoeingEfbSideButton, { onClick: this.SimVarDoorCommand.bind(this, 4), isDisabled: this.DoorButtonDisabled },
+                FSComponent.buildComponent("span", null, "ENTRY 2R")),
+            FSComponent.buildComponent("div", { class: "efb-main-menu-blankR" }),
+            FSComponent.buildComponent("div", { class: "efb-main-menu-blankR" }),
+            FSComponent.buildComponent(BoeingEfbSideButton, { onClick: this.SimVarDoorCommand.bind(this, 6), isDisabled: this.DoorButtonDisabled },
+                FSComponent.buildComponent("span", null, "ENTRY 3R")),
+            FSComponent.buildComponent(BoeingEfbSideButton, { onClick: this.SimVarDoorCommand.bind(this, 10), isDisabled: this.DoorButtonDisabled },
+                FSComponent.buildComponent("span", null, "AFT&thinsp;CARGO")),
+            FSComponent.buildComponent(BoeingEfbSideButton, { onClick: this.SimVarDoorCommand.bind(this, 8), isDisabled: this.DoorButtonDisabled },
+                FSComponent.buildComponent("span", null, "ENTRY 4R")))));
+    }
+    /** @inheritdoc */
+    destroy() {
+        this.subs.forEach(sub => sub.destroy());
+    }
+}
+/**
  * A Boeing 787-10 EFB instrument.
  */
 class WTB78xEfbInstrument extends WTB78xFsInstrument {
@@ -44976,7 +45288,8 @@ class WTB78xEfbInstrument extends WTB78xFsInstrument {
     renderComponents() {
         return (FSComponent.buildComponent("div", { ref: this.containerRef, style: { 'pointer-events': this.containerPointerEventsStyle, 'visibility': this.containerVisibilityStyle } },
             FSComponent.buildComponent(B787PerformancePage, { bus: this.bus, visible: this.pageVisible(EfbPages.Performance), communicationsManager: this.communicationsManager, store: this.store, activePerformancePlan: this.activeRoutePerformancePlan, engineDataProvider: this.engineDataProvider, speedDataProvider: this.speedData, takeoffCalculator: this.takeoffCalculator }),
-            FSComponent.buildComponent(EfbMainMenuPage, { bus: this.bus, visible: this.pageVisible(EfbPages.MainMenu), store: this.store, communicationsManager: this.communicationsManager, onPageSelect: (page) => this.visiblePage.set(page) })));
+            FSComponent.buildComponent(EfbMainMenuPage, { bus: this.bus, visible: this.pageVisible(EfbPages.MainMenu), store: this.store, communicationsManager: this.communicationsManager, onPageSelect: (page) => this.visiblePage.set(page) }),
+            FSComponent.buildComponent(B787DoorsPageE, { bus: this.bus, visible: this.pageVisible(EfbPages.Doors), communicationsManager: this.communicationsManager, simvarpush: (index) => this.simvarpush.set(index) })));
     }
     /** @inheritdoc */
     onGameStateChanged() {
