@@ -47,10 +47,19 @@ jobs:
             npm run build-hs789:manifest
       - name: Generate HorizonSim-789 ZIP file
         run: |
+          ./scripts/dev-env/run.sh node ./scripts/fragment_hs789.js
+          cp ./horizonsim-789/build/build-modules/modules.json ./horizonsim-789/build/horizonsim-aircraft-787-9/install.json
+          ./scripts/dev-env/run.sh node ./scripts/install-source-hs789.js
           mkdir ./${{ env.BUILD_DIR_NAME }}
           cd ./horizonsim-789/build/
           zip -r ../../${{ env.BUILD_DIR_NAME }}/${{ env.ZIP_NAME }} ./horizonsim-aircraft-787-9/
           cd ../../
+      - name: Upload to Cloudflare CDN
+        env:
+          CLOUDFLARE_BUCKET_PASSWORD: ${{ secrets.CLOUDFLARE_BUCKET_PASSWORD }}
+          CDN_BUCKET_DESTINATION: addons/horizonsim-789/development
+        run: |
+          ./scripts/cdn.sh $CDN_BUCKET_DESTINATION ./horizonsim-789/build/build-modules
       - name: Upload to Google Drive
         uses: adityak74/google-drive-upload-git-action@main
         with:
