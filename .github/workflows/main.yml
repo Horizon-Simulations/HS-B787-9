@@ -51,6 +51,12 @@ jobs:
           cd ./horizonsim-789/build/
           zip -r ../../${{ env.BUILD_DIR_NAME }}/${{ env.ZIP_NAME }} ./horizonsim-aircraft-787-9/
           cd ../../
+      - name: Upload to Cloudflare CDN
+        env:
+          CLOUDFLARE_BUCKET_PASSWORD: ${{ secrets.CLOUDFLARE_BUCKET_PASSWORD }}
+          CDN_BUCKET_DESTINATION: addons/horizonsim-789/development
+        run: |
+          ./scripts/cdn.sh $CDN_BUCKET_DESTINATION ./horizonsim-789/build/build-modules
       - name: Upload to Google Drive
         uses: adityak74/google-drive-upload-git-action@main
         with:
