@@ -56,7 +56,7 @@ jobs:
           cd ../../
       - name: Upload to Cloudflare CDN
         env:
-          CLOUDFLARE_BUCKET_PASSWORD: ${{ secrets.CLOUDFLARE_BUCKET_PASSWORD }}
+          CLOUDFLARE_WORKER_PASSWORD: ${{ secrets.CLOUDFLARE_WORKER_PASSWORD }}
           CDN_BUCKET_DESTINATION: addons/horizonsim-789/development
         run: |
           ./scripts/cdn.sh $CDN_BUCKET_DESTINATION ./horizonsim-789/build/build-modules
