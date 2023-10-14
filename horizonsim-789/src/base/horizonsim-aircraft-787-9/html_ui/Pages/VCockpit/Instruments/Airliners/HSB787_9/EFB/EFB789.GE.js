@@ -35565,9 +35565,9 @@ class BoeingPerformanceDataProvider {
      */
     calculateFuelFlowFromThrust(thrust, ramDrag) {
         if (ramDrag !== undefined) {
-            return (thrust + ramDrag) * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.8441;
+            return (thrust + ramDrag) * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.6; 0.8441
         }
-        return thrust * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.8441;
+        return thrust * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.6; 0.8441
     }
     /**
      * Calculates corrected gross thrust from corrected N1 and mach.
@@ -38491,7 +38491,7 @@ class BoeingPerformancePage extends DisplayComponent {
                     FSComponent.buildComponent("span", null, "CDL")),
                 FSComponent.buildComponent(BoeingEfbProgressBar, { ref: this.progressBarRef, isHidden: this.isProgressBarVisible })),
             FSComponent.buildComponent("div", { class: 'efb-middle' },
-                FSComponent.buildComponent("div", { class: 'efb-middle-top-left-title' }, "GENX-1B74"),
+                FSComponent.buildComponent("div", { class: 'efb-middle-top-left-title' }, "GENX-1B70"),
                 FSComponent.buildComponent("div", { class: 'efb-middle-top-right-box' },
                     FSComponent.buildComponent("div", { class: 'right-side-dropdowns' },
                         FSComponent.buildComponent(BoeingEfbDropdownButton, { dropdownItems: this.rtgList, dropdownItemFormatter: RawFormatter, hasGreenOutline: false, hasArrow: true, dropdownButtonName: 'RTG', isNameOnLeftSide: false, dropDownDefaultName: 'THRUST RTG', onItemSelected: (thrustRTG) => this.pickedRtg.set(thrustRTG) }),
@@ -38544,7 +38544,7 @@ class BoeingPerformancePage extends DisplayComponent {
                                 }
                             }, unitForTextField: this.unitString }))),
                 FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box' },
-                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-9/GENX-1B74"),
+                    FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-9/GENX-1B70"),
                     FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-setting-buttons hidden', ref: this.textAreaSettingButtonsRefs },
                         FSComponent.buildComponent(BoeingEfbButton, { selected: this.isFullSettingActive, onClick: () => this.onMenuButtonClicked(textAreaSetting.Full) },
                             FSComponent.buildComponent("span", null, "FULL")),
@@ -44051,10 +44051,10 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
                 [0.6801, 0.0788], [0.6952, 0.0830], [0.7173, 0.0898], [0.7109, 0.1041], [0.7284, 0.1280]],
             induced_drag_scalar: 1,
             oswald_efficiency_factor: 0.73,
-            inlet_area: 68.4,
+            inlet_area: 67.3,
             low_idle_n1: 20,
             mach_influence_on_n1: 10,
-            static_thrust: 68589,// GEnx-1B74
+            static_thrust: 72299,// GEnx-1B70
             ThrustSpecificFuelConsumption: 0.276,
             /** Output: Thrust scalar; Term 1: Mach; Term 2: CN1 */
             n1_and_mach_on_thrust_table: new LerpLookupTable([
