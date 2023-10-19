@@ -2,8 +2,6 @@
 
 set -ex
 
-df -h
-
 #remove directory if it exist
 rm -rvf ./horizonsim-789/build/
 #rm -rvf ./horizonsim-789/src/model/build/
