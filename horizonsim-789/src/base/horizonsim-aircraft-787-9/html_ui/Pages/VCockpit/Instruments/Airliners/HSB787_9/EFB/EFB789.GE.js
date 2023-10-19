@@ -35565,9 +35565,9 @@ class BoeingPerformanceDataProvider {
      */
     calculateFuelFlowFromThrust(thrust, ramDrag) {
         if (ramDrag !== undefined) {
-            return (thrust + ramDrag) * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.6; 0.8441
+            return (thrust + ramDrag) * this.aircraftFlightModel.ThrustSpecificFuelConsumption; 0.8441
         }
-        return thrust * this.aircraftFlightModel.ThrustSpecificFuelConsumption * 0.6; 0.8441
+        return thrust * this.aircraftFlightModel.ThrustSpecificFuelConsumption; 0.8441
     }
     /**
      * Calculates corrected gross thrust from corrected N1 and mach.
@@ -42868,7 +42868,7 @@ B787TakeoffCalculator.emptyResult = {
 
 /* eslint-disable max-len */
 /**
- * V-Speed data for the B787-10.
+ * V-Speed data for the B787-9.
  */
 class B787VSpeedData {
     /** @inheritDoc */
@@ -44055,7 +44055,7 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
             low_idle_n1: 20,
             mach_influence_on_n1: 10,
             static_thrust: 72299,// GEnx-1B70
-            ThrustSpecificFuelConsumption: 0.276,
+            ThrustSpecificFuelConsumption: 0.260,
             /** Output: Thrust scalar; Term 1: Mach; Term 2: CN1 */
             n1_and_mach_on_thrust_table: new LerpLookupTable([
                 [0, 0, 0], [0, 0.4, 0], [0, 0.8, 0], [0, 0.9, 0],
@@ -44617,7 +44617,7 @@ class B787TCAS extends BoeingTCAS {
 
 /// <reference types="@microsoft/msfs-types/js/avionics" />
 /**
- * A common instrument for the B787-10 displays.
+ * A common instrument for the B787-9 displays.
  */
 class WTB78xFsInstrument {
     /**
