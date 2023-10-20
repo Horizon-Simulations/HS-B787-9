@@ -54674,7 +54674,7 @@ class B787PerformanceMath extends BoeingPerformanceDataProvider {
             low_idle_n1: 20,
             mach_influence_on_n1: 10,
             static_thrust: 74502,// Trent 1000-D3
-            ThrustSpecificFuelConsumption: 0.258,
+            ThrustSpecificFuelConsumption: 0.256,
             /** Output: Thrust scalar; Term 1: Mach; Term 2: CN1 */
             n1_and_mach_on_thrust_table: new LerpLookupTable([
                 [0, 0, 0], [0, 0.4, 0], [0, 0.8, 0], [0, 0.9, 0],
