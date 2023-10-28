@@ -99,7 +99,7 @@
         "@tabler/icons": "^1.41.2",
         "byte-data": "^19.0.1",
         "classnames": "^2.2.6",
-        "esbuild-plugin-inline-image": "^0.0.8",
+        "esbuild-plugin-inline-image": "^0.0.9",
         "esbuild-style-plugin": "^1.6.0",
         "geolib": "^3.3.3",
         "i18next": "^21.6.14",
