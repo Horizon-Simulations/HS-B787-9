@@ -1,3 +1,832 @@
+/**
+ * A {@link Subscription} which executes a handler function every time it receives a notification.
+ */
+class HandlerSubscription {
+    /**
+     * Constructor.
+     * @param handler This subscription's handler. The handler will be called each time this subscription receives a
+     * notification from its source.
+     * @param initialNotifyFunc A function which sends initial notifications to this subscription. If not defined, this
+     * subscription will not support initial notifications.
+     * @param onDestroy A function which is called when this subscription is destroyed.
+     */
+    constructor(handler, initialNotifyFunc, onDestroy) {
+        this.handler = handler;
+        this.initialNotifyFunc = initialNotifyFunc;
+        this.onDestroy = onDestroy;
+        this._isAlive = true;
+        this._isPaused = false;
+        this.canInitialNotify = initialNotifyFunc !== undefined;
+    }
+    /** @inheritdoc */
+    get isAlive() {
+        return this._isAlive;
+    }
+    /** @inheritdoc */
+    get isPaused() {
+        return this._isPaused;
+    }
+    /**
+     * Sends an initial notification to this subscription.
+     * @throws Error if this subscription is not alive.
+     */
+    initialNotify() {
+        if (!this._isAlive) {
+            throw new Error('HandlerSubscription: cannot notify a dead Subscription.');
+        }
+        this.initialNotifyFunc && this.initialNotifyFunc(this);
+    }
+    /** @inheritdoc */
+    pause() {
+        if (!this._isAlive) {
+            throw new Error('Subscription: cannot pause a dead Subscription.');
+        }
+        this._isPaused = true;
+        return this;
+    }
+    /** @inheritdoc */
+    resume(initialNotify = false) {
+        if (!this._isAlive) {
+            throw new Error('Subscription: cannot resume a dead Subscription.');
+        }
+        if (!this._isPaused) {
+            return this;
+        }
+        this._isPaused = false;
+        if (initialNotify) {
+            this.initialNotify();
+        }
+        return this;
+    }
+    /** @inheritdoc */
+    destroy() {
+        if (!this._isAlive) {
+            return;
+        }
+        this._isAlive = false;
+        this.onDestroy && this.onDestroy(this);
+    }
+}
+
+/**
+ * A basic implementation of {@link Consumer}.
+ */
+class BasicConsumer {
+    /**
+     * Creates an instance of a Consumer.
+     * @param subscribe A function which subscribes a handler to the source of this consumer's events.
+     * @param state The state for the consumer to track.
+     * @param currentHandler The current build filter handler stack, if any.
+     */
+    constructor(subscribe, state = {}, currentHandler) {
+        this.subscribe = subscribe;
+        this.state = state;
+        this.currentHandler = currentHandler;
+        /** @inheritdoc */
+        this.isConsumer = true;
+        this.activeSubs = new Map();
+    }
+    /** @inheritdoc */
+    handle(handler, paused = false) {
+        let activeHandler;
+        if (this.currentHandler !== undefined) {
+            /**
+             * The handler reference to store.
+             * @param data The input data to the handler.
+             */
+            activeHandler = (data) => {
+                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                this.currentHandler(data, this.state, handler);
+            };
+        }
+        else {
+            activeHandler = handler;
+        }
+        let activeSubArray = this.activeSubs.get(handler);
+        if (!activeSubArray) {
+            activeSubArray = [];
+            this.activeSubs.set(handler, activeSubArray);
+        }
+        const onDestroyed = (destroyed) => {
+            const activeSubsArray = this.activeSubs.get(handler);
+            if (activeSubsArray) {
+                activeSubsArray.splice(activeSubsArray.indexOf(destroyed), 1);
+                if (activeSubsArray.length === 0) {
+                    this.activeSubs.delete(handler);
+                }
+            }
+        };
+        const sub = new ConsumerSubscription(this.subscribe(activeHandler, paused), onDestroyed);
+        // Need to handle the case where the subscription is destroyed immediately
+        if (sub.isAlive) {
+            activeSubArray.push(sub);
+        }
+        else if (activeSubArray.length === 0) {
+            this.activeSubs.delete(handler);
+        }
+        return sub;
+    }
+    /** @inheritdoc */
+    off(handler) {
+        var _a;
+        const activeSubArray = this.activeSubs.get(handler);
+        if (activeSubArray) {
+            (_a = activeSubArray.shift()) === null || _a === void 0 ? void 0 : _a.destroy();
+            if (activeSubArray.length === 0) {
+                this.activeSubs.delete(handler);
+            }
+        }
+    }
+    /** @inheritdoc */
+    atFrequency(frequency, immediateFirstPublish = true) {
+        const initialState = {
+            previousTime: Date.now(),
+            firstRun: immediateFirstPublish
+        };
+        return new BasicConsumer(this.subscribe, initialState, this.getAtFrequencyHandler(frequency));
+    }
+    /**
+     * Gets a handler function for a 'atFrequency' filter.
+     * @param frequency The frequency, in Hz, to cap to.
+     * @returns A handler function for a 'atFrequency' filter.
+     */
+    getAtFrequencyHandler(frequency) {
+        const deltaTimeTrigger = 1000 / frequency;
+        return (data, state, next) => {
+            const currentTime = Date.now();
+            const deltaTime = currentTime - state.previousTime;
+            if (deltaTimeTrigger <= deltaTime || state.firstRun) {
+                while ((state.previousTime + deltaTimeTrigger) < currentTime) {
+                    state.previousTime += deltaTimeTrigger;
+                }
+                if (state.firstRun) {
+                    state.firstRun = false;
+                }
+                this.with(data, next);
+            }
+        };
+    }
+    /** @inheritdoc */
+    withPrecision(precision) {
+        return new BasicConsumer(this.subscribe, { lastValue: 0, hasLastValue: false }, this.getWithPrecisionHandler(precision));
+    }
+    /**
+     * Gets a handler function for a 'withPrecision' filter.
+     * @param precision The decimal precision to snap to.
+     * @returns A handler function for a 'withPrecision' filter.
+     */
+    getWithPrecisionHandler(precision) {
+        return (data, state, next) => {
+            const dataValue = data;
+            const multiplier = Math.pow(10, precision);
+            const currentValueAtPrecision = Math.round(dataValue * multiplier) / multiplier;
+            if (!state.hasLastValue || currentValueAtPrecision !== state.lastValue) {
+                state.hasLastValue = true;
+                state.lastValue = currentValueAtPrecision;
+                this.with(currentValueAtPrecision, next);
+            }
+        };
+    }
+    /** @inheritdoc */
+    whenChangedBy(amount) {
+        return new BasicConsumer(this.subscribe, { lastValue: 0, hasLastValue: false }, this.getWhenChangedByHandler(amount));
+    }
+    /**
+     * Gets a handler function for a 'whenChangedBy' filter.
+     * @param amount The minimum amount threshold below which the consumer will not consume.
+     * @returns A handler function for a 'whenChangedBy' filter.
+     */
+    getWhenChangedByHandler(amount) {
+        return (data, state, next) => {
+            const dataValue = data;
+            const diff = Math.abs(dataValue - state.lastValue);
+            if (!state.hasLastValue || diff >= amount) {
+                state.hasLastValue = true;
+                state.lastValue = dataValue;
+                this.with(data, next);
+            }
+        };
+    }
+    /** @inheritdoc */
+    whenChanged() {
+        return new BasicConsumer(this.subscribe, { lastValue: '', hasLastValue: false }, this.getWhenChangedHandler());
+    }
+    /**
+     * Gets a handler function for a 'whenChanged' filter.
+     * @returns A handler function for a 'whenChanged' filter.
+     */
+    getWhenChangedHandler() {
+        return (data, state, next) => {
+            if (!state.hasLastValue || state.lastValue !== data) {
+                state.hasLastValue = true;
+                state.lastValue = data;
+                this.with(data, next);
+            }
+        };
+    }
+    /** @inheritdoc */
+    onlyAfter(deltaTime) {
+        return new BasicConsumer(this.subscribe, { previousTime: Date.now() }, this.getOnlyAfterHandler(deltaTime));
+    }
+    /**
+     * Gets a handler function for an 'onlyAfter' filter.
+     * @param deltaTime The minimum delta time between events.
+     * @returns A handler function for an 'onlyAfter' filter.
+     */
+    getOnlyAfterHandler(deltaTime) {
+        return (data, state, next) => {
+            const currentTime = Date.now();
+            const timeDiff = currentTime - state.previousTime;
+            if (timeDiff > deltaTime) {
+                state.previousTime += deltaTime;
+                this.with(data, next);
+            }
+        };
+    }
+    /**
+     * Builds a handler stack from the current handler.
+     * @param data The data to send in to the handler.
+     * @param handler The handler to use for processing.
+     */
+    with(data, handler) {
+        if (this.currentHandler !== undefined) {
+            this.currentHandler(data, this.state, handler);
+        }
+        else {
+            handler(data);
+        }
+    }
+}
+/**
+ * A {@link Subscription} for a {@link BasicConsumer}.
+ */
+class ConsumerSubscription {
+    /**
+     * Constructor.
+     * @param sub The event bus subscription backing this subscription.
+     * @param onDestroy A function which is called when this subscription is destroyed.
+     */
+    constructor(sub, onDestroy) {
+        this.sub = sub;
+        this.onDestroy = onDestroy;
+    }
+    /** @inheritdoc */
+    get isAlive() {
+        return this.sub.isAlive;
+    }
+    /** @inheritdoc */
+    get isPaused() {
+        return this.sub.isPaused;
+    }
+    /** @inheritdoc */
+    get canInitialNotify() {
+        return this.sub.canInitialNotify;
+    }
+    /** @inheritdoc */
+    pause() {
+        this.sub.pause();
+        return this;
+    }
+    /** @inheritdoc */
+    resume(initialNotify = false) {
+        this.sub.resume(initialNotify);
+        return this;
+    }
+    /** @inheritdoc */
+    destroy() {
+        this.sub.destroy();
+        this.onDestroy(this);
+    }
+}
+
+/**
+ * A typed container for subscribers interacting with the Event Bus.
+ */
+class EventSubscriber {
+    /**
+     * Creates an instance of an EventSubscriber.
+     * @param bus The EventBus that is the parent of this instance.
+     */
+    constructor(bus) {
+        this.bus = bus;
+    }
+    /**
+     * Subscribes to a topic on the bus.
+     * @param topic The topic to subscribe to.
+     * @returns A consumer to bind the event handler to.
+     */
+    on(topic) {
+        return new BasicConsumer((handler, paused) => {
+            return this.bus.on(topic, handler, paused);
+        });
+    }
+}
+
+/// <reference types="@microsoft/msfs-types/js/common" />
+/**
+ * An event bus that can be used to publish data from backend
+ * components and devices to consumers.
+ */
+class EventBus {
+    /**
+     * Creates an instance of an EventBus.
+     * @param useAlternativeEventSync Whether or not to use generic listener event sync (default false).
+     * If true, FlowEventSync will only work for gauges.
+     * @param shouldResync Whether the eventbus should ask for a resync of all previously cached events (default true)
+     */
+    constructor(useAlternativeEventSync = false, shouldResync = true) {
+        this._topicSubsMap = new Map();
+        this._wildcardSubs = new Array();
+        this._notifyDepthMap = new Map();
+        this._wildcardNotifyDepth = 0;
+        this._eventCache = new Map();
+        this.onWildcardSubDestroyedFunc = this.onWildcardSubDestroyed.bind(this);
+        this._busId = Math.floor(Math.random() * 2147483647);
+        // fallback to flowevent when genericdatalistener not avail (su9)
+        useAlternativeEventSync = (typeof RegisterGenericDataListener === 'undefined');
+        const syncFunc = useAlternativeEventSync ? EventBusFlowEventSync : EventBusListenerSync;
+        this._busSync = new syncFunc(this.pub.bind(this), this._busId);
+        if (shouldResync === true) {
+            this.syncEvent('event_bus', 'resync_request', false);
+            this.on('event_bus', (data) => {
+                if (data == 'resync_request') {
+                    this.resyncEvents();
+                }
+            });
+        }
+    }
+    /**
+     * Subscribes to a topic on the bus.
+     * @param topic The topic to subscribe to.
+     * @param handler The handler to be called when an event happens.
+     * @param paused Whether the new subscription should be initialized as paused. Defaults to `false`.
+     * @returns The new subscription.
+     */
+    on(topic, handler, paused = false) {
+        let subs = this._topicSubsMap.get(topic);
+        if (subs === undefined) {
+            this._topicSubsMap.set(topic, subs = []);
+            this.pub('event_bus_topic_first_sub', topic, false, false);
+        }
+        const initialNotifyFunc = (sub) => {
+            const lastState = this._eventCache.get(topic);
+            if (lastState !== undefined) {
+                sub.handler(lastState.data);
+            }
+        };
+        const onDestroyFunc = (sub) => {
+            var _a;
+            // If we are not in the middle of a notify operation, remove the subscription.
+            // Otherwise, do nothing and let the post-notify clean-up code handle it.
+            if (((_a = this._notifyDepthMap.get(topic)) !== null && _a !== void 0 ? _a : 0) === 0) {
+                const subsToSplice = this._topicSubsMap.get(topic);
+                if (subsToSplice) {
+                    subsToSplice.splice(subsToSplice.indexOf(sub), 1);
+                }
+            }
+        };
+        const sub = new HandlerSubscription(handler, initialNotifyFunc, onDestroyFunc);
+        subs.push(sub);
+        if (paused) {
+            sub.pause();
+        }
+        else {
+            sub.initialNotify();
+        }
+        return sub;
+    }
+    /**
+     * Unsubscribes a handler from the topic's events.
+     * @param topic The topic to unsubscribe from.
+     * @param handler The handler to unsubscribe from topic.
+     * @deprecated This method has been deprecated in favor of using the {@link Subscription} object returned by `.on()`
+     * to manage subscriptions.
+     */
+    off(topic, handler) {
+        const handlers = this._topicSubsMap.get(topic);
+        const toDestroy = handlers === null || handlers === void 0 ? void 0 : handlers.find(sub => sub.handler === handler);
+        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
+    }
+    /**
+     * Subscribes to all topics.
+     * @param handler The handler to subscribe to all events.
+     * @returns The new subscription.
+     */
+    onAll(handler) {
+        const sub = new HandlerSubscription(handler, undefined, this.onWildcardSubDestroyedFunc);
+        this._wildcardSubs.push(sub);
+        return sub;
+    }
+    /**
+     * Unsubscribe the handler from all topics.
+     * @param handler The handler to unsubscribe from all events.
+     * @deprecated This method has been deprecated in favor of using the {@link Subscription} object returned by
+     * `.onAll()` to manage subscriptions.
+     */
+    offAll(handler) {
+        const toDestroy = this._wildcardSubs.find(sub => sub.handler === handler);
+        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
+    }
+    /**
+     * Publishes an event to the topic on the bus.
+     * @param topic The topic to publish to.
+     * @param data The data portion of the event.
+     * @param sync Whether or not this message needs to be synced on local stoage.
+     * @param isCached Whether or not this message will be resync'd across the bus on load.
+     */
+    pub(topic, data, sync = false, isCached = true) {
+        var _a;
+        if (isCached) {
+            this._eventCache.set(topic, { data: data, synced: sync });
+        }
+        const subs = this._topicSubsMap.get(topic);
+        if (subs !== undefined) {
+            let needCleanUpSubs = false;
+            const notifyDepth = (_a = this._notifyDepthMap.get(topic)) !== null && _a !== void 0 ? _a : 0;
+            this._notifyDepthMap.set(topic, notifyDepth + 1);
+            const len = subs.length;
+            for (let i = 0; i < len; i++) {
+                try {
+                    const sub = subs[i];
+                    if (sub.isAlive && !sub.isPaused) {
+                        sub.handler(data);
+                    }
+                    needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
+                }
+                catch (error) {
+                    console.error(`EventBus: error in handler: ${error}. topic: ${topic}. data: ${data}. sync: ${sync}. isCached: ${isCached}`, { error, topic, data, sync, isCached, subs });
+                    if (error instanceof Error) {
+                        console.error(error.stack);
+                    }
+                }
+            }
+            this._notifyDepthMap.set(topic, notifyDepth);
+            if (needCleanUpSubs && notifyDepth === 0) {
+                const filteredSubs = subs.filter(sub => sub.isAlive);
+                this._topicSubsMap.set(topic, filteredSubs);
+            }
+        }
+        // We don't know if anything is subscribed on busses in other instruments,
+        // so we'll unconditionally sync if sync is true and trust that the
+        // publisher knows what it's doing.
+        if (sync) {
+            this.syncEvent(topic, data, isCached);
+        }
+        // always push to wildcard handlers
+        let needCleanUpSubs = false;
+        this._wildcardNotifyDepth++;
+        const wcLen = this._wildcardSubs.length;
+        for (let i = 0; i < wcLen; i++) {
+            const sub = this._wildcardSubs[i];
+            if (sub.isAlive && !sub.isPaused) {
+                sub.handler(topic, data);
+            }
+            needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
+        }
+        this._wildcardNotifyDepth--;
+        if (needCleanUpSubs && this._wildcardNotifyDepth === 0) {
+            this._wildcardSubs = this._wildcardSubs.filter(sub => sub.isAlive);
+        }
+    }
+    /**
+     * Responds to when a wildcard subscription is destroyed.
+     * @param sub The destroyed subscription.
+     */
+    onWildcardSubDestroyed(sub) {
+        // If we are not in the middle of a notify operation, remove the subscription.
+        // Otherwise, do nothing and let the post-notify clean-up code handle it.
+        if (this._wildcardNotifyDepth === 0) {
+            this._wildcardSubs.splice(this._wildcardSubs.indexOf(sub), 1);
+        }
+    }
+    /**
+     * Re-sync all synced events
+     */
+    resyncEvents() {
+        for (const [topic, event] of this._eventCache) {
+            if (event.synced) {
+                this.syncEvent(topic, event.data, true);
+            }
+        }
+    }
+    /**
+     * Publish an event to the sync bus.
+     * @param topic The topic to publish to.
+     * @param data The data to publish.
+     * @param isCached Whether or not this message will be resync'd across the bus on load.
+     */
+    syncEvent(topic, data, isCached) {
+        this._busSync.sendEvent(topic, data, isCached);
+    }
+    /**
+     * Gets a typed publisher from the event bus..
+     * @returns The typed publisher.
+     */
+    getPublisher() {
+        return this;
+    }
+    /**
+     * Gets a typed subscriber from the event bus.
+     * @returns The typed subscriber.
+     */
+    getSubscriber() {
+        return new EventSubscriber(this);
+    }
+    /**
+     * Get the number of subscribes for a given topic.
+     * @param topic The name of the topic.
+     * @returns The number of subscribers.
+     **/
+    getTopicSubscriberCount(topic) {
+        var _a, _b;
+        return (_b = (_a = this._topicSubsMap.get(topic)) === null || _a === void 0 ? void 0 : _a.length) !== null && _b !== void 0 ? _b : 0;
+    }
+    /**
+     * Executes a function once for each topic with at least one subscriber.
+     * @param fn The function to execute.
+     */
+    forEachSubscribedTopic(fn) {
+        this._topicSubsMap.forEach((subs, topic) => { subs.length > 0 && fn(topic, subs.length); });
+    }
+}
+/**
+ * An abstract class for bus sync implementations.
+ */
+class EventBusSyncBase {
+    /**
+     * Creates an instance of EventBusFlowEventSync.
+     * @param recvEventCb A callback to execute when an event is received on the bus.
+     * @param busId The ID of the bus.
+     */
+    constructor(recvEventCb, busId) {
+        this.isPaused = false;
+        this.lastEventSynced = -1;
+        this.dataPackageQueue = [];
+        this.recvEventCb = recvEventCb;
+        this.busId = busId;
+        this.hookReceiveEvent();
+        /** Sends the queued up data packages */
+        const sendFn = () => {
+            if (!this.isPaused && this.dataPackageQueue.length > 0) {
+                // console.log(`Sending ${this.dataPackageQueue.length} packages`);
+                const syncDataPackage = {
+                    busId: this.busId,
+                    packagedId: Math.floor(Math.random() * 1000000000),
+                    data: this.dataPackageQueue
+                };
+                if (this.executeSync(syncDataPackage)) {
+                    this.dataPackageQueue.length = 0;
+                }
+                else {
+                    console.warn('Failed to send sync data package');
+                }
+            }
+            requestAnimationFrame(sendFn);
+        };
+        requestAnimationFrame(sendFn);
+    }
+    /**
+     * Processes events received and sends them onto the local bus.
+     * @param syncData The data package to process.
+     */
+    processEventsReceived(syncData) {
+        if (this.busId !== syncData.busId) {
+            // HINT: coherent events are still received twice, so check for this
+            if (this.lastEventSynced !== syncData.packagedId) {
+                this.lastEventSynced = syncData.packagedId;
+                syncData.data.forEach((data) => {
+                    try {
+                        this.recvEventCb(data.topic, data.data !== undefined ? data.data : undefined, false, data.isCached);
+                    }
+                    catch (e) {
+                        console.error(e);
+                        if (e instanceof Error) {
+                            console.error(e.stack);
+                        }
+                    }
+                });
+            }
+        }
+    }
+    /**
+     * Sends an event via flow events.
+     * @param topic The topic to send data on.
+     * @param data The data to send.
+     * @param isCached Whether or not this event is cached.
+     */
+    sendEvent(topic, data, isCached) {
+        // stringify data
+        const dataObj = data;
+        // build a data package
+        const dataPackage = {
+            topic: topic,
+            data: dataObj,
+            isCached: isCached
+        };
+        // queue data package
+        this.dataPackageQueue.push(dataPackage);
+    }
+}
+/**
+ * A class that manages event bus synchronization via Flow Event Triggers.
+ * DON'T USE this, it has bad performance implications.
+ * @deprecated
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+class EventBusCoherentSync extends EventBusSyncBase {
+    /** @inheritdoc */
+    executeSync(syncDataPackage) {
+        // HINT: Stringifying the data again to circumvent the bad perf on Coherent interop
+        try {
+            this.listener.triggerToAllSubscribers(EventBusCoherentSync.EB_KEY, JSON.stringify(syncDataPackage));
+            return true;
+        }
+        catch (error) {
+            return false;
+        }
+    }
+    /** @inheritdoc */
+    hookReceiveEvent() {
+        this.listener = RegisterViewListener(EventBusCoherentSync.EB_LISTENER_KEY, undefined, true);
+        this.listener.on(EventBusCoherentSync.EB_KEY, (e) => {
+            try {
+                const evt = JSON.parse(e);
+                this.processEventsReceived(evt);
+            }
+            catch (error) {
+                console.error(error);
+            }
+        });
+    }
+}
+EventBusCoherentSync.EB_KEY = 'eb.evt';
+EventBusCoherentSync.EB_LISTENER_KEY = 'JS_LISTENER_SIMVARS';
+/**
+ * A class that manages event bus synchronization via Flow Event Triggers.
+ */
+class EventBusFlowEventSync extends EventBusSyncBase {
+    /** @inheritdoc */
+    executeSync(syncDataPackage) {
+        // console.log('Sending sync package: ' + syncDataPackage.packagedId);
+        try {
+            LaunchFlowEvent('ON_MOUSERECT_HTMLEVENT', EventBusFlowEventSync.EB_LISTENER_KEY, this.busId.toString(), JSON.stringify(syncDataPackage));
+            return true;
+        }
+        catch (error) {
+            return false;
+        }
+    }
+    /** @inheritdoc */
+    hookReceiveEvent() {
+        Coherent.on('OnInteractionEvent', (target, args) => {
+            // identify if its a busevent
+            if (args.length === 0 || args[0] !== EventBusFlowEventSync.EB_LISTENER_KEY || !args[2]) {
+                return;
+            }
+            this.processEventsReceived(JSON.parse(args[2]));
+        });
+    }
+}
+EventBusFlowEventSync.EB_LISTENER_KEY = 'EB_EVENTS';
+//// END GLOBALS DECLARATION
+/**
+ * A class that manages event bus synchronization via the Generic Data Listener.
+ */
+class EventBusListenerSync extends EventBusSyncBase {
+    /** @inheritdoc */
+    executeSync(syncDataPackage) {
+        try {
+            this.listener.send(EventBusListenerSync.EB_KEY, syncDataPackage);
+            return true;
+        }
+        catch (error) {
+            return false;
+        }
+    }
+    /** @inheritdoc */
+    hookReceiveEvent() {
+        // pause the sync until the listener is ready
+        this.isPaused = true;
+        this.listener = RegisterGenericDataListener(() => {
+            this.listener.onDataReceived(EventBusListenerSync.EB_KEY, (data) => {
+                try {
+                    this.processEventsReceived(data);
+                }
+                catch (error) {
+                    console.error(error);
+                }
+            });
+            this.isPaused = false;
+        });
+    }
+}
+EventBusListenerSync.EB_KEY = 'wt.eb.evt';
+EventBusListenerSync.EB_LISTENER_KEY = 'JS_LISTENER_GENERICDATA';
+
+/**
+ * Captures the state of a value from a consumer.
+ */
+class ConsumerValue {
+    /**
+     * Creates an instance of a ConsumerValue.
+     * @param consumer The consumer to track.
+     * @param initialValue The initial value.
+     */
+    constructor(consumer, initialValue) {
+        /** @inheritdoc */
+        this.canInitialNotify = true;
+        this.consumerHandler = (v) => { this.value = v; };
+        this._isAlive = true;
+        this._isPaused = false;
+        this.value = initialValue;
+        this.sub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler);
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * Whether this object is alive. While alive, this object will update its value from its event consumer unless it
+     * is paused. Once dead, this object will no longer update its value and cannot be resumed again.
+     */
+    get isAlive() {
+        return this._isAlive;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * Whether event consumption is currently paused. While paused, this object's value will not update.
+     */
+    get isPaused() {
+        return this._isPaused;
+    }
+    /**
+     * Gets the current value.
+     * @returns The current value.
+     */
+    get() {
+        return this.value;
+    }
+    /**
+     * Sets the consumer from which this object derives its value. If the consumer is null, this object's value will
+     * not be updated until a non-null consumer is set.
+     * @param consumer An event consumer.
+     * @returns This object, after its consumer has been set.
+     */
+    setConsumer(consumer) {
+        var _a;
+        if (!this._isAlive) {
+            return this;
+        }
+        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.destroy();
+        this.sub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler, this._isPaused);
+        return this;
+    }
+    /**
+     * Pauses consuming events for this object. Once paused, this object's value will not be updated.
+     * @returns This object, after it has been paused.
+     */
+    pause() {
+        var _a;
+        if (this._isPaused) {
+            return this;
+        }
+        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.pause();
+        this._isPaused = true;
+        return this;
+    }
+    /**
+     * Resumes consuming events for this object. Once resumed, this object's value will be updated from consumed
+     * events.
+     *
+     * Any `initialNotify` argument passed to this method is ignored. This object is always immediately notified of its
+     * event consumer's value when resumed.
+     * @returns This object, after it has been resumed.
+     */
+    resume() {
+        var _a;
+        if (!this._isPaused) {
+            return this;
+        }
+        this._isPaused = false;
+        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.resume(true);
+        return this;
+    }
+    /**
+     * Destroys this object. Once destroyed, it will no longer consume events to update its value.
+     */
+    destroy() {
+        var _a;
+        this._isAlive = false;
+        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.destroy();
+    }
+    /**
+     * Creates a new ConsumerValue.
+     * @param consumer The consumer to track.
+     * @param initialValue The initial value.
+     * @returns The created ConsumerValue.
+     */
+    static create(consumer, initialValue) {
+        return new ConsumerValue(consumer, initialValue);
+    }
+}
+
 /*Changes by Horizon Simulations: 
 -set Class Boeing Colors to top for easier tweaking
 -Change color codes of class Boeing Colors
@@ -19,7 +848,6 @@ BoeingColors.green = '#00ff00';
 BoeingColors.magenta = '#ff5bff';
 BoeingColors.cyan = '#00ffff';
 
-
 /**
  * Valid type arguments for Set/GetSimVarValue
  */
@@ -29,6 +857,7 @@ var SimVarValueType;
     SimVarValueType["Bool"] = "bool";
     SimVarValueType["Celsius"] = "celsius";
     SimVarValueType["Degree"] = "degrees";
+    SimVarValueType["DegreesPerSecond"] = "degrees per second";
     SimVarValueType["Enum"] = "enum";
     SimVarValueType["Farenheit"] = "farenheit";
     SimVarValueType["Feet"] = "feet";
@@ -57,12 +886,14 @@ var SimVarValueType;
     SimVarValueType["PPH"] = "Pounds per hour";
     SimVarValueType["PSI"] = "psi";
     SimVarValueType["Radians"] = "radians";
+    SimVarValueType["RadiansPerSecond"] = "radians per second";
     SimVarValueType["Rankine"] = "rankine";
     SimVarValueType["RPM"] = "Rpm";
     SimVarValueType["Seconds"] = "seconds";
     SimVarValueType["SlugsPerCubicFoot"] = "slug per cubic foot";
     SimVarValueType["String"] = "string";
     SimVarValueType["Volts"] = "Volts";
+    SimVarValueType["FtLb"] = "Foot pounds";
 })(SimVarValueType || (SimVarValueType = {}));
 const latlonaltRegEx = new RegExp(/latlonalt/i);
 const latlonaltpbhRegex = new RegExp(/latlonaltpbh/i);
@@ -163,6 +994,1161 @@ SimVar.SetSimVarValue = (name, unit, value, dataSource = defaultSource) => {
     }
     return Promise.resolve();
 };
+
+/**
+ * A basic event-bus publisher.
+ */
+class BasePublisher {
+    /**
+     * Creates an instance of BasePublisher.
+     * @param bus The common event bus.
+     * @param pacer An optional pacer to control the rate of publishing.
+     */
+    constructor(bus, pacer = undefined) {
+        this.bus = bus;
+        this.publisher = this.bus.getPublisher();
+        this.publishActive = false;
+        this.pacer = pacer;
+    }
+    /**
+     * Start publishing.
+     */
+    startPublish() {
+        this.publishActive = true;
+    }
+    /**
+     * Stop publishing.
+     */
+    stopPublish() {
+        this.publishActive = false;
+    }
+    /**
+     * Tells whether or not the publisher is currently active.
+     * @returns True if the publisher is active, false otherwise.
+     */
+    isPublishing() {
+        return this.publishActive;
+    }
+    /**
+     * A callback called when the publisher receives an update cycle.
+     */
+    onUpdate() {
+        return;
+    }
+    /**
+     * Publish a message if publishing is acpive
+     * @param topic The topic key to publish to.
+     * @param data The data type for chosen topic.
+     * @param sync Whether or not the event should be synced to other instruments. Defaults to `false`.
+     * @param isCached Whether or not the event should be cached. Defaults to `true`.
+     */
+    publish(topic, data, sync = false, isCached = true) {
+        if (this.publishActive && (!this.pacer || this.pacer.canPublish(topic, data))) {
+            this.publisher.pub(topic, data, sync, isCached);
+        }
+    }
+}
+/**
+ * A base class for publishers that need to handle simvars with built-in
+ * support for pacing callbacks.
+ */
+class SimVarPublisher extends BasePublisher {
+    /**
+     * Create a SimVarPublisher
+     * @param simVarMap A map of simvar event type keys to a SimVarDefinition.
+     * @param bus The EventBus to use for publishing.
+     * @param pacer An optional pacer to control the rate of publishing.
+     */
+    constructor(simVarMap, bus, pacer) {
+        super(bus, pacer);
+        this.resolvedSimVars = new Map();
+        this.indexedSimVars = new Map();
+        this.subscribed = new Set();
+        for (const [topic, entry] of simVarMap) {
+            if (entry.indexed) {
+                this.indexedSimVars.set(topic, {
+                    name: entry.name,
+                    type: entry.type,
+                    map: entry.map,
+                    indexes: entry.indexed === true ? undefined : new Set(entry.indexed),
+                    defaultIndex: entry.defaultIndex,
+                });
+            }
+            else {
+                this.resolvedSimVars.set(topic, Object.assign({}, entry));
+            }
+        }
+        const handleSubscribedTopic = this.handleSubscribedTopic.bind(this);
+        // Iterate over each subscribed topic on the bus to see if it matches any of our topics. If so, start publishing.
+        this.bus.forEachSubscribedTopic(handleSubscribedTopic);
+        // Listen to first-time topic subscriptions. If any of them match our topics, start publishing.
+        this.bus.getSubscriber().on('event_bus_topic_first_sub').handle(handleSubscribedTopic);
+    }
+    /**
+     * Handles when an event bus topic is subscribed to for the first time.
+     * @param topic The subscribed topic.
+     */
+    handleSubscribedTopic(topic) {
+        if (this.resolvedSimVars.has(topic)) {
+            // If topic matches an already resolved topic -> start publishing.
+            this.onTopicSubscribed(topic);
+        }
+        else {
+            // Check if topic matches indexed topic.
+            this.tryMatchIndexedSubscribedTopic(topic);
+        }
+    }
+    /**
+     * Checks if a subscribed topic matches one of this publisher's indexed topics, and if so resolves and starts
+     * publishing the indexed topic.
+     * @param topic The subscribed topic to check.
+     */
+    tryMatchIndexedSubscribedTopic(topic) {
+        var _a;
+        if (this.indexedSimVars.size === 0) {
+            return;
+        }
+        let entry = this.indexedSimVars.get(topic);
+        if (entry) {
+            // The subscribed topic matches an unsuffixed topic -> check if the unsuffixed topic should be published and if
+            // so, resolve the default index.
+            if (entry.defaultIndex !== null) {
+                const resolved = this.resolveIndexedSimVar(topic, entry, (_a = entry.defaultIndex) !== null && _a !== void 0 ? _a : 1);
+                if (resolved !== undefined) {
+                    this.onTopicSubscribed(resolved);
+                }
+            }
+            return;
+        }
+        if (!SimVarPublisher.INDEXED_REGEX.test(topic)) { // Don't generate an array if we don't have to.
+            return;
+        }
+        const match = topic.match(SimVarPublisher.INDEXED_REGEX);
+        const [, matchedTopic, index] = match;
+        entry = this.indexedSimVars.get(matchedTopic);
+        if (entry) {
+            const resolved = this.resolveIndexedSimVar(matchedTopic, entry, parseInt(index));
+            if (resolved !== undefined) {
+                this.onTopicSubscribed(resolved);
+            }
+        }
+    }
+    /**
+     * Attempts to resolve an indexed topic with an index, generating a version of the topic which is mapped to an
+     * indexed simvar. The resolved indexed topic can then be published.
+     * @param topic The topic to resolve.
+     * @param entry The entry of the topic to resolve.
+     * @param index The index with which to resolve the topic. If not defined, the topic will resolve to itself (without
+     * a suffix) and will be mapped the index-1 version of its simvar.
+     * @returns The resolved indexed topic, or `undefined` if the topic could not be resolved with the specified index.
+     */
+    resolveIndexedSimVar(topic, entry, index) {
+        index !== null && index !== void 0 ? index : (index = 1);
+        const resolvedTopic = `${topic}_${index}`;
+        if (this.resolvedSimVars.has(resolvedTopic)) {
+            return resolvedTopic;
+        }
+        const defaultIndex = entry.defaultIndex === undefined ? 1 : entry.defaultIndex;
+        // Ensure that the index we are trying to resolve is a valid index for the topic.
+        if (entry.indexes !== undefined && !entry.indexes.has(index)) {
+            return undefined;
+        }
+        this.resolvedSimVars.set(resolvedTopic, {
+            name: entry.name.replace('#index#', `${index !== null && index !== void 0 ? index : 1}`),
+            type: entry.type,
+            map: entry.map,
+            unsuffixedTopic: defaultIndex === index ? topic : undefined
+        });
+        return resolvedTopic;
+    }
+    /**
+     * Responds to when one of this publisher's topics is subscribed to for the first time.
+     * @param topic The topic that was subscribed to.
+     */
+    onTopicSubscribed(topic) {
+        if (this.subscribed.has(topic)) {
+            return;
+        }
+        this.subscribed.add(topic);
+        // Immediately publish the current value if publishing is active.
+        if (this.publishActive) {
+            this.publishTopic(topic);
+        }
+    }
+    /**
+     * NOOP - For backwards compatibility.
+     * @deprecated
+     * @param data Key of the event type in the simVarMap
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    subscribe(data) {
+        return;
+    }
+    /**
+     * NOOP - For backwards compatibility.
+     * @deprecated
+     * @param data Key of the event type in the simVarMap
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    unsubscribe(data) {
+        return;
+    }
+    /**
+     * Publish all subscribed data points to the bus.
+     */
+    onUpdate() {
+        for (const topic of this.subscribed.values()) {
+            this.publishTopic(topic);
+        }
+    }
+    /**
+     * Publishes data to the event bus for a topic.
+     * @param topic The topic to publish.
+     */
+    publishTopic(topic) {
+        const entry = this.resolvedSimVars.get(topic);
+        if (entry !== undefined) {
+            const value = this.getValueFromEntry(entry);
+            this.publish(topic, value);
+            // Check if we need to publish the same value to the unsuffixed version of the topic.
+            if (entry.unsuffixedTopic) {
+                this.publish(entry.unsuffixedTopic, value);
+            }
+        }
+    }
+    /**
+     * Gets the current value for a topic.
+     * @param topic A topic.
+     * @returns The current value for the specified topic.
+     */
+    getValue(topic) {
+        const entry = this.resolvedSimVars.get(topic);
+        if (entry === undefined) {
+            return undefined;
+        }
+        return this.getValueFromEntry(entry);
+    }
+    /**
+     * Gets the current value for a resolved topic entry.
+     * @param entry An entry for a resolved topic.
+     * @returns The current value for the specified entry.
+     */
+    getValueFromEntry(entry) {
+        return entry.map === undefined
+            ? this.getSimVarValue(entry)
+            : entry.map(this.getSimVarValue(entry));
+    }
+    /**
+     * Gets the value of the SimVar
+     * @param entry The SimVar definition entry
+     * @returns The value of the SimVar
+     */
+    getSimVarValue(entry) {
+        const svValue = SimVar.GetSimVarValue(entry.name, entry.type);
+        if (entry.type === SimVarValueType.Bool) {
+            return svValue === 1;
+        }
+        return svValue;
+    }
+}
+SimVarPublisher.INDEXED_REGEX = /(.*)_(0|[1-9]\d*)$/;
+/**
+ * A base class for publishers that need to handle simvars with built-in
+ * support for pacing callbacks.
+ */
+class GameVarPublisher extends BasePublisher {
+    /**
+     * Create a SimVarPublisher
+     * @param simVarMap A map of simvar event type keys to a SimVarDefinition.
+     * @param bus The EventBus to use for publishing.
+     * @param pacer An optional pacer to control the rate of publishing.
+     */
+    constructor(simVarMap, bus, pacer) {
+        super(bus, pacer);
+        this.simvars = simVarMap;
+        this.subscribed = new Set();
+        // Start polling all simvars for which there are existing subscriptions.
+        for (const topic of this.simvars.keys()) {
+            if (bus.getTopicSubscriberCount(topic) > 0) {
+                this.onTopicSubscribed(topic);
+            }
+        }
+        bus.getSubscriber().on('event_bus_topic_first_sub').handle((topic) => {
+            if (this.simvars.has(topic)) {
+                this.onTopicSubscribed(topic);
+            }
+        });
+    }
+    /**
+     * Responds to when one of this publisher's topics is subscribed to for the first time.
+     * @param topic The topic that was subscribed to.
+     */
+    onTopicSubscribed(topic) {
+        if (this.subscribed.has(topic)) {
+            return;
+        }
+        this.subscribed.add(topic);
+        // Immediately publish the current value if publishing is active.
+        if (this.publishActive) {
+            this.publishTopic(topic);
+        }
+    }
+    /**
+     * NOOP - For backwards compatibility.
+     * @deprecated
+     * @param data Key of the event type in the simVarMap
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    subscribe(data) {
+        return;
+    }
+    /**
+     * NOOP - For backwards compatibility.
+     * @deprecated
+     * @param data Key of the event type in the simVarMap
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    unsubscribe(data) {
+        return;
+    }
+    /**
+     * Publish all subscribed data points to the bus.
+     */
+    onUpdate() {
+        for (const topic of this.subscribed.values()) {
+            this.publishTopic(topic);
+        }
+    }
+    /**
+     * Publishes data to the event bus for a topic.
+     * @param topic The topic to publish.
+     */
+    publishTopic(topic) {
+        const value = this.getValue(topic);
+        if (value !== undefined) {
+            this.publish(topic, value);
+        }
+    }
+    /**
+     * Gets the current value for a topic.
+     * @param topic A topic.
+     * @returns The current value for the specified topic.
+     */
+    getValue(topic) {
+        const entry = this.simvars.get(topic);
+        if (entry === undefined) {
+            return undefined;
+        }
+        return entry.map === undefined
+            ? this.getGameVarValue(entry)
+            : entry.map(this.getGameVarValue(entry));
+    }
+    /**
+     * Gets the value of the SimVar
+     * @param entry The SimVar definition entry
+     * @returns The value of the SimVar
+     */
+    getGameVarValue(entry) {
+        const svValue = SimVar.GetGameVarValue(entry.name, entry.type);
+        if (entry.type === SimVarValueType.Bool) {
+            return svValue === 1;
+        }
+        return svValue;
+    }
+}
+
+/**
+ * A publisher for publishing H:Events on the bus.
+ */
+class HEventPublisher extends BasePublisher {
+    /**
+     * Dispatches an H:Event to the event bus.
+     * @param hEvent The H:Event to dispatch.
+     * @param sync Whether this event should be synced (optional, default false)
+     */
+    dispatchHEvent(hEvent, sync = false) {
+        // console.log(`dispaching hevent:  ${hEvent}`);
+        this.publish('hEvent', hEvent, sync, false);
+    }
+}
+
+/**
+ * A pipe from an input subscribable to an output mutable subscribable. Each notification received by the pipe is used
+ * to change the state of the output subscribable.
+ */
+class SubscribablePipe extends HandlerSubscription {
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    constructor(from, to, arg3, arg4) {
+        let handler;
+        let onDestroy;
+        if (typeof arg4 === 'function') {
+            handler = (fromVal) => {
+                to.set(arg3(fromVal, to.get()));
+            };
+            onDestroy = arg4;
+        }
+        else {
+            handler = (fromVal) => {
+                to.set(fromVal);
+            };
+            onDestroy = arg3;
+        }
+        super(handler, (sub) => { sub.handler(from.get()); }, onDestroy);
+    }
+}
+
+/**
+ * An abstract implementation of a subscribable which allows adding, removing, and notifying subscribers.
+ */
+class AbstractSubscribable {
+    constructor() {
+        this.isSubscribable = true;
+        this.notifyDepth = 0;
+        /** A function which sends initial notifications to subscriptions. */
+        this.initialNotifyFunc = this.notifySubscription.bind(this);
+        /** A function which responds to when a subscription to this subscribable is destroyed. */
+        this.onSubDestroyedFunc = this.onSubDestroyed.bind(this);
+    }
+    /**
+     * Adds a subscription to this subscribable.
+     * @param sub The subscription to add.
+     */
+    addSubscription(sub) {
+        if (this.subs) {
+            this.subs.push(sub);
+        }
+        else if (this.singletonSub) {
+            this.subs = [this.singletonSub, sub];
+            delete this.singletonSub;
+        }
+        else {
+            this.singletonSub = sub;
+        }
+    }
+    /** @inheritdoc */
+    sub(handler, initialNotify = false, paused = false) {
+        const sub = new HandlerSubscription(handler, this.initialNotifyFunc, this.onSubDestroyedFunc);
+        this.addSubscription(sub);
+        if (paused) {
+            sub.pause();
+        }
+        else if (initialNotify) {
+            sub.initialNotify();
+        }
+        return sub;
+    }
+    /** @inheritdoc */
+    unsub(handler) {
+        let toDestroy = undefined;
+        if (this.singletonSub && this.singletonSub.handler === handler) {
+            toDestroy = this.singletonSub;
+        }
+        else if (this.subs) {
+            toDestroy = this.subs.find(sub => sub.handler === handler);
+        }
+        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
+    }
+    /**
+     * Notifies subscriptions that this subscribable's value has changed.
+     */
+    notify() {
+        const canCleanUpSubs = this.notifyDepth === 0;
+        let needCleanUpSubs = false;
+        this.notifyDepth++;
+        if (this.singletonSub) {
+            try {
+                if (this.singletonSub.isAlive && !this.singletonSub.isPaused) {
+                    this.notifySubscription(this.singletonSub);
+                }
+            }
+            catch (error) {
+                console.error(`AbstractSubscribable: error in handler: ${error}`);
+                if (error instanceof Error) {
+                    console.error(error.stack);
+                }
+            }
+            if (canCleanUpSubs) {
+                // If subscriptions were added during the notification, then singletonSub would be deleted and replaced with
+                // the subs array.
+                if (this.singletonSub) {
+                    needCleanUpSubs = !this.singletonSub.isAlive;
+                }
+                else if (this.subs) {
+                    for (let i = 0; i < this.subs.length; i++) {
+                        if (!this.subs[i].isAlive) {
+                            needCleanUpSubs = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        else if (this.subs) {
+            const subLen = this.subs.length;
+            for (let i = 0; i < subLen; i++) {
+                try {
+                    const sub = this.subs[i];
+                    if (sub.isAlive && !sub.isPaused) {
+                        this.notifySubscription(sub);
+                    }
+                    needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
+                }
+                catch (error) {
+                    console.error(`AbstractSubscribable: error in handler: ${error}`);
+                    if (error instanceof Error) {
+                        console.error(error.stack);
+                    }
+                }
+            }
+            // If subscriptions were added during the notification and a cleanup operation is not already pending, then we
+            // need to check if any of the new subscriptions are already dead and if so, pend a cleanup operation.
+            if (canCleanUpSubs && !needCleanUpSubs) {
+                for (let i = subLen; i < this.subs.length; i++) {
+                    if (!this.subs[i].isAlive) {
+                        needCleanUpSubs = true;
+                        break;
+                    }
+                }
+            }
+        }
+        this.notifyDepth--;
+        if (needCleanUpSubs) {
+            if (this.singletonSub) {
+                delete this.singletonSub;
+            }
+            else if (this.subs) {
+                this.subs = this.subs.filter(sub => sub.isAlive);
+            }
+        }
+    }
+    /**
+     * Notifies a subscription of this subscribable's current state.
+     * @param sub The subscription to notify.
+     */
+    notifySubscription(sub) {
+        sub.handler(this.get());
+    }
+    /**
+     * Responds to when a subscription to this subscribable is destroyed.
+     * @param sub The destroyed subscription.
+     */
+    onSubDestroyed(sub) {
+        // If we are not in the middle of a notify operation, remove the subscription.
+        // Otherwise, do nothing and let the post-notify clean-up code handle it.
+        if (this.notifyDepth === 0) {
+            if (this.singletonSub === sub) {
+                delete this.singletonSub;
+            }
+            else if (this.subs) {
+                const index = this.subs.indexOf(sub);
+                if (index >= 0) {
+                    this.subs.splice(index, 1);
+                }
+            }
+        }
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    map(fn, equalityFunc, mutateFunc, initialVal) {
+        return new MappedSubscribableClass(this, fn, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : AbstractSubscribable.DEFAULT_EQUALITY_FUNC, mutateFunc, initialVal);
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    pipe(to, arg2, arg3) {
+        let sub;
+        let paused;
+        if (typeof arg2 === 'function') {
+            sub = new SubscribablePipe(this, to, arg2, this.onSubDestroyedFunc);
+            paused = arg3 !== null && arg3 !== void 0 ? arg3 : false;
+        }
+        else {
+            sub = new SubscribablePipe(this, to, this.onSubDestroyedFunc);
+            paused = arg2 !== null && arg2 !== void 0 ? arg2 : false;
+        }
+        this.addSubscription(sub);
+        if (paused) {
+            sub.pause();
+        }
+        else {
+            sub.initialNotify();
+        }
+        return sub;
+    }
+}
+/**
+ * Checks if two values are equal using the strict equality operator.
+ * @param a The first value.
+ * @param b The second value.
+ * @returns whether a and b are equal.
+ */
+AbstractSubscribable.DEFAULT_EQUALITY_FUNC = (a, b) => a === b;
+/**
+ * An implementation of {@link MappedSubscribable}.
+ */
+class MappedSubscribableClass extends AbstractSubscribable {
+    /**
+     * Constructor.
+     * @param input This subscribable's input.
+     * @param mapFunc The function which maps this subject's inputs to a value.
+     * @param equalityFunc The function which this subject uses to check for equality between values.
+     * @param mutateFunc The function which this subject uses to change its value.
+     * @param initialVal The initial value of this subject.
+     */
+    constructor(input, mapFunc, equalityFunc, mutateFunc, initialVal) {
+        super();
+        this.input = input;
+        this.mapFunc = mapFunc;
+        this.equalityFunc = equalityFunc;
+        this.canInitialNotify = true;
+        this._isAlive = true;
+        this._isPaused = false;
+        if (initialVal && mutateFunc) {
+            this.value = initialVal;
+            mutateFunc(this.value, this.mapFunc(this.input.get()));
+            this.mutateFunc = (newVal) => { mutateFunc(this.value, newVal); };
+        }
+        else {
+            this.value = this.mapFunc(this.input.get());
+            this.mutateFunc = (newVal) => { this.value = newVal; };
+        }
+        this.inputSub = this.input.sub(inputValue => {
+            this.updateValue(inputValue);
+        }, true);
+    }
+    /** @inheritdoc */
+    get isAlive() {
+        return this._isAlive;
+    }
+    /** @inheritdoc */
+    get isPaused() {
+        return this._isPaused;
+    }
+    /**
+     * Re-maps this subject's value from its input, and notifies subscribers if this results in a change to the mapped
+     * value according to this subject's equality function.
+     * @param inputValue The input value.
+     */
+    updateValue(inputValue) {
+        const value = this.mapFunc(inputValue, this.value);
+        if (!this.equalityFunc(this.value, value)) {
+            this.mutateFunc(value);
+            this.notify();
+        }
+    }
+    /** @inheritdoc */
+    get() {
+        return this.value;
+    }
+    /** @inheritdoc */
+    pause() {
+        if (!this._isAlive) {
+            throw new Error('MappedSubscribable: cannot pause a dead subscribable');
+        }
+        if (this._isPaused) {
+            return this;
+        }
+        this.inputSub.pause();
+        this._isPaused = true;
+        return this;
+    }
+    /** @inheritdoc */
+    resume() {
+        if (!this._isAlive) {
+            throw new Error('MappedSubscribable: cannot resume a dead subscribable');
+        }
+        if (!this._isPaused) {
+            return this;
+        }
+        this._isPaused = false;
+        this.inputSub.resume(true);
+        return this;
+    }
+    /** @inheritdoc */
+    destroy() {
+        this._isAlive = false;
+        this.inputSub.destroy();
+    }
+}
+
+/**
+ * A subscribable subject which derives its value from an event consumer.
+ */
+class ConsumerSubject extends AbstractSubscribable {
+    /**
+     * Constructor.
+     * @param consumer The event consumer from which this subject obtains its value. If null, this subject's value will
+     * not be updated until its consumer is set to a non-null value.
+     * @param initialVal This subject's initial value.
+     * @param equalityFunc The function this subject uses check for equality between values.
+     * @param mutateFunc The function this subject uses to change its value. If not defined, variable assignment is used
+     * instead.
+     */
+    constructor(consumer, initialVal, equalityFunc, mutateFunc) {
+        super();
+        this.equalityFunc = equalityFunc;
+        this.mutateFunc = mutateFunc;
+        /** @inheritdoc */
+        this.canInitialNotify = true;
+        this.consumerHandler = this.onEventConsumed.bind(this);
+        this._isAlive = true;
+        this._isPaused = false;
+        this.value = initialVal;
+        this.consumerSub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler);
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * Whether this subject is alive. While alive, this subject will update its value from its event consumer unless it
+     * is paused. Once dead, this subject will no longer update its value and cannot be resumed again.
+     */
+    get isAlive() {
+        return this._isAlive;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * Whether event consumption is currently paused for this subject. While paused, this subject's value will not
+     * update.
+     */
+    get isPaused() {
+        return this._isPaused;
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    static create(consumer, initialVal, equalityFunc, mutateFunc) {
+        return new ConsumerSubject(consumer, initialVal, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : AbstractSubscribable.DEFAULT_EQUALITY_FUNC, mutateFunc);
+    }
+    /**
+     * Consumes an event.
+     * @param value The value of the event.
+     */
+    onEventConsumed(value) {
+        if (!this.equalityFunc(this.value, value)) {
+            if (this.mutateFunc) {
+                this.mutateFunc(this.value, value);
+            }
+            else {
+                this.value = value;
+            }
+            this.notify();
+        }
+    }
+    /**
+     * Sets the consumer from which this subject derives its value. If the consumer is null, this subject's value will
+     * not be updated until a non-null consumer is set.
+     * @param consumer An event consumer.
+     * @returns This subject, after its consumer has been set.
+     */
+    setConsumer(consumer) {
+        var _a;
+        if (!this._isAlive) {
+            return this;
+        }
+        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.destroy();
+        this.consumerSub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler, this._isPaused);
+        return this;
+    }
+    /**
+     * Pauses consuming events for this subject. Once paused, this subject's value will not be updated.
+     * @returns This subject, after it has been paused.
+     */
+    pause() {
+        var _a;
+        if (this._isPaused) {
+            return this;
+        }
+        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.pause();
+        this._isPaused = true;
+        return this;
+    }
+    /**
+     * Resumes consuming events for this subject. Once resumed, this subject's value will be updated from consumed
+     * events. When this subject is resumed, it immediately updates its value from its event consumer, if one exists.
+     *
+     * Any `initialNotify` argument passed to this method is ignored. This subject is always immediately notified of its
+     * event consumer's value when resumed.
+     * @returns This subject, after it has been resumed.
+     */
+    resume() {
+        var _a;
+        if (!this._isPaused) {
+            return this;
+        }
+        this._isPaused = false;
+        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.resume(true);
+        return this;
+    }
+    /** @inheritdoc */
+    get() {
+        return this.value;
+    }
+    /**
+     * Destroys this subject. Once destroyed, it will no longer consume events to update its value.
+     */
+    destroy() {
+        var _a;
+        this._isAlive = false;
+        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.destroy();
+    }
+}
+
+/// <reference types="@microsoft/msfs-types/pages/vcockpit/instruments/shared/utils/xmllogic" />
+/** The kind of data to return. */
+var CompositeLogicXMLValueType;
+(function (CompositeLogicXMLValueType) {
+    CompositeLogicXMLValueType[CompositeLogicXMLValueType["Any"] = 0] = "Any";
+    CompositeLogicXMLValueType[CompositeLogicXMLValueType["Number"] = 1] = "Number";
+    CompositeLogicXMLValueType[CompositeLogicXMLValueType["String"] = 2] = "String";
+})(CompositeLogicXMLValueType || (CompositeLogicXMLValueType = {}));
+/**
+ *
+ */
+class CompositeLogicXMLHost {
+    /**
+     * Ctor
+     * @param startPaused True to start paused.
+     */
+    constructor(startPaused = false) {
+        this.anyHandlers = new Array();
+        this.stringHandlers = new Array();
+        this.numberHandlers = new Array();
+        this.anyResultCache = new Array();
+        this.stringResultCache = new Array();
+        this.numberResultCache = new Array();
+        this.context = new LogicXMLContext();
+        this.isPaused = false;
+        this.isPaused = startPaused;
+    }
+    /**
+     * Set to pause the logic update loop.
+     * @param isPaused True to pause, false to resume.
+     */
+    setIsPaused(isPaused) {
+        this.isPaused = isPaused;
+    }
+    /**
+     * Add a new logic element to calcluate a number or a string.
+     * @param logic A CompositeLogicXMLElement.
+     * @param handler A callback hander to take new values of either type.
+     * @returns The current value of the logic.
+     */
+    addLogic(logic, handler) {
+        this.anyHandlers.push({ logic: logic, handler: handler });
+        return logic.getValue(this.context);
+    }
+    /**
+     * Add a new logic element to calcluate a number.
+     * @param logic A CompositeLogicXMLElement.
+     * @param handler A callback hander to take new values as numbers.
+     * @param precision An optional precision to require for updates to be sent.
+     * @param smoothFactor An optional linear smoothing factor to apply to the value when updating.
+     * @returns The current value of the logic.
+     */
+    addLogicAsNumber(logic, handler, precision, smoothFactor) {
+        this.numberHandlers.push({ logic: logic, handler: handler, precision: precision, smoothFactor: smoothFactor });
+        return logic.getValueAsNumber(this.context);
+    }
+    /**
+     * Add a new logic element to calcluate a string.
+     * @param logic A CompositeLogicXMLElement.
+     * @param handler A callback hander to take new values as strings.
+     * @returns The current value of the logic.
+     */
+    addLogicAsString(logic, handler) {
+        this.stringHandlers.push({ logic: logic, handler: handler });
+        return logic.getValueAsString(this.context);
+    }
+    /**
+     * Add a function to the logic context.
+     * @param funcSpec The XMLFunction configuration.
+     * @returns The function's current value.
+     */
+    addFunction(funcSpec) {
+        const func = new LogicXMLFunction();
+        func.name = funcSpec.name;
+        func.callback = funcSpec.logic;
+        this.context.addFunction(func);
+        return funcSpec.logic.getValue(this.context);
+    }
+    /**
+     * Update every logic element and publish updates.
+     * @param deltaTime The time since the last update, in ms.
+     */
+    update(deltaTime) {
+        if (!this.isPaused) {
+            for (let i = 0; i < this.anyHandlers.length; i++) {
+                const newVal = this.anyHandlers[i].logic.getValue(this.context);
+                if (newVal !== this.anyResultCache[i]) {
+                    this.anyResultCache[i] = newVal;
+                    this.anyHandlers[i].handler(newVal);
+                }
+            }
+            for (let i = 0; i < this.stringHandlers.length; i++) {
+                const newVal = this.stringHandlers[i].logic.getValueAsString(this.context);
+                if (newVal !== this.stringResultCache[i]) {
+                    this.stringResultCache[i] = newVal;
+                    this.stringHandlers[i].handler(newVal);
+                }
+            }
+            for (let i = 0; i < this.numberHandlers.length; i++) {
+                let newVal = this.numberHandlers[i].logic.getValueAsNumber(this.context);
+                let precision = this.numberHandlers[i].precision;
+                if (precision !== undefined) {
+                    precision = Math.pow(10, precision);
+                    newVal = Math.round(newVal * precision) / precision;
+                }
+                if (this.numberHandlers[i].smoothFactor !== undefined && this.numberHandlers[i].smoothFactor !== 0) {
+                    // A smoothFactor of 0 means no smoothing.  We don't trigger this update if the factor is
+                    // undefined or 0, but typescript still thinks is could be undefined due to the array indexing.
+                    // The 'or-0' here is just to get around that without having to do a temporary assignment.
+                    newVal = Utils.SmoothLinear(this.numberResultCache[i], newVal, this.numberHandlers[i].smoothFactor || 0, deltaTime);
+                }
+                if (newVal !== this.numberResultCache[i]) {
+                    this.numberResultCache[i] = newVal;
+                    this.numberHandlers[i].handler(newVal);
+                }
+            }
+            this.context.update();
+        }
+    }
+}
+
+/**
+ * A subscribable subject whose value can be freely manipulated.
+ */
+class Subject extends AbstractSubscribable {
+    /**
+     * Constructs an observable Subject.
+     * @param value The initial value.
+     * @param equalityFunc The function to use to check for equality.
+     * @param mutateFunc The function to use to mutate the subject's value.
+     */
+    constructor(value, equalityFunc, mutateFunc) {
+        super();
+        this.value = value;
+        this.equalityFunc = equalityFunc;
+        this.mutateFunc = mutateFunc;
+        this.isMutableSubscribable = true;
+    }
+    /**
+     * Creates and returns a new Subject.
+     * @param v The initial value of the subject.
+     * @param equalityFunc The function to use to check for equality between subject values. Defaults to the strict
+     * equality comparison (`===`).
+     * @param mutateFunc The function to use to change the subject's value. If not defined, new values will replace
+     * old values by variable assignment.
+     * @returns A Subject instance.
+     */
+    static create(v, equalityFunc, mutateFunc) {
+        return new Subject(v, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : Subject.DEFAULT_EQUALITY_FUNC, mutateFunc);
+    }
+    /** @inheritdoc */
+    notifySub(sub) {
+        sub(this.value);
+    }
+    /**
+     * Sets the value of this subject and notifies subscribers if the value changed.
+     * @param value The new value.
+     */
+    set(value) {
+        if (!this.equalityFunc(value, this.value)) {
+            if (this.mutateFunc) {
+                this.mutateFunc(this.value, value);
+            }
+            else {
+                this.value = value;
+            }
+            this.notify();
+        }
+    }
+    /**
+     * Applies a partial set of properties to this subject's value and notifies subscribers if the value changed as a
+     * result.
+     * @param value The properties to apply.
+     */
+    apply(value) {
+        if (typeof this.value !== 'object' || this.value === null) {
+            return;
+        }
+        let changed = false;
+        for (const prop in value) {
+            changed = value[prop] !== this.value[prop];
+            if (changed) {
+                break;
+            }
+        }
+        Object.assign(this.value, value);
+        changed && this.notify();
+    }
+    /** @inheritdoc */
+    notify() {
+        super.notify();
+    }
+    /**
+     * Gets the value of this subject.
+     * @returns The value of this subject.
+     */
+    get() {
+        return this.value;
+    }
+}
+
+/**
+ * A utility class which provides the current game state.
+ */
+class GameStateProvider {
+    /**
+     * Constructor.
+     */
+    constructor() {
+        this.gameState = Subject.create(undefined);
+        window.document.addEventListener('OnVCockpitPanelAttributesChanged', this.onAttributesChanged.bind(this));
+        this.onAttributesChanged();
+    }
+    /**
+     * Responds to changes in document attributes.
+     */
+    onAttributesChanged() {
+        var _a;
+        if ((_a = window.parent) === null || _a === void 0 ? void 0 : _a.document.body.hasAttribute('gamestate')) {
+            const attribute = window.parent.document.body.getAttribute('gamestate');
+            if (attribute !== null) {
+                const state = GameState[attribute];
+                // The game state is set briefly to ingame after loading is finished before changing to briefing. In order to
+                // not notify subscribers of this erroneous ingame state, we will debounce any state changes into ingame by two
+                // frames.
+                if (state === GameState.ingame && this.gameState.get() !== GameState.ingame) {
+                    setTimeout(() => {
+                        setTimeout(() => {
+                            const newAttribute = window.parent.document.body.getAttribute('gamestate');
+                            if (newAttribute !== null) {
+                                this.gameState.set(GameState[newAttribute]);
+                            }
+                        });
+                    });
+                }
+                else {
+                    this.gameState.set(state);
+                }
+                return;
+            }
+        }
+        this.gameState.set(undefined);
+    }
+    /**
+     * Gets a subscribable which provides the current game state.
+     * @returns A subscribable which provides the current game state.
+     */
+    static get() {
+        var _a;
+        return ((_a = GameStateProvider.INSTANCE) !== null && _a !== void 0 ? _a : (GameStateProvider.INSTANCE = new GameStateProvider())).gameState;
+    }
+}
+
+/**
+ * A manager for key events. Allows key events to be triggered and intercepted, and also publishes intercepted key
+ * events on the event bus.
+ */
+class KeyEventManager {
+    /**
+     * Constructor.
+     * @param keyListener The Coherent key intercept view listener.
+     * @param bus The event bus.
+     */
+    constructor(keyListener, bus) {
+        this.keyListener = keyListener;
+        this.bus = bus;
+        Coherent.on('keyIntercepted', this.onKeyIntercepted.bind(this));
+    }
+    /**
+     * Responds to key intercept events.
+     * @param key The key that was intercepted.
+     * @param value1 The second data value of the key event.
+     * @param value0 The first data value of the key event.
+     * @param value2 The third data value of the key event.
+     */
+    onKeyIntercepted(key, value1, value0, value2) {
+        // Even though values are uint32, we will do what the sim does and pretend they're actually sint32
+        if (value0 !== undefined && value0 >= 2147483648) {
+            value0 -= 4294967296;
+        }
+        this.bus.pub('key_intercept', { key, value0, value1, value2 }, false, false);
+    }
+    /**
+     * Triggers a key event.
+     * @param key The key to trigger.
+     * @param bypass Whether the event should bypass intercepts.
+     * @param value0 The first data value of the key event. Defaults to `0`.
+     * @param value1 The second data value of the key event. Defaults to `0`.
+     * @param value2 The third data value of the key event. Defaults to `0`.
+     * @returns A Promise which is fulfilled after the key event has been triggered.
+     */
+    triggerKey(key, bypass, value0 = 0, value1 = 0, value2 = 0) {
+        return Coherent.call('TRIGGER_KEY_EVENT', key, bypass, value0, value1, value2);
+    }
+    /**
+     * Enables interception for a key.
+     * @param key The key to intercept.
+     * @param passThrough Whether to pass the event through to the sim after it has been intercepted.
+     */
+    interceptKey(key, passThrough) {
+        Coherent.call('INTERCEPT_KEY_EVENT', key, passThrough ? 0 : 1);
+    }
+    /**
+     * Gets an instance of KeyEventManager. If an instance does not already exist, a new one will be created.
+     * @param bus The event bus.
+     * @returns A Promise which will be fulfilled with an instance of KeyEventManager.
+     */
+    static getManager(bus) {
+        if (KeyEventManager.INSTANCE) {
+            return Promise.resolve(KeyEventManager.INSTANCE);
+        }
+        if (!KeyEventManager.isCreatingInstance) {
+            KeyEventManager.createInstance(bus);
+        }
+        return new Promise(resolve => {
+            KeyEventManager.pendingPromiseResolves.push(resolve);
+        });
+    }
+    /**
+     * Creates an instance of KeyEventManager and fulfills all pending Promises to get the manager instance once
+     * the instance is created.
+     * @param bus The event bus.
+     */
+    static async createInstance(bus) {
+        KeyEventManager.isCreatingInstance = true;
+        KeyEventManager.INSTANCE = await KeyEventManager.create(bus);
+        KeyEventManager.isCreatingInstance = false;
+        for (let i = 0; i < KeyEventManager.pendingPromiseResolves.length; i++) {
+            KeyEventManager.pendingPromiseResolves[i](KeyEventManager.INSTANCE);
+        }
+    }
+    /**
+     * Creates an instance of KeyEventManager.
+     * @param bus The event bus.
+     * @returns A Promise which is fulfilled with a new instance of KeyEventManager after it has been created.
+     */
+    static create(bus) {
+        return new Promise((resolve, reject) => {
+            const gameState = GameStateProvider.get();
+            const sub = gameState.sub(state => {
+                if (window['IsDestroying']) {
+                    sub.destroy();
+                    reject('KeyEventManager: cannot create a key intercept manager after the Coherent JS view has been destroyed');
+                    return;
+                }
+                if (state === GameState.briefing || state === GameState.ingame) {
+                    sub.destroy();
+                    const keyListener = RegisterViewListener('JS_LISTENER_KEYEVENT', () => {
+                        if (window['IsDestroying']) {
+                            reject('KeyEventManager: cannot create a key intercept manager after the Coherent JS view has been destroyed');
+                            return;
+                        }
+                        resolve(new KeyEventManager(keyListener, bus));
+                    });
+                }
+            }, false, true);
+            sub.resume(true);
+        });
+    }
+}
+KeyEventManager.isCreatingInstance = false;
+KeyEventManager.pendingPromiseResolves = [];
 
 /**
  * A utility class for working with common aeronautical constants and calculations.
@@ -737,6 +2723,415 @@ AeroMath.dragCoefficient = AeroMath.flowCoefFromForce;
 AeroMath.drag = AeroMath.flowForceFromCoef;
 
 /**
+ * Utility class for manipulating bit flags.
+ */
+class BitFlags {
+    /**
+     * Generates a bit flag with a boolean value of true at a specified index.
+     * @param index The index of the flag. Must be between 0 and 32, inclusive.
+     * @returns a bit flag.
+     * @throws Error if index is out of bounds.
+     */
+    static createFlag(index) {
+        if (index < 0 || index > 32) {
+            throw new Error(`Invalid index ${index} for bit flag. Index must be between 0 and 32.`);
+        }
+        return 1 << index;
+    }
+    /**
+     * Gets the inverse of some bit flags.
+     * @param flags The bit flag group containing the flags to invert.
+     * @param mask An optional bit mask to use when applying the inverse operation. The operation will only be performed
+     * at the indexes where the mask has a value of 1 (true). If a mask is not specified, the operation will be performed
+     * at all indexes.
+     * @returns the inverse
+     */
+    static not(flags, mask = ~0) {
+        return flags ^ mask;
+    }
+    /**
+     * Gets the union of zero or more bit flags.
+     * @param flags A list of bit flags.
+     * @returns the union of the bit flags.
+     */
+    static union(...flags) {
+        let result = 0;
+        const len = flags.length;
+        for (let i = 0; i < len; i++) {
+            result |= flags[i];
+        }
+        return result;
+    }
+    /**
+     * Gets the intersection of zero or more bit flags.
+     * @param flags A list of bit flags.
+     * @returns the intersection of the bit flags.
+     */
+    static intersection(...flags) {
+        const len = flags.length;
+        if (len === 0) {
+            return 0;
+        }
+        let result = flags[0];
+        for (let i = 1; i < len; i++) {
+            result &= flags[i];
+        }
+        return result;
+    }
+    /**
+     * Changes a bit flag group by setting values at specific indexes.
+     * @param flags The bit flag group to change.
+     * @param valuesToSet A bit flag group containing the values to set.
+     * @param mask A mask defining the indexes to set. Only indexes at which the mask has a value of `1` (`true`) will
+     * be set.
+     * @returns The result of changing `flags` using the specified values and indexes.
+     */
+    static set(flags, valuesToSet, mask) {
+        return (flags & ~mask) | (valuesToSet & mask);
+    }
+    /**
+     * Checks if a bit flag group meets at least one condition from a list of conditions.
+     * @param flags A bit flag group.
+     * @param conditions The conditions to meet, as a bit flag group.
+     * @returns whether the bit flag group meets at least one condition.
+     */
+    static isAny(flags, conditions) {
+        return (flags & conditions) !== 0;
+    }
+    /**
+     * Checks if a bit flag group meets all the conditions from a list of conditions.
+     * @param flags A bit flag group.
+     * @param conditions The conditions to meet, as a bit flag group.
+     * @returns whether the bit flag group meets all the conditions.
+     */
+    static isAll(flags, conditions) {
+        return (flags & conditions) === conditions;
+    }
+    /**
+     * Iterates through a bit flag group and executes a callback function once for each flag.
+     * @param flags A bit flag group.
+     * @param callback A function which will be called once for each flag.
+     * @param valueFilter The value on which to filter. If defined, only flags with values equal to the filter will be
+     * iterated, otherwise all flags will be iterated regardless of their values.
+     * @param startIndex The index of the flag at which to start (inclusive). Defaults to 0.
+     * @param endIndex The index of the flag at which to end (exclusive). Defaults to 32.
+     */
+    static forEach(flags, callback, valueFilter, startIndex, endIndex) {
+        startIndex = Utils.Clamp(startIndex !== null && startIndex !== void 0 ? startIndex : (startIndex = 0), 0, 32);
+        endIndex = Utils.Clamp(endIndex !== null && endIndex !== void 0 ? endIndex : (endIndex = 32), 0, 32);
+        for (let i = startIndex; i < endIndex; i++) {
+            const value = (flags & (1 << i)) !== 0;
+            if (valueFilter === undefined || valueFilter === value) {
+                callback(value, i, flags);
+            }
+        }
+    }
+}
+
+/**
+ * Applies time-weighted exponential smoothing (i.e. an exponential moving average) to a sequence of raw values.
+ *
+ * When a new raw value is added to the sequence, it and the last smoothed value are weighted according to the time
+ * elapsed since the last smoothed value was calculated (i.e. since the last raw value was added) and averaged. The
+ * calculation of the weighting is such that the weight of each raw value in the sequence decays exponentially with the
+ * "age" (i.e. time elapsed between when that value was added to the sequence and when the latest value was added to
+ * the sequence) of the value.
+ */
+class ExpSmoother {
+    /**
+     * Creates a new instance of ExpSmoother.
+     * @param tau This smoother's time constant. The larger the constant, the greater the smoothing effect. A value less
+     * than or equal to 0 is equivalent to no smoothing.
+     * @param initial The initial smoothed value of this smoother. Defaults to null.
+     * @param dtThreshold The elapsed time threshold, in seconds, above which this smoother will not smooth a new raw
+     * value. Defaults to infinity.
+     */
+    constructor(tau, initial = null, dtThreshold = Infinity) {
+        this.tau = tau;
+        this.dtThreshold = dtThreshold;
+        this.lastValue = initial;
+    }
+    /**
+     * Gets the last smoothed value.
+     * @returns The last smoothed value, or null if none exists.
+     */
+    last() {
+        return this.lastValue;
+    }
+    /**
+     * Adds a new raw value and gets the next smoothed value. If the new raw value is the first to be added since this
+     * smoother was created or reset with no initial smoothed value, the returned smoothed value will be equal to the
+     * raw value.
+     * @param raw The new raw value.
+     * @param dt The elapsed time since the last raw value was added.
+     * @returns The next smoothed value.
+     */
+    next(raw, dt) {
+        let next;
+        if (this.tau > 0 && this.lastValue !== null) {
+            const factor = this.calculateFactor(dt);
+            next = ExpSmoother.smooth(raw, this.lastValue, factor);
+        }
+        else {
+            next = raw;
+        }
+        this.lastValue = next;
+        return next;
+    }
+    /**
+     * Calculates the smoothing factor for a given time interval.
+     * @param dt A time interval, in seconds.
+     * @returns the smoothing factor for the given time interval.
+     */
+    calculateFactor(dt) {
+        if (dt > this.dtThreshold) {
+            return 0;
+        }
+        else {
+            return Math.exp(-dt / this.tau);
+        }
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    reset(value) {
+        return this.lastValue = (value !== null && value !== void 0 ? value : null);
+    }
+    /**
+     * Applies exponential smoothing.
+     * @param value The value to smooth.
+     * @param last The last smoothed value.
+     * @param factor The smoothing factor.
+     * @returns A smoothed value.
+     */
+    static smooth(value, last, factor) {
+        return value * (1 - factor) + last * factor;
+    }
+}
+
+/**
+ * A calculator for lookahead values based on past trends. The calculator accepts a series of input values separated
+ * by discrete time intervals, computes a rate of change at each time step, and uses this rate of change to predict
+ * what the input value will be at some arbitrary length of time in the future assuming the rate of change remains
+ * constant.
+ */
+class Lookahead {
+    /**
+     * Constructor.
+     * @param lookahead This calculator's lookahead time.
+     * @param valueSmoothingTau The smoothing time constant to apply to the calculator's input values before rate of
+     * change is computed. A value of `0` is equivalent to no smoothing. Defaults to `0`.
+     * @param trendSmoothingTau The smoothing time constant to apply to the calculator's computed trend values. A value
+     * of `0` is equivalent to no smoothing. Defaults to `0`.
+     */
+    constructor(lookahead, valueSmoothingTau = 0, trendSmoothingTau = 0) {
+        this.lookahead = lookahead;
+        this.lastSmoothedValue = null;
+        this.lastTrendValue = 0;
+        this.lastLookaheadValue = null;
+        this.lastSmoothedLookaheadValue = null;
+        this.valueSmoother = new ExpSmoother(valueSmoothingTau);
+        this.trendSmoother = new ExpSmoother(trendSmoothingTau);
+    }
+    /**
+     * Gets this calculator's last computed lookahead value. The lookahead value is the predicted value of this
+     * calculator's input when projected into the future by an amount equal to the lookahead time assuming the current
+     * rate of change of the input remains constant.
+     * @param smoothed Whether to retrieve the lookahead value computed using the last smoothed input value instead of
+     * the raw input value as the present (`t = 0`) value. Defaults to `false`.
+     * @returns This calculator's last computed lookahead value.
+     */
+    last(smoothed = false) {
+        return smoothed ? this.lastSmoothedLookaheadValue : this.lastLookaheadValue;
+    }
+    /**
+     * Gets this calculator's last computed trend value. The trend value is the equal to the rate of change of this
+     * calculator's input values multiplied by the lookahead time.
+     * @returns This calculator's last computed trend value.
+     */
+    lastTrend() {
+        return this.lastTrendValue;
+    }
+    /**
+     * Adds a new input value and gets the next lookahead value. The lookahead value is the predicted value of this
+     * calculator's input when projected into the future by an amount equal to the lookahead time assuming the current
+     * rate of change of the input remains constant.
+     * @param value The new input value.
+     * @param dt The elapsed time since the last input value was added.
+     * @param smoothed Whether to return the lookahead value computed using the smoothed input value instead of the raw
+     * input value as the present (`t = 0`) value. Note that this argument does not determine whether smoothing is
+     * applied for the purposes of calculating rate of change (smoothing is always applied for this purpose if a positive
+     * time constant is defined). Defaults to `false`.
+     * @returns The next lookahead value.
+     */
+    next(value, dt, smoothed = false) {
+        const oldSmoothedValue = this.lastSmoothedValue;
+        let trend;
+        if (dt < 0) {
+            return this.reset(value);
+        }
+        else if (dt > 0) {
+            this.lastSmoothedValue = this.valueSmoother.next(value, dt);
+            if (oldSmoothedValue === null) {
+                this.trendSmoother.reset();
+                trend = 0;
+            }
+            else {
+                trend = this.trendSmoother.next((this.lastSmoothedValue - oldSmoothedValue) / dt * this.lookahead, dt);
+            }
+        }
+        else {
+            trend = this.lastTrendValue;
+            this.lastSmoothedValue = this.valueSmoother.next(value, dt);
+        }
+        this.lastTrendValue = trend;
+        this.lastLookaheadValue = value + trend;
+        this.lastSmoothedLookaheadValue = this.lastSmoothedValue + trend;
+        return smoothed ? this.lastSmoothedLookaheadValue : this.lastLookaheadValue;
+    }
+    /**
+     * Adds a new input value and gets the next trend value. The trend value is the equal to the rate of change of this
+     * calculator's input values multiplied by the lookahead time.
+     * @param value The new input value.
+     * @param dt The elapsed time since the last input value was added.
+     * @returns The next trend value.
+     */
+    nextTrend(value, dt) {
+        this.next(value, dt);
+        return this.lastTrendValue;
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    reset(value) {
+        this.lastSmoothedValue = this.valueSmoother.reset(value);
+        this.trendSmoother.reset();
+        this.lastTrendValue = 0;
+        this.lastLookaheadValue = this.lastSmoothedValue;
+        this.lastSmoothedLookaheadValue = this.lastSmoothedValue;
+        return this.lastLookaheadValue;
+    }
+}
+
+/**
+ * A utitlity class for basic math.
+ */
+class MathUtils {
+    /**
+     * Clamps a numerical value to the min/max range.
+     * @param value The value to be clamped.
+     * @param min The minimum.
+     * @param max The maximum.
+     *
+     * @returns The clamped numerical value..
+     */
+    static clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+    }
+    /**
+     * Rounds a number.
+     * @param value The number to round.
+     * @param precision The precision with which to round. Defaults to `1`.
+     * @returns The rounded number.
+     */
+    static round(value, precision = 1) {
+        return Math.round(value / precision) * precision;
+    }
+    /**
+     * Ceils a number.
+     * @param value The number to ceil.
+     * @param precision The precision with which to ceil. Defaults to `1`.
+     * @returns The ceiled number.
+     */
+    static ceil(value, precision = 1) {
+        return Math.ceil(value / precision) * precision;
+    }
+    /**
+     * Floors a number.
+     * @param value The number to floor.
+     * @param precision The precision with which to floor. Defaults to `1`.
+     * @returns The floored number.
+     */
+    static floor(value, precision = 1) {
+        return Math.floor(value / precision) * precision;
+    }
+    /**
+     * Calculates the angular difference between two angles in the range `[0, 2 * pi)`. The calculation supports both
+     * directional and non-directional differences. The directional difference is the angle swept from the start angle
+     * to the end angle proceeding in the direction of increasing angle. The non-directional difference is the smaller
+     * of the two angles swept from the start angle to the end angle proceeding in either direction.
+     * @param start The starting angle, in radians.
+     * @param end The ending angle, in radians.
+     * @param directional Whether to calculate the directional difference. Defaults to `true`.
+     * @returns The angular difference between the two angles, in radians, in the range `[0, 2 * pi)`.
+     */
+    static diffAngle(start, end, directional = true) {
+        const diff = ((end - start) % MathUtils.TWO_PI + MathUtils.TWO_PI) % MathUtils.TWO_PI;
+        return directional ? diff : Math.min(diff, MathUtils.TWO_PI - diff);
+    }
+    /**
+     * Calculates the angular difference between two angles in the range `[0, 360)`. The calculation supports both
+     * directional and non-directional differences. The directional difference is the angle swept from the start angle
+     * to the end angle proceeding in the direction of increasing angle. The non-directional difference is the smaller
+     * of the two angles swept from the start angle to the end angle proceeding in either direction.
+     * @param start The starting angle, in degrees.
+     * @param end The ending angle, in degrees.
+     * @param directional Whether to calculate the directional difference. Defaults to `true`.
+     * @returns The angular difference between the two angles, in degrees, in the range `[0, 360)`.
+     */
+    static diffAngleDeg(start, end, directional = true) {
+        const diff = ((end - start) % 360 + 360) % 360;
+        return directional ? diff : Math.min(diff, 360 - diff);
+    }
+    /**
+     * Linearly interpolates a keyed value along one dimension.
+     * @param x The key of the value to interpolate.
+     * @param x0 The key of the first known value.
+     * @param x1 The key of the second known value.
+     * @param y0 The first known value.
+     * @param y1 The second known value.
+     * @param clampStart Whether to clamp the interpolated value to the first known value. Defaults to false.
+     * @param clampEnd Whether to clamp the interpolated value to the second known value. Defaults to false.
+     * @returns The interpolated value corresponding to the specified key.
+     */
+    static lerp(x, x0, x1, y0, y1, clampStart = false, clampEnd = false) {
+        if (x0 !== x1 && y0 !== y1) {
+            const fraction = MathUtils.clamp((x - x0) / (x1 - x0), clampStart ? 0 : -Infinity, clampEnd ? 1 : Infinity);
+            return fraction * (y1 - y0) + y0;
+        }
+        else {
+            return y0;
+        }
+    }
+    /**
+     * Linearly interpolates a keyed vector along one dimension. If the known vectors and the result vector have unequal
+     * lengths, then only the components shared by all vectors are interpolated in the result.
+     * @param out The object to which to write the result.
+     * @param x The key of the vector to interpolate.
+     * @param x0 The key of the first known vector.
+     * @param x1 The key of the second known vector.
+     * @param y0 The first known vector.
+     * @param y1 The second known vector.
+     * @param clampStart Whether to clamp the components of the interpolated vector to those of the first known vector.
+     * Defaults to false.
+     * @param clampEnd Whether to clamp the components of the interpolated vector to those of the second known vector.
+     * Defaults to false.
+     * @returns The interpolated vector corresponding to the specified key.
+     */
+    static lerpVector(out, x, x0, x1, y0, y1, clampStart = false, clampEnd = false) {
+        const length = Math.min(y0.length, y1.length, out.length);
+        for (let i = 0; i < length; i++) {
+            out[i] = MathUtils.lerp(x, x0, x1, y0[i], y1[i], clampStart, clampEnd);
+        }
+        return out;
+    }
+}
+/** Twice the value of pi. */
+MathUtils.TWO_PI = Math.PI * 2;
+/** Half the value of pi. */
+MathUtils.HALF_PI = Math.PI / 2;
+/** Square root of 3. */
+MathUtils.SQRT3 = Math.sqrt(3);
+/** Square root of 1/3. */
+MathUtils.SQRT1_3 = 1 / Math.sqrt(3);
+
+/**
  * A number with an associated unit. Each NumberUnit is created with a reference unit type,
  * which cannot be changed after instantiation. The reference unit type determines how the
  * value of the NumberUnit is internally represented. Each NumberUnit also maintains an
@@ -1166,6 +3561,8 @@ var UnitFamily;
     UnitFamily["VolumeFlux"] = "volume_flux";
     UnitFamily["Density"] = "density";
     UnitFamily["Force"] = "force";
+    UnitFamily["DistancePerWeight"] = "distance_per_weight";
+    UnitFamily["DistanceRatio"] = "distance_ratio";
 })(UnitFamily || (UnitFamily = {}));
 /**
  * Predefined unit types.
@@ -1206,6 +3603,8 @@ UnitType.LITER = new SimpleUnit(UnitFamily.Volume, 'liter', 1);
 UnitType.GALLON = new SimpleUnit(UnitFamily.Volume, 'gallon', 3.78541);
 /** Hectopascal. */
 UnitType.HPA = new SimpleUnit(UnitFamily.Pressure, 'hectopascal', 1);
+/** Millibar. */
+UnitType.MB = new SimpleUnit(UnitFamily.Pressure, 'millibar', 1);
 /** Atmosphere. */
 UnitType.ATM = new SimpleUnit(UnitFamily.Pressure, 'atmosphere', 1013.25);
 /** Inch of mercury. */
@@ -1265,1293 +3664,12 @@ UnitType.KG_PER_M3 = new CompoundUnit(UnitFamily.Density, [UnitType.KILOGRAM], [
 UnitType.NEWTON = new CompoundUnit(UnitFamily.Force, [UnitType.KILOGRAM, UnitType.METER], [UnitType.SECOND, UnitType.SECOND]);
 /** Pound (force). */
 UnitType.POUND_FORCE = new CompoundUnit(UnitFamily.Force, [UnitType.POUND, UnitType.G_METER], [UnitType.SECOND, UnitType.SECOND]);
-
-/**
- * A basic event-bus publisher.
- */
-class BasePublisher {
-    /**
-     * Creates an instance of BasePublisher.
-     * @param bus The common event bus.
-     * @param pacer An optional pacer to control the rate of publishing.
-     */
-    constructor(bus, pacer = undefined) {
-        this.bus = bus;
-        this.publisher = this.bus.getPublisher();
-        this.publishActive = false;
-        this.pacer = pacer;
-    }
-    /**
-     * Start publishing.
-     */
-    startPublish() {
-        this.publishActive = true;
-    }
-    /**
-     * Stop publishing.
-     */
-    stopPublish() {
-        this.publishActive = false;
-    }
-    /**
-     * Tells whether or not the publisher is currently active.
-     * @returns True if the publisher is active, false otherwise.
-     */
-    isPublishing() {
-        return this.publishActive;
-    }
-    /**
-     * A callback called when the publisher receives an update cycle.
-     */
-    onUpdate() {
-        return;
-    }
-    /**
-     * Publish a message if publishing is acpive
-     * @param topic The topic key to publish to.
-     * @param data The data type for chosen topic.
-     * @param sync Whether or not the event should be synced to other instruments. Defaults to `false`.
-     * @param isCached Whether or not the event should be cached. Defaults to `true`.
-     */
-    publish(topic, data, sync = false, isCached = true) {
-        if (this.publishActive && (!this.pacer || this.pacer.canPublish(topic, data))) {
-            this.publisher.pub(topic, data, sync, isCached);
-        }
-    }
-}
-/**
- * A base class for publishers that need to handle simvars with built-in
- * support for pacing callbacks.
- */
-class SimVarPublisher extends BasePublisher {
-    /**
-     * Create a SimVarPublisher
-     * @param simVarMap A map of simvar event type keys to a SimVarDefinition.
-     * @param bus The EventBus to use for publishing.
-     * @param pacer An optional pacer to control the rate of publishing.
-     */
-    constructor(simVarMap, bus, pacer) {
-        super(bus, pacer);
-        this.resolvedSimVars = new Map();
-        this.indexedSimVars = new Map();
-        this.subscribed = new Set();
-        for (const [topic, entry] of simVarMap) {
-            if (entry.indexed) {
-                this.indexedSimVars.set(topic, {
-                    name: entry.name,
-                    type: entry.type,
-                    map: entry.map,
-                    indexes: entry.indexed === true ? undefined : new Set(entry.indexed),
-                    defaultIndex: entry.defaultIndex,
-                });
-            }
-            else {
-                this.resolvedSimVars.set(topic, Object.assign({}, entry));
-            }
-        }
-        const handleSubscribedTopic = (topic) => {
-            if (this.resolvedSimVars.has(topic)) {
-                // If topic matches an already resolved topic -> start publishing.
-                this.onTopicSubscribed(topic);
-            }
-            else {
-                // Check if topic matches indexed topic.
-                this.tryMatchIndexedSubscribedTopic(topic);
-            }
-        };
-        // Iterate over each subscribed topic on the bus to see if it matches any of our topics. If so, start publishing.
-        this.bus.forEachSubscribedTopic(handleSubscribedTopic);
-        // Listen to first-time topic subscriptions. If any of them match our topics, start publishing.
-        this.bus.getSubscriber().on('event_bus_topic_first_sub').handle(handleSubscribedTopic);
-    }
-    /**
-     * Checks if a subscribed topic matches one of this publisher's indexed topics, and if so resolves and starts
-     * publishing the indexed topic.
-     * @param topic The subscribed topic to check.
-     */
-    tryMatchIndexedSubscribedTopic(topic) {
-        var _a;
-        if (this.indexedSimVars.size === 0) {
-            return;
-        }
-        let entry = this.indexedSimVars.get(topic);
-        if (entry) {
-            // The subscribed topic matches an unsuffixed topic -> check if the unsuffixed topic should be published and if
-            // so, resolve the default index.
-            if (entry.defaultIndex !== null) {
-                const resolved = this.resolveIndexedSimVar(topic, entry, (_a = entry.defaultIndex) !== null && _a !== void 0 ? _a : 1);
-                if (resolved !== undefined) {
-                    this.onTopicSubscribed(resolved);
-                }
-            }
-            return;
-        }
-        if (!SimVarPublisher.INDEXED_REGEX.test(topic)) { // Don't generate an array if we don't have to.
-            return;
-        }
-        const match = topic.match(SimVarPublisher.INDEXED_REGEX);
-        const [, matchedTopic, index] = match;
-        entry = this.indexedSimVars.get(matchedTopic);
-        if (entry) {
-            const resolved = this.resolveIndexedSimVar(matchedTopic, entry, parseInt(index));
-            if (resolved !== undefined) {
-                this.onTopicSubscribed(resolved);
-            }
-        }
-    }
-    /**
-     * Attempts to resolve an indexed topic with an index, generating a version of the topic which is mapped to an
-     * indexed simvar. The resolved indexed topic can then be published.
-     * @param topic The topic to resolve.
-     * @param entry The entry of the topic to resolve.
-     * @param index The index with which to resolve the topic. If not defined, the topic will resolve to itself (without
-     * a suffix) and will be mapped the index-1 version of its simvar.
-     * @returns The resolved indexed topic, or `undefined` if the topic could not be resolved with the specified index.
-     */
-    resolveIndexedSimVar(topic, entry, index) {
-        index !== null && index !== void 0 ? index : (index = 1);
-        const resolvedTopic = `${topic}_${index}`;
-        if (this.resolvedSimVars.has(resolvedTopic)) {
-            return resolvedTopic;
-        }
-        const defaultIndex = entry.defaultIndex === undefined ? 1 : entry.defaultIndex;
-        // Ensure that the index we are trying to resolve is a valid index for the topic.
-        if (entry.indexes !== undefined && !entry.indexes.has(index)) {
-            return undefined;
-        }
-        this.resolvedSimVars.set(resolvedTopic, {
-            name: entry.name.replace('#index#', `${index !== null && index !== void 0 ? index : 1}`),
-            type: entry.type,
-            map: entry.map,
-            unsuffixedTopic: defaultIndex === index ? topic : undefined
-        });
-        return resolvedTopic;
-    }
-    /**
-     * Responds to when one of this publisher's topics is subscribed to for the first time.
-     * @param topic The topic that was subscribed to.
-     */
-    onTopicSubscribed(topic) {
-        if (this.subscribed.has(topic)) {
-            return;
-        }
-        this.subscribed.add(topic);
-        // Immediately publish the current value if publishing is active.
-        if (this.publishActive) {
-            this.publishTopic(topic);
-        }
-    }
-    /**
-     * NOOP - For backwards compatibility.
-     * @deprecated
-     * @param data Key of the event type in the simVarMap
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    subscribe(data) {
-        return;
-    }
-    /**
-     * NOOP - For backwards compatibility.
-     * @deprecated
-     * @param data Key of the event type in the simVarMap
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    unsubscribe(data) {
-        return;
-    }
-    /**
-     * Publish all subscribed data points to the bus.
-     */
-    onUpdate() {
-        for (const topic of this.subscribed.values()) {
-            this.publishTopic(topic);
-        }
-    }
-    /**
-     * Publishes data to the event bus for a topic.
-     * @param topic The topic to publish.
-     */
-    publishTopic(topic) {
-        const entry = this.resolvedSimVars.get(topic);
-        if (entry !== undefined) {
-            const value = this.getValueFromEntry(entry);
-            this.publish(topic, value);
-            // Check if we need to publish the same value to the unsuffixed version of the topic.
-            if (entry.unsuffixedTopic) {
-                this.publish(entry.unsuffixedTopic, value);
-            }
-        }
-    }
-    /**
-     * Gets the current value for a topic.
-     * @param topic A topic.
-     * @returns The current value for the specified topic.
-     */
-    getValue(topic) {
-        const entry = this.resolvedSimVars.get(topic);
-        if (entry === undefined) {
-            return undefined;
-        }
-        return this.getValueFromEntry(entry);
-    }
-    /**
-     * Gets the current value for a resolved topic entry.
-     * @param entry An entry for a resolved topic.
-     * @returns The current value for the specified entry.
-     */
-    getValueFromEntry(entry) {
-        return entry.map === undefined
-            ? this.getSimVarValue(entry)
-            : entry.map(this.getSimVarValue(entry));
-    }
-    /**
-     * Gets the value of the SimVar
-     * @param entry The SimVar definition entry
-     * @returns The value of the SimVar
-     */
-    getSimVarValue(entry) {
-        const svValue = SimVar.GetSimVarValue(entry.name, entry.type);
-        if (entry.type === SimVarValueType.Bool) {
-            return svValue === 1;
-        }
-        return svValue;
-    }
-}
-SimVarPublisher.INDEXED_REGEX = /(.*)_(0|[1-9]\d*)$/;
-/**
- * A base class for publishers that need to handle simvars with built-in
- * support for pacing callbacks.
- */
-class GameVarPublisher extends BasePublisher {
-    /**
-     * Create a SimVarPublisher
-     * @param simVarMap A map of simvar event type keys to a SimVarDefinition.
-     * @param bus The EventBus to use for publishing.
-     * @param pacer An optional pacer to control the rate of publishing.
-     */
-    constructor(simVarMap, bus, pacer) {
-        super(bus, pacer);
-        this.simvars = simVarMap;
-        this.subscribed = new Set();
-        // Start polling all simvars for which there are existing subscriptions.
-        for (const topic of this.simvars.keys()) {
-            if (bus.getTopicSubscriberCount(topic) > 0) {
-                this.onTopicSubscribed(topic);
-            }
-        }
-        bus.getSubscriber().on('event_bus_topic_first_sub').handle((topic) => {
-            if (this.simvars.has(topic)) {
-                this.onTopicSubscribed(topic);
-            }
-        });
-    }
-    /**
-     * Responds to when one of this publisher's topics is subscribed to for the first time.
-     * @param topic The topic that was subscribed to.
-     */
-    onTopicSubscribed(topic) {
-        if (this.subscribed.has(topic)) {
-            return;
-        }
-        this.subscribed.add(topic);
-        // Immediately publish the current value if publishing is active.
-        if (this.publishActive) {
-            this.publishTopic(topic);
-        }
-    }
-    /**
-     * NOOP - For backwards compatibility.
-     * @deprecated
-     * @param data Key of the event type in the simVarMap
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    subscribe(data) {
-        return;
-    }
-    /**
-     * NOOP - For backwards compatibility.
-     * @deprecated
-     * @param data Key of the event type in the simVarMap
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    unsubscribe(data) {
-        return;
-    }
-    /**
-     * Publish all subscribed data points to the bus.
-     */
-    onUpdate() {
-        for (const topic of this.subscribed.values()) {
-            this.publishTopic(topic);
-        }
-    }
-    /**
-     * Publishes data to the event bus for a topic.
-     * @param topic The topic to publish.
-     */
-    publishTopic(topic) {
-        const value = this.getValue(topic);
-        if (value !== undefined) {
-            this.publish(topic, value);
-        }
-    }
-    /**
-     * Gets the current value for a topic.
-     * @param topic A topic.
-     * @returns The current value for the specified topic.
-     */
-    getValue(topic) {
-        const entry = this.simvars.get(topic);
-        if (entry === undefined) {
-            return undefined;
-        }
-        return entry.map === undefined
-            ? this.getGameVarValue(entry)
-            : entry.map(this.getGameVarValue(entry));
-    }
-    /**
-     * Gets the value of the SimVar
-     * @param entry The SimVar definition entry
-     * @returns The value of the SimVar
-     */
-    getGameVarValue(entry) {
-        const svValue = SimVar.GetGameVarValue(entry.name, entry.type);
-        if (entry.type === SimVarValueType.Bool) {
-            return svValue === 1;
-        }
-        return svValue;
-    }
-}
-
-/// <reference types="@microsoft/msfs-types/js/simvar" />
-/**
- * A publisher for air data computer information.
- */
-class AdcPublisher extends SimVarPublisher {
-    /**
-     * Creates an AdcPublisher.
-     * @param bus The event bus to which to publish.
-     * @param pacer An optional pacer to use to control the rate of publishing.
-     */
-    constructor(bus, pacer) {
-        var _a;
-        const simvars = new Map([
-            ['ias', { name: 'AIRSPEED INDICATED:#index#', type: SimVarValueType.Knots, indexed: true }],
-            ['tas', { name: 'AIRSPEED TRUE:#index#', type: SimVarValueType.Knots, indexed: true }],
-            [
-                'mach_to_kias_factor',
-                {
-                    name: 'AIRSPEED INDICATED:#index#',
-                    type: SimVarValueType.Knots,
-                    map: (kias) => {
-                        const factor = kias < 1 || this.mach === 0 ? AeroMath.machToCas(1, this.pressure) : kias / this.mach;
-                        return isFinite(factor) ? factor : 1;
-                    },
-                    indexed: true
-                }
-            ],
-            ['indicated_alt', { name: 'INDICATED ALTITUDE:#index#', type: SimVarValueType.Feet, indexed: true }],
-            ['altimeter_baro_setting_inhg', { name: 'KOHLSMAN SETTING HG:#index#', type: SimVarValueType.InHG, indexed: true }],
-            ['altimeter_baro_setting_mb', { name: 'KOHLSMAN SETTING MB:#index#', type: SimVarValueType.MB, indexed: true }],
-            ['altimeter_baro_preselect_raw', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, indexed: true }],
-            ['altimeter_baro_preselect_inhg', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, map: raw => UnitType.HPA.convertTo(raw / 16, UnitType.IN_HG), indexed: true }],
-            ['altimeter_baro_preselect_mb', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, map: raw => raw / 16, indexed: true }],
-            ['altimeter_baro_is_std', { name: 'L:XMLVAR_Baro#index#_ForcedToSTD', type: SimVarValueType.Bool, indexed: true }],
-            ['radio_alt', { name: 'RADIO HEIGHT', type: SimVarValueType.Feet }],
-            ['pressure_alt', { name: 'PRESSURE ALTITUDE', type: SimVarValueType.Feet }],
-            ['vertical_speed', { name: 'VERTICAL SPEED', type: SimVarValueType.FPM }],
-            ['ambient_density', { name: 'AMBIENT DENSITY', type: SimVarValueType.SlugsPerCubicFoot }],
-            ['ambient_temp_c', { name: 'AMBIENT TEMPERATURE', type: SimVarValueType.Celsius }],
-            ['ambient_pressure_inhg', { name: 'AMBIENT PRESSURE', type: SimVarValueType.InHG }],
-            ['isa_temp_c', { name: 'STANDARD ATM TEMPERATURE', type: SimVarValueType.Celsius }],
-            ['ram_air_temp_c', { name: 'TOTAL AIR TEMPERATURE', type: SimVarValueType.Celsius }],
-            ['ambient_wind_velocity', { name: 'AMBIENT WIND VELOCITY', type: SimVarValueType.Knots }],
-            ['ambient_wind_direction', { name: 'AMBIENT WIND DIRECTION', type: SimVarValueType.Degree }],
-            ['on_ground', { name: 'SIM ON GROUND', type: SimVarValueType.Bool }],
-            ['aoa', { name: 'INCIDENCE ALPHA', type: SimVarValueType.Degree }],
-            ['stall_aoa', { name: 'STALL ALPHA', type: SimVarValueType.Degree }],
-            ['zero_lift_aoa', { name: 'ZERO LIFT ALPHA', type: SimVarValueType.Degree }],
-            ['mach_number', { name: 'AIRSPEED MACH', type: SimVarValueType.Mach }],
-        ]);
-        super(simvars, bus, pacer);
-        this.mach = 0;
-        this.pressure = 1013.25;
-        (_a = this.needUpdateMachToKiasData) !== null && _a !== void 0 ? _a : (this.needUpdateMachToKiasData = false);
-    }
-    /** @inheritdoc */
-    onTopicSubscribed(topic) {
-        super.onTopicSubscribed(topic);
-        if (topic.startsWith('mach_to_kias_factor')) {
-            this.needUpdateMachToKiasData = true;
-        }
-    }
-    /** @inheritdoc */
-    onUpdate() {
-        const isSlewing = SimVar.GetSimVarValue('IS SLEW ACTIVE', 'bool');
-        if (!isSlewing) {
-            if (this.needUpdateMachToKiasData) {
-                this.mach = SimVar.GetSimVarValue('AIRSPEED MACH', SimVarValueType.Number);
-                this.pressure = SimVar.GetSimVarValue('AMBIENT PRESSURE', SimVarValueType.HPA);
-            }
-            super.onUpdate();
-        }
-    }
-}
-
-/**
- * Utility class for manipulating bit flags.
- */
-class BitFlags {
-    /**
-     * Generates a bit flag with a boolean value of true at a specified index.
-     * @param index The index of the flag. Must be between 0 and 32, inclusive.
-     * @returns a bit flag.
-     * @throws Error if index is out of bounds.
-     */
-    static createFlag(index) {
-        if (index < 0 || index > 32) {
-            throw new Error(`Invalid index ${index} for bit flag. Index must be between 0 and 32.`);
-        }
-        return 1 << index;
-    }
-    /**
-     * Gets the inverse of some bit flags.
-     * @param flags The bit flag group containing the flags to invert.
-     * @param mask An optional bit mask to use when applying the inverse operation. The operation will only be performed
-     * at the indexes where the mask has a value of 1 (true). If a mask is not specified, the operation will be performed
-     * at all indexes.
-     * @returns the inverse
-     */
-    static not(flags, mask = ~0) {
-        return flags ^ mask;
-    }
-    /**
-     * Gets the union of zero or more bit flags.
-     * @param flags A list of bit flags.
-     * @returns the union of the bit flags.
-     */
-    static union(...flags) {
-        let result = 0;
-        const len = flags.length;
-        for (let i = 0; i < len; i++) {
-            result |= flags[i];
-        }
-        return result;
-    }
-    /**
-     * Gets the intersection of zero or more bit flags.
-     * @param flags A list of bit flags.
-     * @returns the intersection of the bit flags.
-     */
-    static intersection(...flags) {
-        const len = flags.length;
-        if (len === 0) {
-            return 0;
-        }
-        let result = flags[0];
-        for (let i = 1; i < len; i++) {
-            result &= flags[i];
-        }
-        return result;
-    }
-    /**
-     * Changes a bit flag group by setting values at specific indexes.
-     * @param flags The bit flag group to change.
-     * @param valuesToSet A bit flag group containing the values to set.
-     * @param mask A mask defining the indexes to set. Only indexes at which the mask has a value of `1` (`true`) will
-     * be set.
-     * @returns The result of changing `flags` using the specified values and indexes.
-     */
-    static set(flags, valuesToSet, mask) {
-        return (flags & ~mask) | (valuesToSet & mask);
-    }
-    /**
-     * Checks if a bit flag group meets at least one condition from a list of conditions.
-     * @param flags A bit flag group.
-     * @param conditions The conditions to meet, as a bit flag group.
-     * @returns whether the bit flag group meets at least one condition.
-     */
-    static isAny(flags, conditions) {
-        return (flags & conditions) !== 0;
-    }
-    /**
-     * Checks if a bit flag group meets all the conditions from a list of conditions.
-     * @param flags A bit flag group.
-     * @param conditions The conditions to meet, as a bit flag group.
-     * @returns whether the bit flag group meets all the conditions.
-     */
-    static isAll(flags, conditions) {
-        return (flags & conditions) === conditions;
-    }
-    /**
-     * Iterates through a bit flag group and executes a callback function once for each flag.
-     * @param flags A bit flag group.
-     * @param callback A function which will be called once for each flag.
-     * @param valueFilter The value on which to filter. If defined, only flags with values equal to the filter will be
-     * iterated, otherwise all flags will be iterated regardless of their values.
-     * @param startIndex The index of the flag at which to start (inclusive). Defaults to 0.
-     * @param endIndex The index of the flag at which to end (exclusive). Defaults to 32.
-     */
-    static forEach(flags, callback, valueFilter, startIndex, endIndex) {
-        startIndex = Utils.Clamp(startIndex !== null && startIndex !== void 0 ? startIndex : (startIndex = 0), 0, 32);
-        endIndex = Utils.Clamp(endIndex !== null && endIndex !== void 0 ? endIndex : (endIndex = 32), 0, 32);
-        for (let i = startIndex; i < endIndex; i++) {
-            const value = (flags & (1 << i)) !== 0;
-            if (valueFilter === undefined || valueFilter === value) {
-                callback(value, i, flags);
-            }
-        }
-    }
-}
-
-/**
- * Applies time-weighted exponential smoothing (i.e. an exponential moving average) to a sequence of raw values.
- *
- * When a new raw value is added to the sequence, it and the last smoothed value are weighted according to the time
- * elapsed since the last smoothed value was calculated (i.e. since the last raw value was added) and averaged. The
- * calculation of the weighting is such that the weight of each raw value in the sequence decays exponentially with the
- * "age" (i.e. time elapsed between when that value was added to the sequence and when the latest value was added to
- * the sequence) of the value.
- */
-class ExpSmoother {
-    /**
-     * Creates a new instance of ExpSmoother.
-     * @param tau This smoother's time constant. The larger the constant, the greater the smoothing effect. A value less
-     * than or equal to 0 is equivalent to no smoothing.
-     * @param initial The initial smoothed value of this smoother. Defaults to null.
-     * @param dtThreshold The elapsed time threshold, in seconds, above which this smoother will not smooth a new raw
-     * value. Defaults to infinity.
-     */
-    constructor(tau, initial = null, dtThreshold = Infinity) {
-        this.tau = tau;
-        this.dtThreshold = dtThreshold;
-        this.lastValue = initial;
-    }
-    /**
-     * Gets the last smoothed value.
-     * @returns The last smoothed value, or null if none exists.
-     */
-    last() {
-        return this.lastValue;
-    }
-    /**
-     * Adds a new raw value and gets the next smoothed value. If the new raw value is the first to be added since this
-     * smoother was created or reset with no initial smoothed value, the returned smoothed value will be equal to the
-     * raw value.
-     * @param raw The new raw value.
-     * @param dt The elapsed time since the last raw value was added.
-     * @returns The next smoothed value.
-     */
-    next(raw, dt) {
-        let next;
-        if (this.tau > 0 && this.lastValue !== null) {
-            const factor = this.calculateFactor(dt);
-            next = ExpSmoother.smooth(raw, this.lastValue, factor);
-        }
-        else {
-            next = raw;
-        }
-        this.lastValue = next;
-        return next;
-    }
-    /**
-     * Calculates the smoothing factor for a given time interval.
-     * @param dt A time interval, in seconds.
-     * @returns the smoothing factor for the given time interval.
-     */
-    calculateFactor(dt) {
-        if (dt > this.dtThreshold) {
-            return 0;
-        }
-        else {
-            return Math.exp(-dt / this.tau);
-        }
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    reset(value) {
-        return this.lastValue = (value !== null && value !== void 0 ? value : null);
-    }
-    /**
-     * Applies exponential smoothing.
-     * @param value The value to smooth.
-     * @param last The last smoothed value.
-     * @param factor The smoothing factor.
-     * @returns A smoothed value.
-     */
-    static smooth(value, last, factor) {
-        return value * (1 - factor) + last * factor;
-    }
-}
-
-/**
- * A calculator for lookahead values based on past trends. The calculator accepts a series of input values separated
- * by discrete time intervals, computes a rate of change at each time step, and uses this rate of change to predict
- * what the input value will be at some arbitrary length of time in the future assuming the rate of change remains
- * constant.
- */
-class Lookahead {
-    /**
-     * Constructor.
-     * @param lookahead This calculator's lookahead time.
-     * @param valueSmoothingTau The smoothing time constant to apply to the calculator's input values before rate of
-     * change is computed. A value of `0` is equivalent to no smoothing. Defaults to `0`.
-     * @param trendSmoothingTau The smoothing time constant to apply to the calculator's computed trend values. A value
-     * of `0` is equivalent to no smoothing. Defaults to `0`.
-     */
-    constructor(lookahead, valueSmoothingTau = 0, trendSmoothingTau = 0) {
-        this.lookahead = lookahead;
-        this.lastSmoothedValue = null;
-        this.lastTrendValue = 0;
-        this.lastLookaheadValue = null;
-        this.lastSmoothedLookaheadValue = null;
-        this.valueSmoother = new ExpSmoother(valueSmoothingTau);
-        this.trendSmoother = new ExpSmoother(trendSmoothingTau);
-    }
-    /**
-     * Gets this calculator's last computed lookahead value. The lookahead value is the predicted value of this
-     * calculator's input when projected into the future by an amount equal to the lookahead time assuming the current
-     * rate of change of the input remains constant.
-     * @param smoothed Whether to retrieve the lookahead value computed using the last smoothed input value instead of
-     * the raw input value as the present (`t = 0`) value. Defaults to `false`.
-     * @returns This calculator's last computed lookahead value.
-     */
-    last(smoothed = false) {
-        return smoothed ? this.lastSmoothedLookaheadValue : this.lastLookaheadValue;
-    }
-    /**
-     * Gets this calculator's last computed trend value. The trend value is the equal to the rate of change of this
-     * calculator's input values multiplied by the lookahead time.
-     * @returns This calculator's last computed trend value.
-     */
-    lastTrend() {
-        return this.lastTrendValue;
-    }
-    /**
-     * Adds a new input value and gets the next lookahead value. The lookahead value is the predicted value of this
-     * calculator's input when projected into the future by an amount equal to the lookahead time assuming the current
-     * rate of change of the input remains constant.
-     * @param value The new input value.
-     * @param dt The elapsed time since the last input value was added.
-     * @param smoothed Whether to return the lookahead value computed using the smoothed input value instead of the raw
-     * input value as the present (`t = 0`) value. Note that this argument does not determine whether smoothing is
-     * applied for the purposes of calculating rate of change (smoothing is always applied for this purpose if a positive
-     * time constant is defined). Defaults to `false`.
-     * @returns The next lookahead value.
-     */
-    next(value, dt, smoothed = false) {
-        const oldSmoothedValue = this.lastSmoothedValue;
-        let trend;
-        if (dt < 0) {
-            return this.reset(value);
-        }
-        else if (dt > 0) {
-            this.lastSmoothedValue = this.valueSmoother.next(value, dt);
-            if (oldSmoothedValue === null) {
-                this.trendSmoother.reset();
-                trend = 0;
-            }
-            else {
-                trend = this.trendSmoother.next((this.lastSmoothedValue - oldSmoothedValue) / dt * this.lookahead, dt);
-            }
-        }
-        else {
-            trend = this.lastTrendValue;
-            this.lastSmoothedValue = this.valueSmoother.next(value, dt);
-        }
-        this.lastTrendValue = trend;
-        this.lastLookaheadValue = value + trend;
-        this.lastSmoothedLookaheadValue = this.lastSmoothedValue + trend;
-        return smoothed ? this.lastSmoothedLookaheadValue : this.lastLookaheadValue;
-    }
-    /**
-     * Adds a new input value and gets the next trend value. The trend value is the equal to the rate of change of this
-     * calculator's input values multiplied by the lookahead time.
-     * @param value The new input value.
-     * @param dt The elapsed time since the last input value was added.
-     * @returns The next trend value.
-     */
-    nextTrend(value, dt) {
-        this.next(value, dt);
-        return this.lastTrendValue;
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    reset(value) {
-        this.lastSmoothedValue = this.valueSmoother.reset(value);
-        this.trendSmoother.reset();
-        this.lastTrendValue = 0;
-        this.lastLookaheadValue = this.lastSmoothedValue;
-        this.lastSmoothedLookaheadValue = this.lastSmoothedValue;
-        return this.lastLookaheadValue;
-    }
-}
-
-/**
- * A utitlity class for basic math.
- */
-class MathUtils {
-    /**
-     * Clamps a numerical value to the min/max range.
-     * @param value The value to be clamped.
-     * @param min The minimum.
-     * @param max The maximum.
-     *
-     * @returns The clamped numerical value..
-     */
-    static clamp(value, min, max) {
-        return Math.max(min, Math.min(max, value));
-    }
-    /**
-     * Rounds a number.
-     * @param value The number to round.
-     * @param precision The precision with which to round. Defaults to `1`.
-     * @returns The rounded number.
-     */
-    static round(value, precision = 1) {
-        return Math.round(value / precision) * precision;
-    }
-    /**
-     * Ceils a number.
-     * @param value The number to ceil.
-     * @param precision The precision with which to ceil. Defaults to `1`.
-     * @returns The ceiled number.
-     */
-    static ceil(value, precision = 1) {
-        return Math.ceil(value / precision) * precision;
-    }
-    /**
-     * Floors a number.
-     * @param value The number to floor.
-     * @param precision The precision with which to floor. Defaults to `1`.
-     * @returns The floored number.
-     */
-    static floor(value, precision = 1) {
-        return Math.floor(value / precision) * precision;
-    }
-    /**
-     * Calculates the angular difference between two angles in the range `[0, 2 * pi)`. The calculation supports both
-     * directional and non-directional differences. The directional difference is the angle swept from the start angle
-     * to the end angle proceeding in the direction of increasing angle. The non-directional difference is the smaller
-     * of the two angles swept from the start angle to the end angle proceeding in either direction.
-     * @param start The starting angle, in radians.
-     * @param end The ending angle, in radians.
-     * @param directional Whether to calculate the directional difference. Defaults to `true`.
-     * @returns The angular difference between the two angles, in radians, in the range `[0, 2 * pi)`.
-     */
-    static diffAngle(start, end, directional = true) {
-        const diff = ((end - start) % MathUtils.TWO_PI + MathUtils.TWO_PI) % MathUtils.TWO_PI;
-        return directional ? diff : Math.min(diff, MathUtils.TWO_PI - diff);
-    }
-    /**
-     * Calculates the angular difference between two angles in the range `[0, 360)`. The calculation supports both
-     * directional and non-directional differences. The directional difference is the angle swept from the start angle
-     * to the end angle proceeding in the direction of increasing angle. The non-directional difference is the smaller
-     * of the two angles swept from the start angle to the end angle proceeding in either direction.
-     * @param start The starting angle, in degrees.
-     * @param end The ending angle, in degrees.
-     * @param directional Whether to calculate the directional difference. Defaults to `true`.
-     * @returns The angular difference between the two angles, in degrees, in the range `[0, 360)`.
-     */
-    static diffAngleDeg(start, end, directional = true) {
-        const diff = ((end - start) % 360 + 360) % 360;
-        return directional ? diff : Math.min(diff, 360 - diff);
-    }
-    /**
-     * Linearly interpolates a keyed value along one dimension.
-     * @param x The key of the value to interpolate.
-     * @param x0 The key of the first known value.
-     * @param x1 The key of the second known value.
-     * @param y0 The first known value.
-     * @param y1 The second known value.
-     * @param clampStart Whether to clamp the interpolated value to the first known value. Defaults to false.
-     * @param clampEnd Whether to clamp the interpolated value to the second known value. Defaults to false.
-     * @returns The interpolated value corresponding to the specified key.
-     */
-    static lerp(x, x0, x1, y0, y1, clampStart = false, clampEnd = false) {
-        if (x0 !== x1 && y0 !== y1) {
-            const fraction = MathUtils.clamp((x - x0) / (x1 - x0), clampStart ? 0 : -Infinity, clampEnd ? 1 : Infinity);
-            return fraction * (y1 - y0) + y0;
-        }
-        else {
-            return y0;
-        }
-    }
-    /**
-     * Linearly interpolates a keyed vector along one dimension. If the known vectors and the result vector have unequal
-     * lengths, then only the components shared by all vectors are interpolated in the result.
-     * @param out The object to which to write the result.
-     * @param x The key of the vector to interpolate.
-     * @param x0 The key of the first known vector.
-     * @param x1 The key of the second known vector.
-     * @param y0 The first known vector.
-     * @param y1 The second known vector.
-     * @param clampStart Whether to clamp the components of the interpolated vector to those of the first known vector.
-     * Defaults to false.
-     * @param clampEnd Whether to clamp the components of the interpolated vector to those of the second known vector.
-     * Defaults to false.
-     * @returns The interpolated vector corresponding to the specified key.
-     */
-    static lerpVector(out, x, x0, x1, y0, y1, clampStart = false, clampEnd = false) {
-        const length = Math.min(y0.length, y1.length, out.length);
-        for (let i = 0; i < length; i++) {
-            out[i] = MathUtils.lerp(x, x0, x1, y0[i], y1[i], clampStart, clampEnd);
-        }
-        return out;
-    }
-}
-/** Twice the value of pi. */
-MathUtils.TWO_PI = Math.PI * 2;
-/** Half the value of pi. */
-MathUtils.HALF_PI = Math.PI / 2;
-/** Square root of 3. */
-MathUtils.SQRT3 = Math.sqrt(3);
-/** Square root of 1/3. */
-MathUtils.SQRT1_3 = 1 / Math.sqrt(3);
-
-/**
- * A {@link Subscription} which executes a handler function every time it receives a notification.
- */
-class HandlerSubscription {
-    /**
-     * Constructor.
-     * @param handler This subscription's handler. The handler will be called each time this subscription receives a
-     * notification from its source.
-     * @param initialNotifyFunc A function which sends initial notifications to this subscription. If not defined, this
-     * subscription will not support initial notifications.
-     * @param onDestroy A function which is called when this subscription is destroyed.
-     */
-    constructor(handler, initialNotifyFunc, onDestroy) {
-        this.handler = handler;
-        this.initialNotifyFunc = initialNotifyFunc;
-        this.onDestroy = onDestroy;
-        this._isAlive = true;
-        this._isPaused = false;
-        this.canInitialNotify = initialNotifyFunc !== undefined;
-    }
-    /** @inheritdoc */
-    get isAlive() {
-        return this._isAlive;
-    }
-    /** @inheritdoc */
-    get isPaused() {
-        return this._isPaused;
-    }
-    /**
-     * Sends an initial notification to this subscription.
-     * @throws Error if this subscription is not alive.
-     */
-    initialNotify() {
-        if (!this._isAlive) {
-            throw new Error('HandlerSubscription: cannot notify a dead Subscription.');
-        }
-        this.initialNotifyFunc && this.initialNotifyFunc(this);
-    }
-    /** @inheritdoc */
-    pause() {
-        if (!this._isAlive) {
-            throw new Error('Subscription: cannot pause a dead Subscription.');
-        }
-        this._isPaused = true;
-        return this;
-    }
-    /** @inheritdoc */
-    resume(initialNotify = false) {
-        if (!this._isAlive) {
-            throw new Error('Subscription: cannot resume a dead Subscription.');
-        }
-        if (!this._isPaused) {
-            return this;
-        }
-        this._isPaused = false;
-        if (initialNotify) {
-            this.initialNotify();
-        }
-        return this;
-    }
-    /** @inheritdoc */
-    destroy() {
-        if (!this._isAlive) {
-            return;
-        }
-        this._isAlive = false;
-        this.onDestroy && this.onDestroy(this);
-    }
-}
-
-/**
- * A pipe from an input subscribable to an output mutable subscribable. Each notification received by the pipe is used
- * to change the state of the output subscribable.
- */
-class SubscribablePipe extends HandlerSubscription {
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    constructor(from, to, arg3, arg4) {
-        let handler;
-        let onDestroy;
-        if (typeof arg4 === 'function') {
-            handler = (fromVal) => {
-                to.set(arg3(fromVal, to.get()));
-            };
-            onDestroy = arg4;
-        }
-        else {
-            handler = (fromVal) => {
-                to.set(fromVal);
-            };
-            onDestroy = arg3;
-        }
-        super(handler, (sub) => { sub.handler(from.get()); }, onDestroy);
-    }
-}
-
-/**
- * An abstract implementation of a subscribable which allows adding, removing, and notifying subscribers.
- */
-class AbstractSubscribable {
-    constructor() {
-        this.isSubscribable = true;
-        this.notifyDepth = 0;
-        /** A function which sends initial notifications to subscriptions. */
-        this.initialNotifyFunc = this.notifySubscription.bind(this);
-        /** A function which responds to when a subscription to this subscribable is destroyed. */
-        this.onSubDestroyedFunc = this.onSubDestroyed.bind(this);
-    }
-    /**
-     * Adds a subscription to this subscribable.
-     * @param sub The subscription to add.
-     */
-    addSubscription(sub) {
-        if (this.subs) {
-            this.subs.push(sub);
-        }
-        else if (this.singletonSub) {
-            this.subs = [this.singletonSub, sub];
-            delete this.singletonSub;
-        }
-        else {
-            this.singletonSub = sub;
-        }
-    }
-    /** @inheritdoc */
-    sub(handler, initialNotify = false, paused = false) {
-        const sub = new HandlerSubscription(handler, this.initialNotifyFunc, this.onSubDestroyedFunc);
-        this.addSubscription(sub);
-        if (paused) {
-            sub.pause();
-        }
-        else if (initialNotify) {
-            sub.initialNotify();
-        }
-        return sub;
-    }
-    /** @inheritdoc */
-    unsub(handler) {
-        let toDestroy = undefined;
-        if (this.singletonSub && this.singletonSub.handler === handler) {
-            toDestroy = this.singletonSub;
-        }
-        else if (this.subs) {
-            toDestroy = this.subs.find(sub => sub.handler === handler);
-        }
-        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
-    }
-    /**
-     * Notifies subscriptions that this subscribable's value has changed.
-     */
-    notify() {
-        const canCleanUpSubs = this.notifyDepth === 0;
-        let needCleanUpSubs = false;
-        this.notifyDepth++;
-        if (this.singletonSub) {
-            try {
-                if (this.singletonSub.isAlive && !this.singletonSub.isPaused) {
-                    this.notifySubscription(this.singletonSub);
-                }
-            }
-            catch (error) {
-                console.error(`AbstractSubscribable: error in handler: ${error}`);
-                if (error instanceof Error) {
-                    console.error(error.stack);
-                }
-            }
-            if (canCleanUpSubs) {
-                // If subscriptions were added during the notification, then singletonSub would be deleted and replaced with
-                // the subs array.
-                if (this.singletonSub) {
-                    needCleanUpSubs = !this.singletonSub.isAlive;
-                }
-                else if (this.subs) {
-                    for (let i = 0; i < this.subs.length; i++) {
-                        if (!this.subs[i].isAlive) {
-                            needCleanUpSubs = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        else if (this.subs) {
-            const subLen = this.subs.length;
-            for (let i = 0; i < subLen; i++) {
-                try {
-                    const sub = this.subs[i];
-                    if (sub.isAlive && !sub.isPaused) {
-                        this.notifySubscription(sub);
-                    }
-                    needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
-                }
-                catch (error) {
-                    console.error(`AbstractSubscribable: error in handler: ${error}`);
-                    if (error instanceof Error) {
-                        console.error(error.stack);
-                    }
-                }
-            }
-            // If subscriptions were added during the notification and a cleanup operation is not already pending, then we
-            // need to check if any of the new subscriptions are already dead and if so, pend a cleanup operation.
-            if (canCleanUpSubs && !needCleanUpSubs) {
-                for (let i = subLen; i < this.subs.length; i++) {
-                    if (!this.subs[i].isAlive) {
-                        needCleanUpSubs = true;
-                        break;
-                    }
-                }
-            }
-        }
-        this.notifyDepth--;
-        if (needCleanUpSubs) {
-            if (this.singletonSub) {
-                delete this.singletonSub;
-            }
-            else if (this.subs) {
-                this.subs = this.subs.filter(sub => sub.isAlive);
-            }
-        }
-    }
-    /**
-     * Notifies a subscription of this subscribable's current state.
-     * @param sub The subscription to notify.
-     */
-    notifySubscription(sub) {
-        sub.handler(this.get());
-    }
-    /**
-     * Responds to when a subscription to this subscribable is destroyed.
-     * @param sub The destroyed subscription.
-     */
-    onSubDestroyed(sub) {
-        // If we are not in the middle of a notify operation, remove the subscription.
-        // Otherwise, do nothing and let the post-notify clean-up code handle it.
-        if (this.notifyDepth === 0) {
-            if (this.singletonSub === sub) {
-                delete this.singletonSub;
-            }
-            else if (this.subs) {
-                const index = this.subs.indexOf(sub);
-                if (index >= 0) {
-                    this.subs.splice(index, 1);
-                }
-            }
-        }
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    map(fn, equalityFunc, mutateFunc, initialVal) {
-        return new MappedSubscribableClass(this, fn, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : AbstractSubscribable.DEFAULT_EQUALITY_FUNC, mutateFunc, initialVal);
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    pipe(to, arg2, arg3) {
-        let sub;
-        let paused;
-        if (typeof arg2 === 'function') {
-            sub = new SubscribablePipe(this, to, arg2, this.onSubDestroyedFunc);
-            paused = arg3 !== null && arg3 !== void 0 ? arg3 : false;
-        }
-        else {
-            sub = new SubscribablePipe(this, to, this.onSubDestroyedFunc);
-            paused = arg2 !== null && arg2 !== void 0 ? arg2 : false;
-        }
-        this.addSubscription(sub);
-        if (paused) {
-            sub.pause();
-        }
-        else {
-            sub.initialNotify();
-        }
-        return sub;
-    }
-}
-/**
- * Checks if two values are equal using the strict equality operator.
- * @param a The first value.
- * @param b The second value.
- * @returns whether a and b are equal.
- */
-AbstractSubscribable.DEFAULT_EQUALITY_FUNC = (a, b) => a === b;
-/**
- * An implementation of {@link MappedSubscribable}.
- */
-class MappedSubscribableClass extends AbstractSubscribable {
-    /**
-     * Constructor.
-     * @param input This subscribable's input.
-     * @param mapFunc The function which maps this subject's inputs to a value.
-     * @param equalityFunc The function which this subject uses to check for equality between values.
-     * @param mutateFunc The function which this subject uses to change its value.
-     * @param initialVal The initial value of this subject.
-     */
-    constructor(input, mapFunc, equalityFunc, mutateFunc, initialVal) {
-        super();
-        this.input = input;
-        this.mapFunc = mapFunc;
-        this.equalityFunc = equalityFunc;
-        this.isSubscribable = true;
-        this._isAlive = true;
-        this._isPaused = false;
-        if (initialVal && mutateFunc) {
-            this.value = initialVal;
-            mutateFunc(this.value, this.mapFunc(this.input.get()));
-            this.mutateFunc = (newVal) => { mutateFunc(this.value, newVal); };
-        }
-        else {
-            this.value = this.mapFunc(this.input.get());
-            this.mutateFunc = (newVal) => { this.value = newVal; };
-        }
-        this.inputSub = this.input.sub(inputValue => {
-            this.updateValue(inputValue);
-        }, true);
-    }
-    /** @inheritdoc */
-    get isAlive() {
-        return this._isAlive;
-    }
-    /** @inheritdoc */
-    get isPaused() {
-        return this._isPaused;
-    }
-    /**
-     * Re-maps this subject's value from its input, and notifies subscribers if this results in a change to the mapped
-     * value according to this subject's equality function.
-     * @param inputValue The input value.
-     */
-    updateValue(inputValue) {
-        const value = this.mapFunc(inputValue, this.value);
-        if (!this.equalityFunc(this.value, value)) {
-            this.mutateFunc(value);
-            this.notify();
-        }
-    }
-    /** @inheritdoc */
-    get() {
-        return this.value;
-    }
-    /** @inheritdoc */
-    pause() {
-        if (!this._isAlive) {
-            throw new Error('MappedSubscribable: cannot pause a dead subscribable');
-        }
-        if (this._isPaused) {
-            return this;
-        }
-        this.inputSub.pause();
-        this._isPaused = true;
-        return this;
-    }
-    /** @inheritdoc */
-    resume() {
-        if (!this._isAlive) {
-            throw new Error('MappedSubscribable: cannot resume a dead subscribable');
-        }
-        if (!this._isPaused) {
-            return this;
-        }
-        this._isPaused = false;
-        this.inputSub.resume(true);
-        return this;
-    }
-    /** @inheritdoc */
-    destroy() {
-        this._isAlive = false;
-        this.inputSub.destroy();
-    }
-}
-
-/**
- * A subscribable subject whose value can be freely manipulated.
- */
-class Subject extends AbstractSubscribable {
-    /**
-     * Constructs an observable Subject.
-     * @param value The initial value.
-     * @param equalityFunc The function to use to check for equality.
-     * @param mutateFunc The function to use to mutate the subject's value.
-     */
-    constructor(value, equalityFunc, mutateFunc) {
-        super();
-        this.value = value;
-        this.equalityFunc = equalityFunc;
-        this.mutateFunc = mutateFunc;
-        this.isMutableSubscribable = true;
-    }
-    /**
-     * Creates and returns a new Subject.
-     * @param v The initial value of the subject.
-     * @param equalityFunc The function to use to check for equality between subject values. Defaults to the strict
-     * equality comparison (`===`).
-     * @param mutateFunc The function to use to change the subject's value. If not defined, new values will replace
-     * old values by variable assignment.
-     * @returns A Subject instance.
-     */
-    static create(v, equalityFunc, mutateFunc) {
-        return new Subject(v, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : Subject.DEFAULT_EQUALITY_FUNC, mutateFunc);
-    }
-    /** @inheritdoc */
-    notifySub(sub) {
-        sub(this.value);
-    }
-    /**
-     * Sets the value of this subject and notifies subscribers if the value changed.
-     * @param value The new value.
-     */
-    set(value) {
-        if (!this.equalityFunc(value, this.value)) {
-            if (this.mutateFunc) {
-                this.mutateFunc(this.value, value);
-            }
-            else {
-                this.value = value;
-            }
-            this.notify();
-        }
-    }
-    /**
-     * Applies a partial set of properties to this subject's value and notifies subscribers if the value changed as a
-     * result.
-     * @param value The properties to apply.
-     */
-    apply(value) {
-        if (typeof this.value !== 'object' || this.value === null) {
-            return;
-        }
-        let changed = false;
-        for (const prop in value) {
-            changed = value[prop] !== this.value[prop];
-            if (changed) {
-                break;
-            }
-        }
-        Object.assign(this.value, value);
-        changed && this.notify();
-    }
-    /** @inheritdoc */
-    notify() {
-        super.notify();
-    }
-    /**
-     * Gets the value of this subject.
-     * @returns The value of this subject.
-     */
-    get() {
-        return this.value;
-    }
-}
+/** One statute mile per weight equivalent of one gallon of fuel, using the generic conversion 1 gallon = 6.7 pounds. */
+UnitType.MILE_PER_GALLON_FUEL = new CompoundUnit(UnitFamily.DistancePerWeight, [UnitType.MILE], [UnitType.GALLON_FUEL]);
+/** One nautical mile per weight equivalent of one gallon of fuel, using the generic conversion 1 gallon = 6.7 pounds. */
+UnitType.NMILE_PER_GALLON_FUEL = new CompoundUnit(UnitFamily.DistancePerWeight, [UnitType.NMILE], [UnitType.GALLON_FUEL]);
+/** One foot per nautical mile. */
+UnitType.FOOT_PER_NMILE = new CompoundUnit(UnitFamily.DistanceRatio, [UnitType.FOOT], [UnitType.NMILE]);
 
 /**
  * Utility methods for working with Subscribables.
@@ -2671,6 +3789,24 @@ class SubscribableMapFunctions {
         return Math.abs;
     }
     /**
+* Generates a function which maps an input tuple to a count of the number of items in the tuple that satisfy a
+     * given condition.
+     * @param predicate A function which evaluates whether an item should be counted.
+     * @returns A function which maps an input tuple to a count of the number of items in the tuple that satisfy the
+     * condition specified by the predicate.
+     */
+    static count(predicate) {
+        const reduceFunc = (sum, curr) => {
+            if (predicate(curr)) {
+                return sum + 1;
+            }
+            else {
+                return sum;
+            }
+        };
+        return (input) => input.reduce(reduceFunc, 0);
+    }
+    /**
      * Generates a function which maps an input number to a rounded version of itself at a certain precision.
      * @param precision The precision to which to round the input.
      * @returns A function which maps an input number to a rounded version of itself at the specified precision.
@@ -2758,7 +3894,8 @@ class MappedSubject extends AbstractSubscribable {
         super();
         this.mapFunc = mapFunc;
         this.equalityFunc = equalityFunc;
-        this.isSubscribable = true;
+        /** @inheritdoc */
+        this.canInitialNotify = true;
         this._isAlive = true;
         this._isPaused = false;
         this.inputs = inputs;
@@ -5973,3200 +7110,6 @@ class MagVar {
     }
 }
 
-/**
- * A Subject which provides a {@link GeoPointInterface} value.
- */
-class GeoPointSubject extends AbstractSubscribable {
-    /**
-     * Constructor.
-     * @param value The value of this subject.
-     * @param tolerance The tolerance of this subject's equality check, defined as the maximum allowed great-circle
-     * distance between two equal points in great-arc radians. Defaults to {@link GeoPoint.EQUALITY_TOLERANCE}.
-     */
-    constructor(value, tolerance) {
-        super();
-        this.value = value;
-        this.tolerance = tolerance;
-        /** @inheritdoc */
-        this.isMutableSubscribable = true;
-    }
-    /**
-     * Creates a GeoPointSubject.
-     * @param initialVal The initial value.
-     * @param tolerance The tolerance of the subject's equality check, defined as the maximum allowed great-circle
-     * distance between two equal points in great-arc radians. Defaults to {@link GeoPoint.EQUALITY_TOLERANCE}.
-     * @returns A GeoPointSubject.
-     */
-    static create(initialVal, tolerance) {
-        return new GeoPointSubject(initialVal, tolerance);
-    }
-    /**
-     * Creates a GeoPointSubject.
-     * @param initialVal The initial value.
-     * @returns A GeoPointSubject.
-     * @deprecated Use `GeoPointSubject.create()` instead.
-     */
-    static createFromGeoPoint(initialVal) {
-        return new GeoPointSubject(initialVal);
-    }
-    /** @inheritdoc */
-    get() {
-        return this.value.readonly;
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    set(arg1, arg2) {
-        const isArg1Number = typeof arg1 === 'number';
-        const equals = isArg1Number ? this.value.equals(arg1, arg2, this.tolerance) : this.value.equals(arg1, this.tolerance);
-        if (!equals) {
-            isArg1Number ? this.value.set(arg1, arg2) : this.value.set(arg1);
-            this.notify();
-        }
-    }
-}
-
-/**
- * A partial implementation of a MutableGeoProjection. Subclasses should use the projectRaw() and invertRaw() methods
- * to define the type of projection to be implemented.
- */
-class AbstractGeoProjection {
-    constructor() {
-        this.center = new GeoPoint(0, 0);
-        this.centerTranslation = new Float64Array(2);
-        this.scaleFactor = UnitType.GA_RADIAN.convertTo(1, UnitType.NMILE); // 1 pixel = 1 nautical mile
-        this.preRotation = new Float64Array(3);
-        this.translation = new Float64Array(2);
-        this.postRotation = 0;
-        this.rotationSin = 0;
-        this.rotationCos = 1;
-        this.reflectY = 1;
-        this.preRotationForwardTransform = new Transform3D();
-        this.preRotationReverseTransform = new Transform3D();
-        this.rotationCache = [new Transform3D(), new Transform3D()];
-    }
-    /** @inheritdoc */
-    getCenter() {
-        return this.center.readonly;
-    }
-    /** @inheritdoc */
-    getScaleFactor() {
-        return this.scaleFactor;
-    }
-    /** @inheritdoc */
-    getPreRotation() {
-        return this.preRotation;
-    }
-    /** @inheritdoc */
-    getTranslation() {
-        return this.translation;
-    }
-    /** @inheritdoc */
-    getPostRotation() {
-        return this.postRotation;
-    }
-    /** @inheritdoc */
-    getReflectY() {
-        return this.reflectY === -1;
-    }
-    /** @inheritdoc */
-    setCenter(point) {
-        this.center.set(point);
-        this.updateCenterTranslation();
-        return this;
-    }
-    /** @inheritdoc */
-    setScaleFactor(factor) {
-        this.scaleFactor = factor;
-        return this;
-    }
-    /** @inheritdoc */
-    setPreRotation(vec) {
-        this.preRotation.set(vec);
-        this.updatePreRotationTransforms();
-        this.updateCenterTranslation();
-        return this;
-    }
-    /** @inheritdoc */
-    setTranslation(vec) {
-        this.translation.set(vec);
-        return this;
-    }
-    /** @inheritdoc */
-    setPostRotation(rotation) {
-        this.postRotation = rotation;
-        this.rotationCos = Math.cos(rotation);
-        this.rotationSin = Math.sin(rotation);
-        return this;
-    }
-    /** @inheritdoc */
-    setReflectY(val) {
-        this.reflectY = val ? -1 : 1;
-        return this;
-    }
-    /** @inheritdoc */
-    copyParametersFrom(other) {
-        return this.setCenter(other.getCenter())
-            .setPreRotation(other.getPreRotation())
-            .setScaleFactor(other.getScaleFactor())
-            .setTranslation(other.getTranslation())
-            .setPostRotation(other.getPostRotation())
-            .setReflectY(other.getReflectY());
-    }
-    /**
-     * Updates the pre-rotation transformation matrices.
-     */
-    updatePreRotationTransforms() {
-        const phi = this.preRotation[1];
-        const gamma = this.preRotation[2];
-        this.rotationCache[0].toRotationX(gamma);
-        this.rotationCache[1].toRotationY(-phi);
-        Transform3D.concat(this.preRotationForwardTransform, this.rotationCache);
-        this.preRotationReverseTransform.set(this.preRotationForwardTransform);
-        this.preRotationReverseTransform.invert();
-    }
-    /**
-     * Updates the translation vector to move the center of this projection to the origin.
-     */
-    updateCenterTranslation() {
-        const centerArray = AbstractGeoProjection.vec2Cache[0];
-        centerArray[0] = this.center.lon;
-        centerArray[1] = this.center.lat;
-        this.preRotateForward(centerArray, centerArray);
-        this.projectRaw(centerArray, this.centerTranslation);
-    }
-    /**
-     * Applies a forward rotation to a set of lat/lon coordinates using this projection's pre-projection rotation angles.
-     * @param vec - the lat/lon coordinates to rotate, as a vector ([long, lat]).
-     * @param out - the vector to which to write the result.
-     * @returns the rotated lat/lon coordinates.
-     */
-    preRotateForward(vec, out) {
-        const lambda = this.preRotation[0];
-        const phi = this.preRotation[1];
-        const gamma = this.preRotation[2];
-        if (lambda === 0 && phi === 0 && gamma === 0) {
-            out.set(vec);
-            return out;
-        }
-        const lat = vec[1];
-        const lon = vec[0];
-        const rotatedLon = ((lon + lambda * Avionics.Utils.RAD2DEG) % 360 + 540) % 360 - 180; // enforce [-180, 180)
-        if (phi === 0 && gamma === 0) {
-            return Vec2Math.set(rotatedLon, lat, out);
-        }
-        const cartesianVec = GeoPoint.sphericalToCartesian(lat, rotatedLon, AbstractGeoProjection.vec3Cache[0]);
-        const rotatedCartesianVec = this.preRotationForwardTransform.apply(cartesianVec, cartesianVec);
-        const rotated = AbstractGeoProjection.geoPointCache[0].setFromCartesian(rotatedCartesianVec);
-        return Vec2Math.set(rotated.lon, rotated.lat, out);
-    }
-    /**
-     * Applies a reverse rotation to a set of lat/lon coordinates using this projection's pre-projection rotation angles.
-     * @param vec - the lat/lon coordinates to rotate, as a vector ([long, lat]).
-     * @param out - the vector to which to write the result.
-     * @returns the rotated lat/lon coordinates.
-     */
-    preRotateReverse(vec, out) {
-        const lambda = this.preRotation[0];
-        const phi = this.preRotation[1];
-        const gamma = this.preRotation[2];
-        if (lambda === 0 && phi === 0 && gamma === 0) {
-            out.set(vec);
-            return out;
-        }
-        const lat = vec[1];
-        const lon = vec[0];
-        let rotatedLat = lat;
-        let rotatedLon = lon;
-        if (phi !== 0 || gamma !== 0) {
-            const rotatedCartesianVec = GeoPoint.sphericalToCartesian(rotatedLat, rotatedLon, AbstractGeoProjection.vec3Cache[0]);
-            const cartesianVec = this.preRotationReverseTransform.apply(rotatedCartesianVec, rotatedCartesianVec);
-            const unrotated = AbstractGeoProjection.geoPointCache[0].setFromCartesian(cartesianVec);
-            rotatedLat = unrotated.lat;
-            rotatedLon = unrotated.lon;
-        }
-        rotatedLon = ((rotatedLon - lambda * Avionics.Utils.RAD2DEG) % 360 + 540) % 360 - 180; // enforce [-180, 180)
-        return Vec2Math.set(rotatedLon, rotatedLat, out);
-    }
-    /** @inheritdoc */
-    project(point, out) {
-        if (point instanceof Float64Array) {
-            out.set(point);
-        }
-        else {
-            out[0] = point.lon;
-            out[1] = point.lat;
-        }
-        this.preRotateForward(out, out);
-        this.projectRaw(out, out);
-        // translate projected center point to origin
-        out[0] -= this.centerTranslation[0];
-        out[1] -= this.centerTranslation[1];
-        // apply y-reflection
-        out[1] *= this.reflectY;
-        // apply scale factor
-        out[0] *= this.scaleFactor;
-        out[1] *= this.scaleFactor;
-        // apply post-projection rotation
-        const x = out[0];
-        const y = out[1];
-        out[0] = x * this.rotationCos - y * this.rotationSin;
-        out[1] = x * this.rotationSin + y * this.rotationCos;
-        // apply post-projection translation
-        out[0] += this.translation[0];
-        out[1] += this.translation[1];
-        return out;
-    }
-    /** @inheritdoc */
-    invert(vec, out) {
-        const projected = AbstractGeoProjection.vec2Cache[0];
-        projected.set(vec);
-        // invert post-projection translation
-        projected[0] -= this.translation[0];
-        projected[1] -= this.translation[1];
-        // invert post-projection rotation
-        const x = projected[0];
-        const y = projected[1];
-        projected[0] = x * this.rotationCos + y * this.rotationSin;
-        projected[1] = -x * this.rotationSin + y * this.rotationCos;
-        // invert scale factor
-        projected[0] /= this.scaleFactor;
-        projected[1] /= this.scaleFactor;
-        // invert y-reflection
-        projected[1] *= this.reflectY;
-        // translate projected center point to default projected position
-        projected[0] += this.centerTranslation[0];
-        projected[1] += this.centerTranslation[1];
-        const inverted = this.invertRaw(projected, projected);
-        this.preRotateReverse(inverted, inverted);
-        if (out instanceof Float64Array) {
-            out.set(inverted);
-            return out;
-        }
-        else {
-            return out.set(inverted[1], inverted[0]);
-        }
-    }
-}
-AbstractGeoProjection.vec2Cache = [new Float64Array(2)];
-AbstractGeoProjection.vec3Cache = [new Float64Array(3)];
-AbstractGeoProjection.geoPointCache = [new GeoPoint(0, 0)];
-/**
- * A Mercator projection.
- */
-class MercatorProjection extends AbstractGeoProjection {
-    /**
-     * Applies a raw projection.
-     * @param vec - a [lon, lat] vector describing the geographic point to project.
-     * @param out - a 2D vector to which to write the result.
-     * @returns the projected point.
-     */
-    projectRaw(vec, out) {
-        out[0] = vec[0] * Avionics.Utils.DEG2RAD;
-        out[1] = Math.log(Math.tan((90 + vec[1]) * Avionics.Utils.DEG2RAD / 2));
-        return out;
-    }
-    /**
-     * Inverts a raw projection.
-     * @param vec - a 2D vector describing the projected point to invert.
-     * @param out - a 2D vector to which to write the result.
-     * @returns the inverted point.
-     */
-    invertRaw(vec, out) {
-        out[0] = vec[0] * Avionics.Utils.RAD2DEG;
-        out[1] = 2 * Math.atan(Math.exp(vec[1])) * Avionics.Utils.RAD2DEG - 90;
-        return out;
-    }
-}
-
-/**
- * Resamples projected great- and small-circle paths between defined endpoints into series of straight line segments and circular arcs.
- */
-class GeoCircleResampler {
-    /**
-     * Constructor.
-     * @param minDistance The minimum great-circle distance this resampler enforces between two adjacent resampled
-     * points, in great-arc radians.
-     * @param dpTolerance The Douglas-Peucker tolerance, in pixels, this resampler uses when deciding whether to discard
-     * a resampled point during the simplification process.
-     * @param maxDepth The maximum depth of the resampling algorithm used by this resampler. The number of resampled
-     * points is bounded from above by `2^[maxDepth] - 1`.
-     */
-    constructor(minDistance, dpTolerance, maxDepth) {
-        this.minDistance = minDistance;
-        this.dpTolerance = dpTolerance;
-        this.maxDepth = maxDepth;
-        this.geoPointCache = [new GeoPoint(0, 0), new GeoPoint(0, 0)];
-        this.vec2Cache = [new Float64Array(2), new Float64Array(2), new Float64Array(2)];
-        this.vec3Cache = [new Float64Array(3), new Float64Array(3), new Float64Array(3), new Float64Array(3), new Float64Array(3)];
-        this.startVector = {
-            type: 'start',
-            point: new GeoPoint(0, 0),
-            projected: new Float64Array(2),
-            index: 0
-        };
-        this.lineVector = {
-            type: 'line',
-            point: new GeoPoint(0, 0),
-            projected: new Float64Array(2),
-            index: 0
-        };
-        this.arcVector = {
-            type: 'arc',
-            point: new GeoPoint(0, 0),
-            projected: new Float64Array(2),
-            projectedArcCenter: new Float64Array(2),
-            projectedArcRadius: 0,
-            projectedArcStartAngle: 0,
-            projectedArcEndAngle: 0,
-            index: 0
-        };
-        this.state = {
-            index: 0,
-            prevX: 0,
-            prevY: 0,
-            vectorType: 'line',
-            arcCenterX: 0,
-            arcCenterY: 0,
-            arcRadius: 0,
-            isArcCounterClockwise: false
-        };
-        this.cosMinDistance = Math.cos(minDistance);
-        this.dpTolSq = dpTolerance * dpTolerance;
-    }
-    /**
-     * Resamples a projected great- or small-circle path.
-     * @param projection The projection to use.
-     * @param circle The geo circle along which the path lies.
-     * @param start The start of the path.
-     * @param end The end of the path.
-     * @param handler A function to handle the resampled points. The function is called once for each resampled point,
-     * in order.
-     */
-    resample(projection, circle, start, end, handler) {
-        let startPoint, startVec, endPoint, endVec;
-        if (start instanceof Float64Array) {
-            startPoint = this.geoPointCache[0].setFromCartesian(start);
-            startVec = start;
-        }
-        else {
-            startPoint = start;
-            startVec = GeoPoint.sphericalToCartesian(start, this.vec3Cache[0]);
-        }
-        if (end instanceof Float64Array) {
-            endPoint = this.geoPointCache[0].setFromCartesian(end);
-            endVec = end;
-        }
-        else {
-            endPoint = end;
-            endVec = GeoPoint.sphericalToCartesian(end, this.vec3Cache[1]);
-        }
-        const startLat = startPoint.lat;
-        const startLon = startPoint.lon;
-        const endLat = endPoint.lat;
-        const endLon = endPoint.lon;
-        const startProjected = projection.project(start, this.vec2Cache[0]);
-        const endProjected = projection.project(end, this.vec2Cache[1]);
-        const startX = startProjected[0];
-        const startY = startProjected[1];
-        const endX = endProjected[0];
-        const endY = endProjected[1];
-        this.startVector.point.set(startLat, startLon);
-        Vec2Math.copy(startProjected, this.startVector.projected);
-        handler(this.startVector);
-        this.state.index = 1;
-        this.state.prevX = startX;
-        this.state.prevY = startY;
-        this.state.vectorType = 'line';
-        const state = this.resampleHelper(projection, circle, startLat, startLon, startVec[0], startVec[1], startVec[2], startX, startY, endLat, endLon, endVec[0], endVec[1], endVec[2], endX, endY, handler, 0, this.state);
-        this.callHandler(handler, endLat, endLon, endX, endY, state);
-    }
-    /**
-     * Resamples a projected great- or small-circle path. This method will recursively split the path into two halves
-     * and resample the midpoint. Based on the projected position of the midpoint relative to those of the start and end
-     * points, the projected path is modeled as either a straight line from the start to the end or a circular arc
-     * connecting the start, end, and midpoints. Recursion continues as long as the maximum depth has not been reached
-     * and at least one of the following conditions is met:
-     * * The distance from the midpoint to the endpoints is greater than or equal to the minimum resampling distance.
-     * * If the path is modeled as a line: the distance from the projected midpoint to the model line is greater than
-     * this resampler's Douglas-Peucker tolerance.
-     * * If the path is modeled as an arc: the distance from the projected one-quarter or the three-quarter point along
-     * the path to the model arc is greater than this resampler's Douglas-Peucker tolerance.
-     * @param projection The projection to use.
-     * @param circle The geo circle along which the path lies.
-     * @param lat1 The latitude of the start of the path, in degrees.
-     * @param lon1 The longitude of the start of the path, in degrees.
-     * @param x1 The x-component of the Cartesian position vector of the start of the path.
-     * @param y1 The y-component of the Cartesian position vector of the start of the path.
-     * @param z1 The z-component of the Cartesian position vector of the start of the path.
-     * @param projX1 The x-component of the projected location of the start of the path, in pixels.
-     * @param projY1 The y-component of the projected location of the start of the path, in pixels.
-     * @param lat2 The latitude of the end of the path, in degrees.
-     * @param lon2 The longitude of the end of the path, in degrees.
-     * @param x2 The x-component of the Cartesian position vector of the end of the path.
-     * @param y2 The y-component of the Cartesian position vector of the end of the path.
-     * @param z2 The z-component of the Cartesian position vector of the end of the path.
-     * @param projX2 The x-component of the projected location of the end of the path, in pixels.
-     * @param projY2 The y-component of the projected location of the end of the path, in pixels.
-     * @param handler A function to handle the resampled points.
-     * @param depth The current depth of the resampling algorithm.
-     * @param state The current state of the resampling algorithm.
-     * @returns The index of the next resampled point.
-     */
-    resampleHelper(projection, circle, lat1, lon1, x1, y1, z1, projX1, projY1, lat2, lon2, x2, y2, z2, projX2, projY2, handler, depth, state) {
-        if (depth >= this.maxDepth) {
-            return state;
-        }
-        const startVec = Vec3Math.set(x1, y1, z1, this.vec3Cache[0]);
-        const endVec = Vec3Math.set(x2, y2, z2, this.vec3Cache[1]);
-        const angularWidth = circle.angleAlong(startVec, endVec, Math.PI);
-        if (angularWidth <= GeoCircle.ANGULAR_TOLERANCE) {
-            return state;
-        }
-        const midVec = circle.offsetAngleAlong(startVec, angularWidth / 2, this.vec3Cache[2]);
-        const startProjected = Vec2Math.set(projX1, projY1, this.vec2Cache[0]);
-        const endProjected = Vec2Math.set(projX2, projY2, this.vec2Cache[1]);
-        const deltaProjected = Vec2Math.sub(endProjected, startProjected, this.vec2Cache[2]);
-        const deltaProjectedDot = Vec2Math.dot(deltaProjected, deltaProjected);
-        const midPoint = this.geoPointCache[0].setFromCartesian(midVec);
-        const midProjected = projection.project(midPoint, this.vec2Cache[2]);
-        const lat0 = midPoint.lat;
-        const lon0 = midPoint.lon;
-        const x0 = midVec[0];
-        const y0 = midVec[1];
-        const z0 = midVec[2];
-        const projX0 = midProjected[0];
-        const projY0 = midProjected[1];
-        const A = projX2 - projX1;
-        const B = projY2 - projY1;
-        const C = projX1 * projX1 - projX2 * projX2 + projY1 * projY1 - projY2 * projY2;
-        const D = projX0 - projX1;
-        const E = projY0 - projY1;
-        const F = projX1 * projX1 - projX0 * projX0 + projY1 * projY1 - projY0 * projY0;
-        // Calculate the Douglas-Peucker metric
-        const det = 2 * (A * E - B * D);
-        const dpDisSq = (det * det / 4) / deltaProjectedDot;
-        if (dpDisSq > this.dpTolSq) {
-            // Attempt to model the projected path with an arc
-            // Find the center of circle containing the arc passing through the projected start, end, and mid points.
-            const arcCenterX = (B * F - C * E) / det;
-            const arcCenterY = (C * D - A * F) / det;
-            const arcRadius = Math.hypot(arcCenterX - projX1, arcCenterY - projY1);
-            const startToEndVec = Vec3Math.set(A, B, 0, this.vec3Cache[3]);
-            const centerToMidVec = Vec3Math.set(projX0 - arcCenterX, projY0 - arcCenterY, 0, this.vec3Cache[4]);
-            const cross = Vec3Math.cross(startToEndVec, centerToMidVec, this.vec3Cache[4]);
-            state.vectorType = 'arc';
-            state.arcCenterX = arcCenterX;
-            state.arcCenterY = arcCenterY;
-            state.arcRadius = arcRadius;
-            state.isArcCounterClockwise = cross[2] > 0;
-        }
-        else {
-            state.vectorType = 'line';
-        }
-        const cosDistance = Vec3Math.dot(startVec, midVec);
-        if (cosDistance > this.cosMinDistance) { // cosine of distance increases with decreasing distance
-            // We are below the minimum distance required to continue resampling -> decide if we need to continue or if
-            // the path can satisfactorily be modeled as either a straight line or a circular arc.
-            if (state.vectorType === 'line') {
-                // The path can be modeled as a line.
-                return state;
-            }
-            // To find whether the path can be modeled as an arc, we need to project the one-quarter and three-quarter points
-            // along the path and find the projected points' distances from the arc modeled above. If the distances are
-            // within the D-P tolerance, then the path can be modeled as an arc.
-            const query = circle.offsetAngleAlong(startVec, angularWidth / 4, this.geoPointCache[0]);
-            const projectedQuery = projection.project(query, this.vec2Cache[0]);
-            let distance = Math.hypot(projectedQuery[0] - state.arcCenterX, projectedQuery[1] - state.arcCenterY);
-            if ((distance - state.arcRadius) * (distance - state.arcRadius) <= this.dpTolSq) {
-                circle.offsetAngleAlong(startVec, 3 * angularWidth / 4, query);
-                projection.project(query, projectedQuery);
-                distance = Math.hypot(projectedQuery[0] - state.arcCenterX, projectedQuery[1] - state.arcCenterY);
-                if ((distance - state.arcRadius) * (distance - state.arcRadius) <= this.dpTolSq) {
-                    return state;
-                }
-            }
-        }
-        state = this.resampleHelper(projection, circle, lat1, lon1, x1, y1, z1, projX1, projY1, lat0, lon0, x0, y0, z0, projX0, projY0, handler, depth + 1, state);
-        this.callHandler(handler, lat0, lon0, projX0, projY0, state);
-        state.index++;
-        state.prevX = projX0;
-        state.prevY = projY0;
-        return this.resampleHelper(projection, circle, lat0, lon0, x0, y0, z0, projX0, projY0, lat2, lon2, x2, y2, z2, projX2, projY2, handler, depth + 1, state);
-    }
-    /**
-     * Calls a handler function for a resampled point.
-     * @param handler The handler function to call.
-     * @param lat The latitude of the resampled point, in degrees.
-     * @param lon The longitude of the resampled point, in degrees.
-     * @param projX The x-coordinate of the projected resampled point, in pixels.
-     * @param projY The y-coordinate of the projected resampled point, in pixels.
-     * @param state The current state of the resampling algorithm.
-     */
-    callHandler(handler, lat, lon, projX, projY, state) {
-        let vector;
-        if (state.vectorType === 'line') {
-            vector = this.lineVector;
-        }
-        else {
-            vector = this.arcVector;
-            Vec2Math.set(state.arcCenterX, state.arcCenterY, vector.projectedArcCenter);
-            vector.projectedArcRadius = state.arcRadius;
-            vector.projectedArcStartAngle = Math.atan2(state.prevY - state.arcCenterY, state.prevX - state.arcCenterX);
-            vector.projectedArcEndAngle = Math.atan2(projY - state.arcCenterY, projX - state.arcCenterX);
-            if (vector.projectedArcEndAngle < vector.projectedArcStartAngle !== state.isArcCounterClockwise) {
-                vector.projectedArcEndAngle += state.isArcCounterClockwise ? -MathUtils.TWO_PI : MathUtils.TWO_PI;
-            }
-        }
-        vector.point.set(lat, lon);
-        Vec2Math.set(projX, projY, vector.projected);
-        vector.index = state.index;
-        handler(vector);
-    }
-}
-
-/**
- * A publisher for AHRS information.
- */
-class AhrsPublisher extends SimVarPublisher {
-    /**
-     * Creates an AhrsPublisher.
-     * @param bus The event bus to which to publish.
-     * @param pacer An optional pacer to use to control the rate of publishing.
-     */
-    constructor(bus, pacer) {
-        var _a;
-        const simvars = new Map([
-            ['pitch_deg', { name: 'ATTITUDE INDICATOR PITCH DEGREES:#index#', type: SimVarValueType.Degree, indexed: true }],
-            ['roll_deg', { name: 'ATTITUDE INDICATOR BANK DEGREES:#index#', type: SimVarValueType.Degree, indexed: true }],
-            ['hdg_deg', { name: 'HEADING INDICATOR:#index#', type: SimVarValueType.Degree, indexed: true }],
-            ['hdg_deg_true', { name: 'HEADING INDICATOR:#index#', type: SimVarValueType.Degree, map: (heading) => MagVar.magneticToTrue(heading, this.magVar), indexed: true }],
-            ['delta_heading_rate', { name: 'DELTA HEADING RATE:#index#', type: SimVarValueType.Degree, indexed: true }],
-            ['turn_coordinator_ball', { name: 'TURN COORDINATOR BALL', type: SimVarValueType.Number }],
-            ['actual_hdg_deg', { name: 'PLANE HEADING DEGREES MAGNETIC', type: SimVarValueType.Degree }],
-            ['actual_hdg_deg_true', { name: 'PLANE HEADING DEGREES TRUE', type: SimVarValueType.Degree }],
-            ['actual_pitch_deg', { name: 'PLANE PITCH DEGREES', type: SimVarValueType.Degree }],
-            ['actual_roll_deg', { name: 'PLANE BANK DEGREES', type: SimVarValueType.Degree }],
-        ]);
-        super(simvars, bus, pacer);
-        this.magVar = 0;
-        (_a = this.needUpdateMagVar) !== null && _a !== void 0 ? _a : (this.needUpdateMagVar = false);
-    }
-    /** @inheritdoc */
-    onTopicSubscribed(topic) {
-        super.onTopicSubscribed(topic);
-        if (topic.startsWith('hdg_deg_true')) {
-            this.needUpdateMagVar = true;
-        }
-    }
-    /** @inheritdoc */
-    onUpdate() {
-        if (this.needUpdateMagVar) {
-            this.magVar = SimVar.GetSimVarValue('MAGVAR', SimVarValueType.Degree);
-        }
-        super.onUpdate();
-    }
-}
-
-/**
- * A publisher for events related to the sim's AI piloting feature.
- */
-class AiPilotPublisher extends SimVarPublisher {
-    /**
-     * Creates a new instance of AiPilotPublisher.
-     * @param bus The event bus to which to publish.
-     */
-    constructor(bus) {
-        super(new Map([
-            ['ai_delegate_controls_active', { name: 'DELEGATE CONTROLS TO AI', type: SimVarValueType.Bool }],
-            ['ai_auto_rudder_active', { name: 'AUTO COORDINATION', type: SimVarValueType.Bool }]
-        ]), bus);
-    }
-}
-
-/**
- * Ambient precipitation states.
- */
-var AmbientPrecipState;
-(function (AmbientPrecipState) {
-    AmbientPrecipState[AmbientPrecipState["None"] = 2] = "None";
-    AmbientPrecipState[AmbientPrecipState["Rain"] = 4] = "Rain";
-    AmbientPrecipState[AmbientPrecipState["Snow"] = 8] = "Snow";
-})(AmbientPrecipState || (AmbientPrecipState = {}));
-/**
- * A publisher for ambient environment information.
- */
-class AmbientPublisher extends SimVarPublisher {
-    /**
-     * Creates an AmbientPublisher.
-     * @param bus The event bus to which to publish.
-     * @param pacer An optional pacer to use to control the rate of publishing.
-     */
-    constructor(bus, pacer) {
-        const simvars = new Map([
-            ['ambient_precip_state', { name: 'AMBIENT PRECIP STATE', type: SimVarValueType.Number }],
-            ['ambient_precip_rate', { name: 'AMBIENT PRECIP RATE', type: SimVarValueType.MillimetersWater }],
-            ['ambient_visibility', { name: 'AMBIENT VISIBILITY', type: SimVarValueType.Meters }],
-            ['ambient_in_cloud', { name: 'AMBIENT IN CLOUD', type: SimVarValueType.Bool }],
-            ['ambient_qnh_inhg', { name: 'SEA LEVEL PRESSURE', type: SimVarValueType.InHG }],
-            ['ambient_qnh_mb', { name: 'SEA LEVEL PRESSURE', type: SimVarValueType.MB }],
-        ]);
-        super(simvars, bus, pacer);
-    }
-}
-
-/**
- * A basic implementation of {@link Consumer}.
- */
-class BasicConsumer {
-    /**
-     * Creates an instance of a Consumer.
-     * @param subscribe A function which subscribes a handler to the source of this consumer's events.
-     * @param state The state for the consumer to track.
-     * @param currentHandler The current build filter handler stack, if any.
-     */
-    constructor(subscribe, state = {}, currentHandler) {
-        this.subscribe = subscribe;
-        this.state = state;
-        this.currentHandler = currentHandler;
-        /** @inheritdoc */
-        this.isConsumer = true;
-        this.activeSubs = new Map();
-    }
-    /** @inheritdoc */
-    handle(handler, paused = false) {
-        let activeHandler;
-        if (this.currentHandler !== undefined) {
-            /**
-             * The handler reference to store.
-             * @param data The input data to the handler.
-             */
-            activeHandler = (data) => {
-                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                this.currentHandler(data, this.state, handler);
-            };
-        }
-        else {
-            activeHandler = handler;
-        }
-        let activeSubArray = this.activeSubs.get(handler);
-        if (!activeSubArray) {
-            activeSubArray = [];
-            this.activeSubs.set(handler, activeSubArray);
-        }
-        const onDestroyed = (destroyed) => {
-            const activeSubsArray = this.activeSubs.get(handler);
-            if (activeSubsArray) {
-                activeSubsArray.splice(activeSubsArray.indexOf(destroyed), 1);
-                if (activeSubsArray.length === 0) {
-                    this.activeSubs.delete(handler);
-                }
-            }
-        };
-        const sub = new ConsumerSubscription(this.subscribe(activeHandler, paused), onDestroyed);
-        // Need to handle the case where the subscription is destroyed immediately
-        if (sub.isAlive) {
-            activeSubArray.push(sub);
-        }
-        else if (activeSubArray.length === 0) {
-            this.activeSubs.delete(handler);
-        }
-        return sub;
-    }
-    /** @inheritdoc */
-    off(handler) {
-        var _a;
-        const activeSubArray = this.activeSubs.get(handler);
-        if (activeSubArray) {
-            (_a = activeSubArray.shift()) === null || _a === void 0 ? void 0 : _a.destroy();
-            if (activeSubArray.length === 0) {
-                this.activeSubs.delete(handler);
-            }
-        }
-    }
-    /** @inheritdoc */
-    atFrequency(frequency, immediateFirstPublish = true) {
-        const initialState = {
-            previousTime: Date.now(),
-            firstRun: immediateFirstPublish
-        };
-        return new BasicConsumer(this.subscribe, initialState, this.getAtFrequencyHandler(frequency));
-    }
-    /**
-     * Gets a handler function for a 'atFrequency' filter.
-     * @param frequency The frequency, in Hz, to cap to.
-     * @returns A handler function for a 'atFrequency' filter.
-     */
-    getAtFrequencyHandler(frequency) {
-        const deltaTimeTrigger = 1000 / frequency;
-        return (data, state, next) => {
-            const currentTime = Date.now();
-            const deltaTime = currentTime - state.previousTime;
-            if (deltaTimeTrigger <= deltaTime || state.firstRun) {
-                while ((state.previousTime + deltaTimeTrigger) < currentTime) {
-                    state.previousTime += deltaTimeTrigger;
-                }
-                if (state.firstRun) {
-                    state.firstRun = false;
-                }
-                this.with(data, next);
-            }
-        };
-    }
-    /** @inheritdoc */
-    withPrecision(precision) {
-        return new BasicConsumer(this.subscribe, { lastValue: 0, hasLastValue: false }, this.getWithPrecisionHandler(precision));
-    }
-    /**
-     * Gets a handler function for a 'withPrecision' filter.
-     * @param precision The decimal precision to snap to.
-     * @returns A handler function for a 'withPrecision' filter.
-     */
-    getWithPrecisionHandler(precision) {
-        return (data, state, next) => {
-            const dataValue = data;
-            const multiplier = Math.pow(10, precision);
-            const currentValueAtPrecision = Math.round(dataValue * multiplier) / multiplier;
-            if (!state.hasLastValue || currentValueAtPrecision !== state.lastValue) {
-                state.hasLastValue = true;
-                state.lastValue = currentValueAtPrecision;
-                this.with(currentValueAtPrecision, next);
-            }
-        };
-    }
-    /** @inheritdoc */
-    whenChangedBy(amount) {
-        return new BasicConsumer(this.subscribe, { lastValue: 0, hasLastValue: false }, this.getWhenChangedByHandler(amount));
-    }
-    /**
-     * Gets a handler function for a 'whenChangedBy' filter.
-     * @param amount The minimum amount threshold below which the consumer will not consume.
-     * @returns A handler function for a 'whenChangedBy' filter.
-     */
-    getWhenChangedByHandler(amount) {
-        return (data, state, next) => {
-            const dataValue = data;
-            const diff = Math.abs(dataValue - state.lastValue);
-            if (!state.hasLastValue || diff >= amount) {
-                state.hasLastValue = true;
-                state.lastValue = dataValue;
-                this.with(data, next);
-            }
-        };
-    }
-    /** @inheritdoc */
-    whenChanged() {
-        return new BasicConsumer(this.subscribe, { lastValue: '', hasLastValue: false }, this.getWhenChangedHandler());
-    }
-    /**
-     * Gets a handler function for a 'whenChanged' filter.
-     * @returns A handler function for a 'whenChanged' filter.
-     */
-    getWhenChangedHandler() {
-        return (data, state, next) => {
-            if (!state.hasLastValue || state.lastValue !== data) {
-                state.hasLastValue = true;
-                state.lastValue = data;
-                this.with(data, next);
-            }
-        };
-    }
-    /** @inheritdoc */
-    onlyAfter(deltaTime) {
-        return new BasicConsumer(this.subscribe, { previousTime: Date.now() }, this.getOnlyAfterHandler(deltaTime));
-    }
-    /**
-     * Gets a handler function for an 'onlyAfter' filter.
-     * @param deltaTime The minimum delta time between events.
-     * @returns A handler function for an 'onlyAfter' filter.
-     */
-    getOnlyAfterHandler(deltaTime) {
-        return (data, state, next) => {
-            const currentTime = Date.now();
-            const timeDiff = currentTime - state.previousTime;
-            if (timeDiff > deltaTime) {
-                state.previousTime += deltaTime;
-                this.with(data, next);
-            }
-        };
-    }
-    /**
-     * Builds a handler stack from the current handler.
-     * @param data The data to send in to the handler.
-     * @param handler The handler to use for processing.
-     */
-    with(data, handler) {
-        if (this.currentHandler !== undefined) {
-            this.currentHandler(data, this.state, handler);
-        }
-        else {
-            handler(data);
-        }
-    }
-}
-/**
- * A {@link Subscription} for a {@link BasicConsumer}.
- */
-class ConsumerSubscription {
-    /**
-     * Constructor.
-     * @param sub The event bus subscription backing this subscription.
-     * @param onDestroy A function which is called when this subscription is destroyed.
-     */
-    constructor(sub, onDestroy) {
-        this.sub = sub;
-        this.onDestroy = onDestroy;
-    }
-    /** @inheritdoc */
-    get isAlive() {
-        return this.sub.isAlive;
-    }
-    /** @inheritdoc */
-    get isPaused() {
-        return this.sub.isPaused;
-    }
-    /** @inheritdoc */
-    get canInitialNotify() {
-        return this.sub.canInitialNotify;
-    }
-    /** @inheritdoc */
-    pause() {
-        this.sub.pause();
-        return this;
-    }
-    /** @inheritdoc */
-    resume(initialNotify = false) {
-        this.sub.resume(initialNotify);
-        return this;
-    }
-    /** @inheritdoc */
-    destroy() {
-        this.sub.destroy();
-        this.onDestroy(this);
-    }
-}
-
-/**
- * A typed container for subscribers interacting with the Event Bus.
- */
-class EventSubscriber {
-    /**
-     * Creates an instance of an EventSubscriber.
-     * @param bus The EventBus that is the parent of this instance.
-     */
-    constructor(bus) {
-        this.bus = bus;
-    }
-    /**
-     * Subscribes to a topic on the bus.
-     * @param topic The topic to subscribe to.
-     * @returns A consumer to bind the event handler to.
-     */
-    on(topic) {
-        return new BasicConsumer((handler, paused) => {
-            return this.bus.on(topic, handler, paused);
-        });
-    }
-}
-
-var APLockType;
-(function (APLockType) {
-    APLockType[APLockType["Heading"] = 0] = "Heading";
-    APLockType[APLockType["Nav"] = 1] = "Nav";
-    APLockType[APLockType["Alt"] = 2] = "Alt";
-    APLockType[APLockType["Bank"] = 3] = "Bank";
-    APLockType[APLockType["WingLevel"] = 4] = "WingLevel";
-    APLockType[APLockType["Vs"] = 5] = "Vs";
-    APLockType[APLockType["Flc"] = 6] = "Flc";
-    APLockType[APLockType["Pitch"] = 7] = "Pitch";
-    APLockType[APLockType["Approach"] = 8] = "Approach";
-    APLockType[APLockType["Backcourse"] = 9] = "Backcourse";
-    APLockType[APLockType["Glideslope"] = 10] = "Glideslope";
-    APLockType[APLockType["VNav"] = 11] = "VNav";
-})(APLockType || (APLockType = {}));
-/** base publisher for simvars */
-class APSimVarPublisher extends SimVarPublisher {
-    /**
-     * Create an APSimVarPublisher
-     * @param bus The EventBus to publish to
-     * @param pacer An optional pacer to use to control the pace of publishing
-     */
-    constructor(bus, pacer = undefined) {
-        super(APSimVarPublisher.simvars, bus, pacer);
-    }
-}
-APSimVarPublisher.simvars = new Map([
-    ['ap_master_status', { name: 'AUTOPILOT MASTER', type: SimVarValueType.Bool }],
-    ['ap_yd_status', { name: 'AUTOPILOT YAW DAMPER', type: SimVarValueType.Bool }],
-    ['ap_disengage_status', { name: 'AUTOPILOT DISENGAGED', type: SimVarValueType.Bool }],
-    ['ap_heading_hold', { name: 'AUTOPILOT HEADING LOCK', type: SimVarValueType.Bool }],
-    ['ap_nav_hold', { name: 'AUTOPILOT NAV1 LOCK', type: SimVarValueType.Bool }],
-    ['ap_bank_hold', { name: 'AUTOPILOT BANK HOLD', type: SimVarValueType.Bool }],
-    ['ap_max_bank_id', { name: 'AUTOPILOT MAX BANK ID', type: SimVarValueType.Number }],
-    ['ap_max_bank_value', { name: 'AUTOPILOT MAX BANK', type: SimVarValueType.Degree }],
-    ['ap_wing_lvl_hold', { name: 'AUTOPILOT WING LEVELER', type: SimVarValueType.Bool }],
-    ['ap_approach_hold', { name: 'AUTOPILOT APPROACH HOLD', type: SimVarValueType.Bool }],
-    ['ap_backcourse_hold', { name: 'AUTOPILOT BACKCOURSE HOLD', type: SimVarValueType.Bool }],
-    ['ap_vs_hold', { name: 'AUTOPILOT VERTICAL HOLD', type: SimVarValueType.Bool }],
-    ['ap_flc_hold', { name: 'AUTOPILOT FLIGHT LEVEL CHANGE', type: SimVarValueType.Bool }],
-    ['ap_alt_hold', { name: 'AUTOPILOT ALTITUDE LOCK', type: SimVarValueType.Bool }],
-    ['ap_glideslope_hold', { name: 'AUTOPILOT GLIDESLOPE HOLD', type: SimVarValueType.Bool }],
-    ['ap_pitch_hold', { name: 'AUTOPILOT PITCH HOLD', type: SimVarValueType.Bool }],
-    ['ap_toga_hold', { name: 'AUTOPILOT TAKEOFF POWER ACTIVE', type: SimVarValueType.Bool }],
-    ['ap_heading_selected', { name: 'AUTOPILOT HEADING LOCK DIR:#index#', type: SimVarValueType.Degree, indexed: true }],
-    ['ap_altitude_selected', { name: 'AUTOPILOT ALTITUDE LOCK VAR:#index#', type: SimVarValueType.Feet, indexed: true }],
-    ['ap_pitch_selected', { name: 'AUTOPILOT PITCH HOLD REF', type: SimVarValueType.Degree }],
-    ['ap_vs_selected', { name: 'AUTOPILOT VERTICAL HOLD VAR:#index#', type: SimVarValueType.FPM, indexed: true }],
-    ['ap_fpa_selected', { name: 'L:WT_AP_FPA_Target:#index#', type: SimVarValueType.Degree, indexed: true }],
-    ['ap_ias_selected', { name: 'AUTOPILOT AIRSPEED HOLD VAR:#index#', type: SimVarValueType.Knots, indexed: true }],
-    ['ap_mach_selected', { name: 'AUTOPILOT MACH HOLD VAR:#index#', type: SimVarValueType.Number, indexed: true }],
-    ['ap_selected_speed_is_mach', { name: 'AUTOPILOT MANAGED SPEED IN MACH', type: SimVarValueType.Bool }],
-    ['ap_selected_speed_is_manual', { name: 'L:XMLVAR_SpeedIsManuallySet', type: SimVarValueType.Bool }],
-    ['flight_director_bank', { name: 'AUTOPILOT FLIGHT DIRECTOR BANK', type: SimVarValueType.Degree }],
-    ['flight_director_pitch', { name: 'AUTOPILOT FLIGHT DIRECTOR PITCH', type: SimVarValueType.Degree }],
-    ['flight_director_is_active_1', { name: 'AUTOPILOT FLIGHT DIRECTOR ACTIVE:1', type: SimVarValueType.Bool }],
-    ['flight_director_is_active_2', { name: 'AUTOPILOT FLIGHT DIRECTOR ACTIVE:2', type: SimVarValueType.Bool }],
-    ['vnav_active', { name: 'L:XMLVAR_VNAVButtonValue', type: SimVarValueType.Bool }]
-]);
-/**
- * Publishes autopilot data
- */
-class AutopilotPublisher extends BasePublisher {
-    /**
-     * Creates an AutopilotPublisher
-     * @param bus The event bus to publish to.
-     * @param pacer An optional pacer to use to control the rate of publishing.
-     */
-    constructor(bus, pacer) {
-        super(bus, pacer);
-    }
-    /**
-     * Publish an AP master engage event
-     */
-    publishMasterEngage() {
-        this.publish('ap_master_on', true);
-    }
-    /**
-     * Publish an AP master disengage event
-     */
-    publishMasterDisengage() {
-        this.publish('ap_master_off', true);
-    }
-    /**
-     * Publish a YD engage event
-     */
-    publishYdEngage() {
-        this.publish('ap_yd_on', true);
-    }
-    /**
-     * Publish a YD disengage event
-     */
-    publishYdDisengage() {
-        this.publish('ap_yd_off', true);
-    }
-    /**
-     * Publish a lock set event
-     * @param lock The lock/hold set
-     */
-    publishLockSet(lock) {
-        this.publish('ap_lock_set', lock);
-    }
-    /**
-     * Publish a lock release event
-     * @param lock The lock/hold released
-     */
-    publishLockRelease(lock) {
-        this.publish('ap_lock_release', lock);
-    }
-}
-/**
- * Manages an autopilot system
- */
-class AutopilotInstrument {
-    /**
-     * Create an AutopilotInstrument
-     * @param bus The event bus to publish to
-     */
-    constructor(bus) {
-        this.bus = bus;
-        // this.hEvents = this.bus.getSubscriber<HEvent>();
-        this.publisher = new AutopilotPublisher(bus);
-        this.simVarPublisher = new APSimVarPublisher(bus);
-        this.simVarSubscriber = new EventSubscriber(bus);
-    }
-    /**
-     * Initialize the instrument
-     */
-    init() {
-        this.publisher.startPublish();
-        this.simVarPublisher.startPublish();
-        // console.log('initting autopilot');
-        this.simVarSubscriber.on('ap_master_status').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishMasterEngage();
-            }
-            else {
-                this.publisher.publishMasterDisengage();
-            }
-        });
-        this.simVarSubscriber.on('ap_yd_status').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishYdEngage();
-            }
-            else {
-                this.publisher.publishYdDisengage();
-            }
-        });
-        this.simVarSubscriber.on('ap_alt_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Alt);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Alt);
-            }
-        });
-        this.simVarSubscriber.on('ap_pitch_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Pitch);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Pitch);
-            }
-        });
-        this.simVarSubscriber.on('ap_heading_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Heading);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Heading);
-            }
-        });
-        this.simVarSubscriber.on('ap_nav_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Nav);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Nav);
-            }
-        });
-        this.simVarSubscriber.on('ap_approach_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Approach);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Approach);
-            }
-        });
-        this.simVarSubscriber.on('ap_backcourse_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Backcourse);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Backcourse);
-            }
-        });
-        this.simVarSubscriber.on('ap_bank_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Bank);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Bank);
-            }
-        });
-        this.simVarSubscriber.on('ap_wing_lvl_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.WingLevel);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.WingLevel);
-            }
-        });
-        this.simVarSubscriber.on('ap_flc_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Flc);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Flc);
-            }
-        });
-        this.simVarSubscriber.on('ap_vs_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Vs);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Vs);
-            }
-        });
-        this.simVarSubscriber.on('ap_glideslope_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Glideslope);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Glideslope);
-            }
-        });
-        this.simVarSubscriber.on('vnav_active').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.VNav);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.VNav);
-            }
-        });
-    }
-    /** update our publishers */
-    onUpdate() {
-        this.simVarPublisher.onUpdate();
-    }
-}
-
-/**
- * Utility functions for working with arrays.
- */
-class ArrayUtils {
-    /**
-     * Creates a new array with initialized values.
-     * @param length The length of the new array.
-     * @param init A function which generates initial values for the new array at each index.
-     * @returns A new array of the specified length with initialized values.
-     */
-    static create(length, init) {
-        const newArray = [];
-        for (let i = 0; i < length; i++) {
-            newArray[i] = init(i);
-        }
-        return newArray;
-    }
-    /**
-     * Gets the element at a specific index in an array.
-     * @param array An array.
-     * @param index The index to access. Negative indexes are supported and access elements starting from the end of the
-     * array (`-1` accesses the last element, `-2` the second to last element, etc).
-     * @returns The element at the specified index in the array.
-     * @throws RangeError if the index is out of bounds.
-     */
-    static at(array, index) {
-        if (index < 0) {
-            index += array.length;
-        }
-        if (index < 0 || index >= array.length) {
-            throw new RangeError();
-        }
-        return array[index];
-    }
-    /**
-     * Gets the element at a specific index in an array, or `undefined` if the index is out of bounds.
-     * @param array An array.
-     * @param index The index to access. Negative indexes are supported and access elements starting from the end of the
-     * array (`-1` accesses the last element, `-2` the second to last element, etc).
-     * @returns The element at the specified index in the array, or `undefined` if the index is out of bounds.
-     */
-    static peekAt(array, index) {
-        if (index < 0) {
-            index += array.length;
-        }
-        return array[index];
-    }
-    /**
-     * Gets the first element of an array.
-     * @param array An array.
-     * @returns The first element of the specified array.
-     * @throws RangeError if the array is empty.
-     */
-    static first(array) {
-        if (array.length === 0) {
-            throw new RangeError();
-        }
-        return array[0];
-    }
-    /**
-     * Gets the first element of an array if it is not empty, or `undefined` otherwise.
-     * @param array An array.
-     * @returns The first element of an array if it is not empty, or `undefined` otherwise.
-     */
-    static peekFirst(array) {
-        return array[0];
-    }
-    /**
-     * Gets the last element of an array.
-     * @param array An array.
-     * @returns The last element of the specified array.
-     * @throws RangeError if the array is empty.
-     */
-    static last(array) {
-        if (array.length === 0) {
-            throw new RangeError();
-        }
-        return array[array.length - 1];
-    }
-    /**
-     * Gets the last element of an array if it is not empty, or `undefined` otherwise.
-     * @param array An array.
-     * @returns The last element of an array if it is not empty, or `undefined` otherwise.
-     */
-    static peekLast(array) {
-        return array[array.length - 1];
-    }
-    /**
-     * Checks if a certain element is included in an array.
-     * @param array An array.
-     * @param searchElement The element to search for.
-     * @param fromIndex The position in this array at which to begin searching for `searchElement`.
-     * @returns Whether the search element is included in the specified array.
-     */
-    static includes(array, searchElement, fromIndex) {
-        return array.includes(searchElement, fromIndex);
-    }
-    /**
-     * Checks if two arrays are equal to each other. This method considers two arrays `a` and `b` if their lengths are
-     * equal and `a[i]` equals `b[i]` for every valid index `i`. All empty arrays are considered equal to one another.
-     * @param a The first array.
-     * @param b The second array.
-     * @param equalsFunc The function to use to determine whether two array elements are equal to each other. Defaults
-     * to a function which uses the strict equality operator (`===`).
-     * @returns Whether the two specified arrays are equal.
-     */
-    static equals(a, b, equalsFunc = ArrayUtils.STRICT_EQUALS) {
-        if (a.length !== b.length) {
-            return false;
-        }
-        for (let i = 0; i < a.length; i++) {
-            if (!equalsFunc(a[i], b[i])) {
-                return false;
-            }
-        }
-        return true;
-    }
-    /**
-     * Creates a new array by mapping each element of an existing array using a mapping function, then flattening the
-     * mapped elements to a maximum depth of one, leaving the original array intact.
-     * @param array An array.
-     * @param map A function which is called once on each element of the original array to map it to an arbitrary value.
-     * @returns A new array which was created by mapping each element of the specified array, then flattening the mapped
-     * elements to a maximum depth of one.
-     */
-    static flatMap(array, map) {
-        const out = [];
-        for (let i = 0; i < array.length; i++) {
-            const mapped = map(array[i], i, array);
-            if (Array.isArray(mapped)) {
-                for (let j = 0; j < mapped.length; j++) {
-                    out[out.length] = mapped[j];
-                }
-            }
-            else {
-                out[out.length] = mapped;
-            }
-        }
-        return out;
-    }
-    /**
-     * Creates a new array by flattening an existing array to a maximum depth, leaving the original array intact. The
-     * process of flattening replaces each element in the array that is itself an array with the sequence of elements
-     * found in the sub-array, recursively up to the maximum depth.
-     * @param array An array.
-     * @param depth The maximum depth to which to flatten. Values less than or equal to zero will result in no flattening
-     * (in other words, a shallow copy of the original array will be returned). Defaults to `1`.
-     * @returns A new array which was created by flattening the specified array to the specified maximum depth.
-     */
-    static flat(array, depth = 1) {
-        const out = [];
-        this.flatHelper(array, depth, 0, out);
-        return out;
-    }
-    /**
-     * Recursively flattens an array and writes the flattened sequence of elements into another array.
-     * @param array The array to flatten.
-     * @param maxDepth The maximum depth to which to flatten.
-     * @param depth The current flattening depth.
-     * @param out The array to which to write the flattened sequence of elements.
-     */
-    static flatHelper(array, maxDepth, depth, out) {
-        for (let i = 0; i < array.length; i++) {
-            const element = array[i];
-            if (Array.isArray(element) && depth < maxDepth) {
-                this.flatHelper(element, maxDepth, depth + 1, out);
-            }
-            else {
-                out[out.length] = element;
-            }
-        }
-    }
-    /**
-     * Performs a shallow copy of an array. After the operation is complete, the target array will have the same
-     * length and the same elements in the same order as the source array.
-     * @param source The array to copy.
-     * @param target The array to copy into. If not defined, a new array will be created.
-     * @returns The target array, after the source array has been copied into it.
-     */
-    static shallowCopy(source, target = []) {
-        target.length = source.length;
-        for (let i = 0; i < source.length; i++) {
-            target[i] = source[i];
-        }
-        return target;
-    }
-    /**
-     * Performs a binary search on a sorted array to find the index of the first or last element in the array whose
-     * sorting order is equal to a query element. If no such element in the array exists, `-(index + 1)` is returned,
-     * where `index` is the index at which the query element would be found if it were contained in the sorted array.
-     * @param array An array.
-     * @param element The element to search for.
-     * @param comparator A function which determines the sorting order of elements in the array. The function should
-     * return a negative number if the first element is to be sorted before the second, a positive number if the first
-     * element is to be sorted after the second, or zero if both elements are to be sorted equivalently.
-     * @param first If `true`, this method will find the first (lowest) matching index if there are multiple matching
-     * indexes, otherwise this method will find the last (highest) matching index. Defaults to `true`.
-     * @returns The index of the first (if `first` is `true`) or last (if `first` is `false`) element in the specified
-     * array whose sorting order is equal to the query element, or `-(index + 1)`, where `index` is the index at which
-     * the query element would be found if it were contained in the sorted array, if no element in the array has a
-     * sorting order equal to the query.
-     */
-    static binarySearch(array, element, comparator, first = true) {
-        let min = 0;
-        let max = array.length;
-        let index = Math.floor((min + max) / 2);
-        while (min < max) {
-            const compare = comparator(element, array[index]);
-            if (compare < 0) {
-                max = index;
-            }
-            else if (compare > 0) {
-                min = index + 1;
-            }
-            else {
-                const delta = first ? -1 : 1;
-                while (index + delta >= 0 && index + delta < array.length && comparator(element, array[index + delta]) === 0) {
-                    index += delta;
-                }
-                return index;
-            }
-            index = Math.floor((min + max) / 2);
-        }
-        return -(index + 1);
-    }
-    /**
-     * Gets the length of the longest string in the array.
-     * @param array The array to search in.
-     * @returns length of the longest string
-     */
-    static getMaxStringLength(array) {
-        return array.reduce((accum, curr) => curr.length > accum ? curr.length : accum, 0);
-    }
-}
-ArrayUtils.STRICT_EQUALS = (a, b) => a === b;
-
-/** A collection of helper functions dealing with radios and frequencies. */
-class RadioUtils {
-    /**
-     * Checks whether a frequency is a NAV frequency.
-     * @param freq The frequency to check, in megahertz.
-     * @returns Whether the specified frequency is a NAV frequency.
-     */
-    static isNavFrequency(freq) {
-        const freqKhz = Math.round(freq * 1000);
-        if (freqKhz < 108e3 || freqKhz > 117950) {
-            return false;
-        }
-        return freqKhz % 50 === 0;
-    }
-    /**
-     * Checks if frequency is a localizer frequency based on the number.
-     * @param freq The frequency to check, in megahertz.
-     * @returns True if frequency is between 108.1 and 111.95 MHz (inclusive) and the tenths place is odd.
-     */
-    static isLocalizerFrequency(freq) {
-        return freq >= 108.1 && freq <= 111.95 && (Math.trunc(freq * 10) % 2 === 1);
-    }
-    /**
-     * Checks whether a frequency is a 8.33 kHz-spacing COM frequency.
-     * @param freq The frequency to check, in megahertz.
-     * @returns Whether the specified frequency is a 8.33 kHz-spacing COM frequency.
-     */
-    static isCom833Frequency(freq) {
-        const freqKhz = Math.round(freq * 1000);
-        if (freqKhz < 118e3 || freqKhz > 136990) {
-            return false;
-        }
-        return RadioUtils.COM_833_ENDINGS.includes(freqKhz % 50);
-    }
-    /**
-     * Checks whether a frequency is a 25 kHz-spacing COM frequency.
-     * @param freq The frequency to check, in megahertz.
-     * @returns Whether the specified frequency is a 25 kHz-spacing COM frequency.
-     */
-    static isCom25Frequency(freq) {
-        const freqKhz = Math.round(freq * 1000);
-        if (freqKhz < 118e3 || freqKhz > 136975) {
-            return false;
-        }
-        return freqKhz % 25 === 0;
-    }
-    /**
-     * Checks whether a frequency is an ADF frequency.
-     * @param freq The frequency to check, in kilohertz.
-     * @returns Whether the specified frequency is an ADF frequency.
-     */
-    static isAdfFrequency(freq) {
-        const freqHz = Math.round(freq * 1000);
-        if (freqHz < 190e3 || freqHz > 1799500) {
-            return false;
-        }
-        return freqHz % 500 === 0;
-    }
-}
-RadioUtils.COM_833_ENDINGS = [5, 10, 15, 30, 35, 40];
-
-/**
- * VOR signal to/from flags.
- */
-var VorToFrom;
-(function (VorToFrom) {
-    VorToFrom[VorToFrom["OFF"] = 0] = "OFF";
-    VorToFrom[VorToFrom["TO"] = 1] = "TO";
-    VorToFrom[VorToFrom["FROM"] = 2] = "FROM";
-})(VorToFrom || (VorToFrom = {}));
-/** Marker beacon signal state. */
-var MarkerBeaconState;
-(function (MarkerBeaconState) {
-    MarkerBeaconState[MarkerBeaconState["Inactive"] = 0] = "Inactive";
-    MarkerBeaconState[MarkerBeaconState["Outer"] = 1] = "Outer";
-    MarkerBeaconState[MarkerBeaconState["Middle"] = 2] = "Middle";
-    MarkerBeaconState[MarkerBeaconState["Inner"] = 3] = "Inner";
-})(MarkerBeaconState || (MarkerBeaconState = {}));
-/**
- * A publisher of NAV, COM, ADF radio and marker beacon tuning-related sim var events.
- */
-class NavComSimVarPublisher extends SimVarPublisher {
-    /**
-     * Creates a new instance of NavComSimVarPublisher.
-     * @param bus The event bus to which to publish.
-     * @param pacer An optional pacer to use to control the pace of publishing
-     */
-    constructor(bus, pacer = undefined) {
-        const simvars = new Map([
-            ...NavComSimVarPublisher.createNavRadioDefinitions(),
-            ...NavComSimVarPublisher.createComRadioDefinitions(),
-            ...NavComSimVarPublisher.createAdfRadioDefinitions(),
-            ...NavComSimVarPublisher.createMarkerBeaconDefinitions(),
-            ...NavComSimVarPublisher.createGpsDefinitions()
-        ]);
-        super(simvars, bus, pacer);
-    }
-    /**
-     * Creates an array of nav radio sim var event definitions.
-     * @returns An array of nav radio sim var event definitions.
-     */
-    static createNavRadioDefinitions() {
-        return [
-            ['nav_active_frequency', { name: 'NAV ACTIVE FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_standby_frequency', { name: 'NAV STANDBY FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_signal', { name: 'NAV SIGNAL:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_sound', { name: 'NAV SOUND:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_ident', { name: 'NAV IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_volume', { name: 'NAV VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_obs', { name: 'NAV OBS:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_has_dme', { name: 'NAV HAS DME:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_has_nav', { name: 'NAV HAS NAV:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_cdi', { name: 'NAV CDI:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_dme', { name: 'NAV DME:#index#', type: SimVarValueType.NM, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_radial', { name: 'NAV RADIAL:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_radial_error', { name: 'NAV RADIAL ERROR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_to_from', { name: 'NAV TOFROM:#index#', type: SimVarValueType.Enum, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_localizer', { name: 'NAV HAS LOCALIZER:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_localizer_crs', { name: 'NAV LOCALIZER:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_loc_airport_ident', { name: 'NAV LOC AIRPORT IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_loc_runway_designator', { name: 'NAV LOC RUNWAY DESIGNATOR:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_loc_runway_number', { name: 'NAV LOC RUNWAY NUMBER:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_glideslope', { name: 'NAV HAS GLIDE SLOPE:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_gs_error', { name: 'NAV GLIDE SLOPE ERROR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_raw_gs', { name: 'NAV RAW GLIDE SLOPE:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_lla', { name: 'NAV VOR LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_dme_lla', { name: 'NAV DME LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_gs_lla', { name: 'NAV GS LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_magvar', { name: 'NAV MAGVAR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }]
-        ];
-    }
-    /**
-     * Creates an array of com radio sim var event definitions.
-     * @returns An array of com radio sim var event definitions.
-     */
-    static createComRadioDefinitions() {
-        return [
-            ['com_active_frequency', { name: 'COM ACTIVE FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_standby_frequency', { name: 'COM STANDBY FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_active_facility_name', { name: 'COM ACTIVE FREQ NAME:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_active_facility_type', { name: 'COM ACTIVE FREQ TYPE:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_active_facility_ident', { name: 'COM ACTIVE FREQ IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
-            // Note: 'COM RECEIVE' is whether the radio is receiving OR transmitting,
-            // whereas 'COM RECEIVE EX1' is exclusively its receiving state.
-            ['com_receive', { name: 'COM RECEIVE EX1:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_status', { name: 'COM STATUS:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_transmit', { name: 'COM TRANSMIT:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_spacing_mode', { name: 'COM SPACING MODE:#index#', type: SimVarValueType.Enum, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_volume', { name: 'COM VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2, 3], defaultIndex: null }],
-        ];
-    }
-    /**
-     * Creates an array of ADF radio sim var event definitions.
-     * @returns An array of ADF radio sim var event definitions.
-     */
-    static createAdfRadioDefinitions() {
-        return [
-            ['adf_active_frequency', { name: 'ADF ACTIVE FREQUENCY:#index#', type: SimVarValueType.KHz, indexed: [1, 2], defaultIndex: null }],
-            ['adf_standby_frequency', { name: 'ADF STANDBY FREQUENCY:#index#', type: SimVarValueType.KHz, indexed: [1, 2], defaultIndex: null }],
-            ['adf_sound', { name: 'ADF SOUND:#index#', type: SimVarValueType.Bool, indexed: [1, 2], defaultIndex: null }],
-            ['adf_volume', { name: 'ADF VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2], defaultIndex: null }],
-            ['adf_ident', { name: 'ADF IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2], defaultIndex: null }],
-            ['adf_signal', { name: 'ADF SIGNAL:#index#', type: SimVarValueType.Number, indexed: [1, 2], defaultIndex: null }],
-            ['adf_bearing', { name: 'ADF RADIAL:#index#', type: SimVarValueType.Degree, indexed: [1, 2], defaultIndex: null }],
-            ['adf_lla', { name: 'ADF LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2], defaultIndex: null }]
-        ];
-    }
-    /**
-     * Creates an array of GPS sim var event definitions.
-     * @returns An array of GPS sim var event definitions.
-     */
-    static createMarkerBeaconDefinitions() {
-        return [
-            ['marker_beacon_hisense_on', { name: 'MARKER BEACON SENSITIVITY HIGH', type: SimVarValueType.Bool }],
-            ['marker_beacon_sound', { name: 'MARKER SOUND', type: SimVarValueType.Bool }],
-            ['marker_beacon_state', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }],
-            ['mkr_bcn_state_simvar', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }]
-        ];
-    }
-    /**
-     * Creates an array of GPS sim var event definitions.
-     * @returns An array of GPS sim var event definitions.
-     */
-    static createGpsDefinitions() {
-        return [
-            ['gps_dtk', { name: 'GPS WP DESIRED TRACK', type: SimVarValueType.Degree }],
-            ['gps_xtk', { name: 'GPS WP CROSS TRK', type: SimVarValueType.NM }],
-            ['gps_wp', { name: 'GPS WP NEXT ID', type: SimVarValueType.NM }],
-            ['gps_wp_bearing', { name: 'GPS WP BEARING', type: SimVarValueType.Degree }],
-            ['gps_wp_distance', { name: 'GPS WP DISTANCE', type: SimVarValueType.NM }],
-            ['gps_obs_active_simvar', { name: 'GPS OBS ACTIVE', type: SimVarValueType.Bool }],
-            ['gps_obs_value_simvar', { name: 'GPS OBS VALUE', type: SimVarValueType.Degree }]
-        ];
-    }
-}
-
-/// <reference types="@microsoft/msfs-types/js/simvar" />
-/**
- * A publisher of nav radio, ADF radio, GPS, and marker beacon-related sim var events.
- *
- * @deprecated Please use `NavComSimVarPublisher` instead.
- */
-class NavProcSimVarPublisher extends SimVarPublisher {
-    /**
-     * Create a NavProcSimVarPublisher
-     * @param bus The EventBus to publish to
-     * @param pacer An optional pacer to use to control the pace of publishing
-     */
-    constructor(bus, pacer = undefined) {
-        super(NavProcSimVarPublisher.simvars, bus, pacer);
-    }
-    /**
-     * Creates an array of nav radio sim var event definitions for an indexed nav radio.
-     * @param index The index of the nav radio.
-     * @returns An array of nav radio sim var event definitions for the specified nav radio.
-     */
-    static createNavRadioDefinitions(index) {
-        return [
-            [`nav_signal_${index}`, { name: `NAV SIGNAL:${index}`, type: SimVarValueType.Number }],
-            [`nav_obs_${index}`, { name: `NAV OBS:${index}`, type: SimVarValueType.Degree }],
-            [`nav_has_dme_${index}`, { name: `NAV HAS DME:${index}`, type: SimVarValueType.Bool }],
-            [`nav_has_nav_${index}`, { name: `NAV HAS NAV:${index}`, type: SimVarValueType.Bool }],
-            [`nav_cdi_${index}`, { name: `NAV CDI:${index}`, type: SimVarValueType.Number }],
-            [`nav_dme_${index}`, { name: `NAV DME:${index}`, type: SimVarValueType.NM }],
-            [`nav_radial_${index}`, { name: `NAV RADIAL:${index}`, type: SimVarValueType.Degree }],
-            [`nav_radial_error_${index}`, { name: `NAV RADIAL ERROR:${index}`, type: SimVarValueType.Degree }],
-            [`nav_ident_${index}`, { name: `NAV IDENT:${index}`, type: SimVarValueType.String }],
-            [`nav_to_from_${index}`, { name: `NAV TOFROM:${index}`, type: SimVarValueType.Enum }],
-            [`nav_localizer_${index}`, { name: `NAV HAS LOCALIZER:${index}`, type: SimVarValueType.Bool }],
-            [`nav_localizer_crs_${index}`, { name: `NAV LOCALIZER:${index}`, type: SimVarValueType.Number }],
-            [`nav_loc_airport_ident_${index}`, { name: `NAV LOC AIRPORT IDENT:${index}`, type: SimVarValueType.String }],
-            [`nav_loc_runway_designator_${index}`, { name: `NAV LOC RUNWAY DESIGNATOR:${index}`, type: SimVarValueType.Number }],
-            [`nav_loc_runway_number_${index}`, { name: `NAV LOC RUNWAY NUMBER:${index}`, type: SimVarValueType.Number }],
-            [`nav_glideslope_${index}`, { name: `NAV HAS GLIDE SLOPE:${index}`, type: SimVarValueType.Bool }],
-            [`nav_gs_error_${index}`, { name: `NAV GLIDE SLOPE ERROR:${index}`, type: SimVarValueType.Degree }],
-            [`nav_raw_gs_${index}`, { name: `NAV RAW GLIDE SLOPE:${index}`, type: SimVarValueType.Degree }],
-            [`nav_lla_${index}`, { name: `NAV VOR LATLONALT:${index}`, type: SimVarValueType.LLA }],
-            [`nav_dme_lla_${index}`, { name: `NAV DME LATLONALT:${index}`, type: SimVarValueType.LLA }],
-            [`nav_gs_lla_${index}`, { name: `NAV GS LATLONALT:${index}`, type: SimVarValueType.LLA }],
-            [`nav_magvar_${index}`, { name: `NAV MAGVAR:${index}`, type: SimVarValueType.Degree }]
-        ];
-    }
-    /**
-     * Creates an array of ADF radio sim var event definitions for an indexed ADF radio.
-     * @param index The index of the ADF radio.
-     * @returns An array of ADF radio sim var event definitions for the specified ADF radio.
-     */
-    static createAdfRadioDefinitions(index) {
-        return [
-            [`adf_signal_${index}`, { name: `ADF SIGNAL:${index}`, type: SimVarValueType.Number }],
-            [`adf_bearing_${index}`, { name: `ADF RADIAL:${index}`, type: SimVarValueType.Degree }],
-            [`adf_lla_${index}`, { name: `ADF LATLONALT:${index}`, type: SimVarValueType.LLA }]
-        ];
-    }
-}
-NavProcSimVarPublisher.simvars = new Map([
-    ...NavProcSimVarPublisher.createNavRadioDefinitions(1),
-    ...NavProcSimVarPublisher.createNavRadioDefinitions(2),
-    ...NavProcSimVarPublisher.createNavRadioDefinitions(3),
-    ...NavProcSimVarPublisher.createNavRadioDefinitions(4),
-    ...NavProcSimVarPublisher.createAdfRadioDefinitions(1),
-    ...NavProcSimVarPublisher.createAdfRadioDefinitions(2),
-    ['gps_dtk', { name: 'GPS WP DESIRED TRACK', type: SimVarValueType.Degree }],
-    ['gps_xtk', { name: 'GPS WP CROSS TRK', type: SimVarValueType.NM }],
-    ['gps_wp', { name: 'GPS WP NEXT ID', type: SimVarValueType.NM }],
-    ['gps_wp_bearing', { name: 'GPS WP BEARING', type: SimVarValueType.Degree }],
-    ['gps_wp_distance', { name: 'GPS WP DISTANCE', type: SimVarValueType.NM }],
-    ['mkr_bcn_state_simvar', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }],
-    ['gps_obs_active_simvar', { name: 'GPS OBS ACTIVE', type: SimVarValueType.Bool }],
-    ['gps_obs_value_simvar', { name: 'GPS OBS VALUE', type: SimVarValueType.Degree }]
-]);
-//
-// Navigation event configurations
-//
-var NavSourceType;
-(function (NavSourceType) {
-    NavSourceType[NavSourceType["Nav"] = 0] = "Nav";
-    NavSourceType[NavSourceType["Gps"] = 1] = "Gps";
-    NavSourceType[NavSourceType["Adf"] = 2] = "Adf";
-})(NavSourceType || (NavSourceType = {}));
-
-/**
- * An instrument that gathers localizer and glideslope information for use by
- * the AP systems.
- *
- * Requires that the topics defined in {@link NavComEvents} are published to the event bus.
- */
-class APRadioNavInstrument {
-    /**
-     * Creates an instance of the APRadioNavInstrument.
-     * @param bus The event bus to use with this instance.
-     */
-    constructor(bus) {
-        this.bus = bus;
-        this.navRadioData = ArrayUtils.create(5, index => {
-            index = Math.max(1, index);
-            return {
-                gsLocation: new LatLongAlt(0, 0),
-                navLocation: new LatLongAlt(0, 0),
-                glideslope: this.createEmptyGlideslope({ index, type: NavSourceType.Nav }),
-                localizer: this.createEmptyLocalizer({ index, type: NavSourceType.Nav }),
-                cdi: this.createEmptyCdi({ index, type: NavSourceType.Nav }),
-                obs: this.createEmptyObs({ index, type: NavSourceType.Nav }),
-                radialError: 0,
-                magVar: 0
-            };
-        });
-        this.currentCdiIndex = 1;
-        this.publisher = bus.getPublisher();
-    }
-    /** @inheritdoc */
-    init() {
-        const navComSubscriber = this.bus.getSubscriber();
-        for (let i = 1; i < 5; i++) {
-            navComSubscriber.on(`nav_glideslope_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'isValid'));
-            navComSubscriber.on(`nav_gs_lla_${i}`).handle(this.setGlideslopePosition.bind(this, i));
-            navComSubscriber.on(`nav_gs_error_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'deviation'));
-            navComSubscriber.on(`nav_raw_gs_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'gsAngle'));
-            navComSubscriber.on(`nav_localizer_${i}`).whenChanged().handle(this.setLocalizerValue.bind(this, i, 'isValid'));
-            navComSubscriber.on(`nav_localizer_crs_${i}`).whenChanged().handle(this.setLocalizerValue.bind(this, i, 'course'));
-            navComSubscriber.on(`nav_cdi_${i}`).whenChanged().handle(this.setCDIValue.bind(this, i, 'deviation'));
-            navComSubscriber.on(`nav_has_nav_${i}`).whenChanged().handle(hasNav => !hasNav && this.setCDIValue(i, 'deviation', null));
-            navComSubscriber.on(`nav_obs_${i}`).whenChanged().handle(this.setOBSValue.bind(this, i, 'heading'));
-            navComSubscriber.on(`nav_lla_${i}`).handle(this.setNavPosition.bind(this, i));
-            navComSubscriber.on(`nav_radial_error_${i}`).whenChanged().handle(this.setRadialError.bind(this, i));
-            navComSubscriber.on(`nav_magvar_${i}`).whenChanged().handle(this.setMagVar.bind(this, i));
-        }
-        const navEvents = this.bus.getSubscriber();
-        navEvents.on('cdi_select').handle(source => {
-            const oldIndex = this.currentCdiIndex;
-            this.currentCdiIndex = source.type === NavSourceType.Nav ? source.index : 0;
-            if (oldIndex !== this.currentCdiIndex) {
-                const data = this.navRadioData[this.currentCdiIndex];
-                this.publisher.pub('nav_radio_active_gs_location', data.gsLocation);
-                this.publisher.pub('nav_radio_active_nav_location', data.navLocation);
-                this.publisher.pub('nav_radio_active_glideslope', data.glideslope);
-                this.publisher.pub('nav_radio_active_localizer', data.localizer);
-                this.publisher.pub('nav_radio_active_cdi_deviation', data.cdi);
-                this.publisher.pub('nav_radio_active_obs_setting', data.obs);
-                this.publisher.pub('nav_radio_active_radial_error', data.radialError);
-                this.publisher.pub('nav_radio_active_magvar', data.magVar);
-            }
-        });
-    }
-    /** @inheritdoc */
-    onUpdate() {
-        // noop
-    }
-    /**
-     * Sets a value in a nav radio glideslope.
-     * @param index The index of the nav radio.
-     * @param field The field to set.
-     * @param value The value to set the field to.
-     */
-    setGlideslopeValue(index, field, value) {
-        this.navRadioData[index].glideslope[field] = value;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_glideslope', this.navRadioData[index].glideslope);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_glideslope_1', this.navRadioData[index].glideslope);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_glideslope_2', this.navRadioData[index].glideslope);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_glideslope_3', this.navRadioData[index].glideslope);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_glideslope_4', this.navRadioData[index].glideslope);
-                break;
-        }
-    }
-    /**
-     * Sends the current glideslope's LLA position.
-     * @param index The index of the nav radio.
-     * @param lla The LLA to send.
-     */
-    setGlideslopePosition(index, lla) {
-        this.navRadioData[index].gsLocation = lla;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_gs_location', lla);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_gs_location_1', this.navRadioData[index].gsLocation);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_gs_location_2', this.navRadioData[index].gsLocation);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_gs_location_3', this.navRadioData[index].gsLocation);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_gs_location_4', this.navRadioData[index].gsLocation);
-                break;
-        }
-    }
-    /**
-     * Sends the current nav's LLA position.
-     * @param index The index of the nav radio.
-     * @param lla The LLA to send.
-     */
-    setNavPosition(index, lla) {
-        this.navRadioData[index].navLocation = lla;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_nav_location', lla);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_nav_location_1', this.navRadioData[index].navLocation);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_nav_location_2', this.navRadioData[index].navLocation);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_nav_location_3', this.navRadioData[index].navLocation);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_nav_location_4', this.navRadioData[index].navLocation);
-                break;
-        }
-    }
-    /**
-     * Sets a value in a nav radio localizer.
-     * @param index The index of the nav radio.
-     * @param field The field to set.
-     * @param value The value to set the field to.
-     */
-    setLocalizerValue(index, field, value) {
-        this.navRadioData[index].localizer[field] = value;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_localizer', this.navRadioData[index].localizer);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_localizer_1', this.navRadioData[index].localizer);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_localizer_2', this.navRadioData[index].localizer);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_localizer_3', this.navRadioData[index].localizer);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_localizer_4', this.navRadioData[index].localizer);
-                break;
-        }
-    }
-    /**
-     * Sets a value in a nav radio localizer.
-     * @param index The index of the nav radio.
-     * @param field The field to set.
-     * @param value The value to set the field to.
-     */
-    setCDIValue(index, field, value) {
-        this.navRadioData[index].cdi[field] = value;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_cdi_deviation', this.navRadioData[index].cdi);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_cdi_1', this.navRadioData[index].cdi);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_cdi_2', this.navRadioData[index].cdi);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_cdi_3', this.navRadioData[index].cdi);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_cdi_4', this.navRadioData[index].cdi);
-                break;
-        }
-    }
-    /**
-     * Sets a value in a nav radio localizer.
-     * @param index The index of the nav radio.
-     * @param field The field to set.
-     * @param value The value to set the field to.
-     */
-    setOBSValue(index, field, value) {
-        this.navRadioData[index].obs[field] = value;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_obs_setting', this.navRadioData[index].obs);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_obs_1', this.navRadioData[index].obs);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_obs_2', this.navRadioData[index].obs);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_obs_3', this.navRadioData[index].obs);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_obs_4', this.navRadioData[index].obs);
-                break;
-        }
-    }
-    /**
-     * Sets the radial error of a nav radio signal source.
-     * @param index The index of the nav radio.
-     * @param radialError The radial error to set.
-     */
-    setRadialError(index, radialError) {
-        this.navRadioData[index].radialError = radialError;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_radial_error', radialError);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_radial_error_1', this.navRadioData[index].radialError);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_radial_error_2', this.navRadioData[index].radialError);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_radial_error_3', this.navRadioData[index].radialError);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_radial_error_4', this.navRadioData[index].radialError);
-                break;
-        }
-    }
-    /**
-     * Sets the magnetic variation of a nav radio signal source.
-     * @param index The index of the nav radio.
-     * @param magVar The magvar to set.
-     */
-    setMagVar(index, magVar) {
-        magVar = NavMath.normalizeHeading(-magVar + 180) % 360 - 180;
-        this.navRadioData[index].magVar = magVar;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_magvar', magVar);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_magvar_1', this.navRadioData[index].magVar);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_magvar_2', this.navRadioData[index].magVar);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_magvar_3', this.navRadioData[index].magVar);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_magvar_4', this.navRadioData[index].magVar);
-                break;
-        }
-    }
-    /**
-     * Creates an empty localizer data.
-     * @param id The nav source ID.
-     * @returns New empty localizer data.
-     */
-    createEmptyLocalizer(id) {
-        return {
-            isValid: false,
-            course: 0,
-            source: id
-        };
-    }
-    /**
-     * Creates an empty glideslope data.
-     * @param id The nav source ID.
-     * @returns New empty glideslope data.
-     */
-    createEmptyGlideslope(id) {
-        return {
-            isValid: false,
-            gsAngle: 0,
-            deviation: 0,
-            source: id
-        };
-    }
-    /**
-     * Creates an empty CDI data.
-     * @param id The nav source ID.
-     * @returns New empty CDI data.
-     */
-    createEmptyCdi(id) {
-        return {
-            deviation: 0,
-            source: id
-        };
-    }
-    /**
-     * Creates an empty OBS data.
-     * @param id The nav source ID.
-     * @returns New empty OBS data.
-     */
-    createEmptyObs(id) {
-        return {
-            heading: 0,
-            source: id
-        };
-    }
-}
-
-/**
- * InstrumentBackplane provides a common control point for aggregating and
- * managing any number of publishers.  This can be used as an "update loop"
- * corral", amongst other things.
- */
-class InstrumentBackplane {
-    /**
-     * Create an InstrumentBackplane
-     */
-    constructor() {
-        this.publishers = new Map();
-        this.instruments = new Map();
-    }
-    /**
-     * Initialize all the things. This is initially just a proxy for the
-     * private initPublishers() and initInstruments() methods.
-     *
-     * This should be simplified.
-     */
-    init() {
-        this.initPublishers();
-        this.initInstruments();
-    }
-    /**
-     * Update all the things.  This is initially just a proxy for the private
-     * updatePublishers() and updateInstruments() methods.
-     *
-     * This should be simplified.
-     */
-    onUpdate() {
-        this.updatePublishers();
-        this.updateInstruments();
-    }
-    /**
-     * Add a publisher to this backplane.
-     * @param name A symbolic name for the publisher for reference.
-     * @param publisher The publisher to add.
-     * @param override Whether to override any existing publishers added to this backplane under the same name. If
-     * `true`, any existing publisher with the same name will removed from this backplane and the new one added in its
-     * place. If `false`, the new publisher will not be added if this backplane already has a publisher with the same
-     * name or a publisher of the same type. Defaults to `false`.
-     */
-    addPublisher(name, publisher, override = false) {
-        if (override || !InstrumentBackplane.checkAlreadyExists(name, publisher, this.publishers)) {
-            this.publishers.set(name, publisher);
-        }
-    }
-    /**
-     * Add an instrument to this backplane.
-     * @param name A symbolic name for the instrument for reference.
-     * @param instrument The instrument to add.
-     * @param override Whether to override any existing instruments added to this backplane under the same name. If
-     * `true`, any existing instrument with the same name will removed from this backplane and the new one added in its
-     * place. If `false`, the new instrument will not be added if this backplane already has an instrument with the same
-     * name or an instrument of the same type. Defaults to `false`.
-     */
-    addInstrument(name, instrument, override = false) {
-        if (override || !InstrumentBackplane.checkAlreadyExists(name, instrument, this.instruments)) {
-            this.instruments.set(name, instrument);
-        }
-    }
-    /**
-     * Gets a publisher from this backplane.
-     * @param name The name of the publisher to get.
-     * @returns The publisher in this backplane with the specified name, or `undefined` if there is no such publisher.
-     */
-    getPublisher(name) {
-        return this.publishers.get(name);
-    }
-    /**
-     * Gets an instrument from this backplane.
-     * @param name The name of the instrument to get.
-     * @returns The instrument in this backplane with the specified name, or `undefined` if there is no such instrument.
-     */
-    getInstrument(name) {
-        return this.instruments.get(name);
-    }
-    /**
-     * Checks for duplicate publishers or instruments of the same name or type.
-     * @param name the name of the publisher or instrument
-     * @param objToCheck the object to check
-     * @param map the map to check
-     * @returns true if the object is already in the map
-     */
-    static checkAlreadyExists(name, objToCheck, map) {
-        if (map.has(name)) {
-            console.warn(`${name} already exists in backplane.`);
-            return true;
-        }
-        // check if there already is a publisher with the same type
-        for (const p of map.values()) {
-            if (p.constructor === objToCheck.constructor) {
-                console.warn(`${name} already exists in backplane.`);
-                return true;
-            }
-        }
-        return false;
-    }
-    /**
-     * Initialize all of the publishers that you hold.
-     */
-    initPublishers() {
-        for (const publisher of this.publishers.values()) {
-            publisher.startPublish();
-        }
-    }
-    /**
-     * Initialize all of the instruments that you hold.
-     */
-    initInstruments() {
-        for (const instrument of this.instruments.values()) {
-            instrument.init();
-        }
-    }
-    /**
-     * Update all of the publishers that you hold.
-     */
-    updatePublishers() {
-        for (const publisher of this.publishers.values()) {
-            publisher.onUpdate();
-        }
-    }
-    /**
-     * Update all of the instruments that you hold.
-     */
-    updateInstruments() {
-        for (const instrument of this.instruments.values()) {
-            instrument.onUpdate();
-        }
-    }
-}
-
-/// <reference types="@microsoft/msfs-types/js/simvar" />
-/**
- * A publisher for Brake information.
- */
-class BrakeSimvarPublisher extends SimVarPublisher {
-    /**
-     * Create a BrakePublisher.
-     * @param bus The EventBus to publish to
-     * @param pacer An optional pacer to use to control the rate of publishing
-     */
-    constructor(bus, pacer = undefined) {
-        const simvars = new Map([
-            ['brake_position_left', { name: 'BRAKE LEFT POSITION', type: SimVarValueType.Percent }],
-            ['brake_position_right', { name: 'BRAKE RIGHT POSITION', type: SimVarValueType.Percent }],
-            ['brake_position_left_raw', { name: 'BRAKE LEFT POSITION EX1', type: SimVarValueType.Percent }],
-            ['brake_position_right_raw', { name: 'BRAKE RIGHT POSITION EX1', type: SimVarValueType.Percent }],
-            ['left_wheel_rpm', { name: 'LEFT WHEEL RPM', type: SimVarValueType.RPM }],
-            ['right_wheel_rpm', { name: 'RIGHT WHEEL RPM', type: SimVarValueType.RPM }],
-            ['parking_brake_set', { name: 'BRAKE PARKING POSITION', type: SimVarValueType.Bool }],
-            ['autobrake_switch_pos', { name: 'AUTO BRAKE SWITCH CB', type: SimVarValueType.Number }],
-            ['autobrake_active', { name: 'AUTOBRAKES ACTIVE', type: SimVarValueType.Bool }],
-        ]);
-        super(simvars, bus, pacer);
-    }
-    /** @inheritdoc */
-    onUpdate() {
-        super.onUpdate();
-    }
-}
-
-/**
- * A publisher of clock events.
- */
-class ClockPublisher extends BasePublisher {
-    /**
-     * Creates a new instance of ClockPublisher.
-     * @param bus The event bus.
-     * @param pacer An optional pacer to control the rate of publishing.
-     */
-    constructor(bus, pacer) {
-        super(bus, pacer);
-        this.needPublishRealTime = false;
-        this.simVarPublisher = new SimVarPublisher(new Map([
-            ['simTime', { name: 'E:ABSOLUTE TIME', type: SimVarValueType.Seconds, map: ClockPublisher.absoluteTimeToUNIXTime }],
-            ['simRate', { name: 'E:SIMULATION RATE', type: SimVarValueType.Number }]
-        ]), bus, pacer);
-        if (this.bus.getTopicSubscriberCount('realTime') > 0) {
-            this.needPublishRealTime = true;
-        }
-        else {
-            const sub = this.bus.getSubscriber().on('event_bus_topic_first_sub').handle(topic => {
-                if (topic === 'realTime') {
-                    this.needPublishRealTime = true;
-                    sub.destroy();
-                }
-            }, true);
-            sub.resume();
-        }
-    }
-    /** @inheritdoc */
-    startPublish() {
-        super.startPublish();
-        this.simVarPublisher.startPublish();
-        if (this.hiFreqInterval === undefined) {
-            this.hiFreqInterval = setInterval(() => this.publish('simTimeHiFreq', ClockPublisher.absoluteTimeToUNIXTime(SimVar.GetSimVarValue('E:ABSOLUTE TIME', 'seconds'))), 0);
-        }
-    }
-    /** @inheritdoc */
-    stopPublish() {
-        super.stopPublish();
-        this.simVarPublisher.stopPublish();
-        if (this.hiFreqInterval !== undefined) {
-            clearInterval(this.hiFreqInterval);
-            this.hiFreqInterval = undefined;
-        }
-    }
-    /** @inheritdoc */
-    onUpdate() {
-        if (this.needPublishRealTime) {
-            this.publish('realTime', Date.now());
-        }
-        this.simVarPublisher.onUpdate();
-    }
-    /**
-     * Converts the sim's absolute time to a UNIX timestamp. The sim's absolute time value is equivalent to a .NET
-     * DateTime.Ticks value (epoch = 00:00:00 01 Jan 0001).
-     * @param absoluteTime an absolute time value, in units of seconds.
-     * @returns the UNIX timestamp corresponding to the absolute time value.
-     */
-    static absoluteTimeToUNIXTime(absoluteTime) {
-        return (absoluteTime - 62135596800) * 1000;
-    }
-}
-/**
- * A clock which keeps track of real-world and sim time.
- */
-class Clock {
-    /**
-     * Constructor.
-     * @param bus The event bus to use to publish events from this clock.
-     */
-    constructor(bus) {
-        this.publisher = new ClockPublisher(bus);
-    }
-    /**
-     * Initializes this clock.
-     */
-    init() {
-        this.publisher.startPublish();
-    }
-    /**
-     * Updates this clock.
-     */
-    onUpdate() {
-        this.publisher.onUpdate();
-    }
-}
-
-/**
- * A publisher for control surfaces information.
- */
-class ControlSurfacesPublisher extends SimVarPublisher {
-    /**
-     * Create an ControlSurfacesPublisher.
-     * @param bus The EventBus to publish to.
-     * @param gearCount The number of landing gear to support.
-     * @param pacer An optional pacer to use to control the rate of publishing.
-     */
-    constructor(bus, gearCount, pacer) {
-        const nonIndexedSimVars = [
-            ['flaps_handle_index', { name: 'FLAPS HANDLE INDEX', type: SimVarValueType.Number }],
-            ['flaps_left_angle', { name: 'TRAILING EDGE FLAPS LEFT ANGLE', type: SimVarValueType.Degree }],
-            ['flaps_right_angle', { name: 'TRAILING EDGE FLAPS RIGHT ANGLE', type: SimVarValueType.Degree }],
-            ['flaps_left_percent', { name: 'TRAILING EDGE FLAPS LEFT PERCENT', type: SimVarValueType.Percent }],
-            ['flaps_right_percent', { name: 'TRAILING EDGE FLAPS RIGHT PERCENT', type: SimVarValueType.Percent }],
-            ['slats_left_angle', { name: 'LEADING EDGE FLAPS LEFT ANGLE', type: SimVarValueType.Degree }],
-            ['slats_right_angle', { name: 'LEADING EDGE FLAPS RIGHT ANGLE', type: SimVarValueType.Degree }],
-            ['slats_left_percent', { name: 'LEADING EDGE FLAPS LEFT PERCENT', type: SimVarValueType.Percent }],
-            ['slats_right_percent', { name: 'LEADING EDGE FLAPS RIGHT PERCENT', type: SimVarValueType.Percent }],
-            ['spoilers_left_percent', { name: 'SPOILERS LEFT POSITION', type: SimVarValueType.Percent }],
-            ['spoilers_right_percent', { name: 'SPOILERS RIGHT POSITION', type: SimVarValueType.Percent }],
-            ['spoilers_without_spoilerons_left_percent', { name: 'SPOILERS WITHOUT SPOILERONS LEFT POSITION', type: SimVarValueType.Percent }],
-            ['elevator_trim_angle', { name: 'ELEVATOR TRIM POSITION', type: SimVarValueType.Degree }],
-            ['elevator_trim_pct', { name: 'ELEVATOR TRIM PCT', type: SimVarValueType.Percent }],
-            ['elevator_trim_neutral_pct', { name: 'AIRCRAFT ELEVATOR TRIM NEUTRAL', type: SimVarValueType.Percent }],
-            ['aileron_trim_angle', { name: 'AILERON TRIM', type: SimVarValueType.Degree }],
-            ['aileron_trim_pct', { name: 'AILERON TRIM PCT', type: SimVarValueType.Percent }],
-            ['rudder_trim_angle', { name: 'RUDDER TRIM', type: SimVarValueType.Degree }],
-            ['rudder_trim_pct', { name: 'RUDDER TRIM PCT', type: SimVarValueType.Percent }],
-            ['aileron_left_percent', { name: 'AILERON LEFT DEFLECTION PCT', type: SimVarValueType.Percent }],
-            ['aileron_right_percent', { name: 'AILERON RIGHT DEFLECTION PCT', type: SimVarValueType.Percent }],
-            ['elevator_percent', { name: 'ELEVATOR DEFLECTION PCT', type: SimVarValueType.Percent }],
-            ['rudder_percent', { name: 'RUDDER DEFLECTION PCT', type: SimVarValueType.Percent }]
-        ];
-        const gearIndexedSimVars = [
-            ['gear_position', { name: 'GEAR POSITION', type: SimVarValueType.Number }],
-            ['gear_is_on_ground', { name: 'GEAR IS ON GROUND', type: SimVarValueType.Bool }]
-        ];
-        const simvars = new Map(nonIndexedSimVars);
-        // set un-indexed simvar topics to pull from index 0
-        for (const [topic, simvar] of [...gearIndexedSimVars]) {
-            simvars.set(`${topic}`, {
-                name: `${simvar.name}:0`,
-                type: simvar.type,
-                map: simvar.map
-            });
-        }
-        // add landing gear indexed simvar topics
-        // HINT: for some reason index 0 is nose. not 1-based.
-        gearCount = Math.max(gearCount, 1);
-        for (let i = 0; i < gearCount; i++) {
-            for (const [topic, simvar] of gearIndexedSimVars) {
-                simvars.set(`${topic}_${i}`, {
-                    name: `${simvar.name}:${i}`,
-                    type: simvar.type,
-                    map: simvar.map
-                });
-            }
-        }
-        super(simvars, bus, pacer);
-    }
-}
-
-/// <reference types="@microsoft/msfs-types/js/common" />
-/**
- * An event bus that can be used to publish data from backend
- * components and devices to consumers.
- */
-class EventBus {
-    /**
-     * Creates an instance of an EventBus.
-     * @param useAlternativeEventSync Whether or not to use generic listener event sync (default false).
-     * If true, FlowEventSync will only work for gauges.
-     * @param shouldResync Whether the eventbus should ask for a resync of all previously cached events (default true)
-     */
-    constructor(useAlternativeEventSync = false, shouldResync = true) {
-        this._topicSubsMap = new Map();
-        this._wildcardSubs = new Array();
-        this._notifyDepthMap = new Map();
-        this._wildcardNotifyDepth = 0;
-        this._eventCache = new Map();
-        this.onWildcardSubDestroyedFunc = this.onWildcardSubDestroyed.bind(this);
-        this._busId = Math.floor(Math.random() * 2147483647);
-        // fallback to flowevent when genericdatalistener not avail (su9)
-        useAlternativeEventSync = (typeof RegisterGenericDataListener === 'undefined');
-        const syncFunc = useAlternativeEventSync ? EventBusFlowEventSync : EventBusListenerSync;
-        this._busSync = new syncFunc(this.pub.bind(this), this._busId);
-        if (shouldResync === true) {
-            this.syncEvent('event_bus', 'resync_request', false);
-            this.on('event_bus', (data) => {
-                if (data == 'resync_request') {
-                    this.resyncEvents();
-                }
-            });
-        }
-    }
-    /**
-     * Subscribes to a topic on the bus.
-     * @param topic The topic to subscribe to.
-     * @param handler The handler to be called when an event happens.
-     * @param paused Whether the new subscription should be initialized as paused. Defaults to `false`.
-     * @returns The new subscription.
-     */
-    on(topic, handler, paused = false) {
-        let subs = this._topicSubsMap.get(topic);
-        if (subs === undefined) {
-            this._topicSubsMap.set(topic, subs = []);
-            this.pub('event_bus_topic_first_sub', topic, false, false);
-        }
-        const initialNotifyFunc = (sub) => {
-            const lastState = this._eventCache.get(topic);
-            if (lastState !== undefined) {
-                sub.handler(lastState.data);
-            }
-        };
-        const onDestroyFunc = (sub) => {
-            var _a;
-            // If we are not in the middle of a notify operation, remove the subscription.
-            // Otherwise, do nothing and let the post-notify clean-up code handle it.
-            if (((_a = this._notifyDepthMap.get(topic)) !== null && _a !== void 0 ? _a : 0) === 0) {
-                const subsToSplice = this._topicSubsMap.get(topic);
-                if (subsToSplice) {
-                    subsToSplice.splice(subsToSplice.indexOf(sub), 1);
-                }
-            }
-        };
-        const sub = new HandlerSubscription(handler, initialNotifyFunc, onDestroyFunc);
-        subs.push(sub);
-        if (paused) {
-            sub.pause();
-        }
-        else {
-            sub.initialNotify();
-        }
-        return sub;
-    }
-    /**
-     * Unsubscribes a handler from the topic's events.
-     * @param topic The topic to unsubscribe from.
-     * @param handler The handler to unsubscribe from topic.
-     * @deprecated This method has been deprecated in favor of using the {@link Subscription} object returned by `.on()`
-     * to manage subscriptions.
-     */
-    off(topic, handler) {
-        const handlers = this._topicSubsMap.get(topic);
-        const toDestroy = handlers === null || handlers === void 0 ? void 0 : handlers.find(sub => sub.handler === handler);
-        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
-    }
-    /**
-     * Subscribes to all topics.
-     * @param handler The handler to subscribe to all events.
-     * @returns The new subscription.
-     */
-    onAll(handler) {
-        const sub = new HandlerSubscription(handler, undefined, this.onWildcardSubDestroyedFunc);
-        this._wildcardSubs.push(sub);
-        return sub;
-    }
-    /**
-     * Unsubscribe the handler from all topics.
-     * @param handler The handler to unsubscribe from all events.
-     * @deprecated This method has been deprecated in favor of using the {@link Subscription} object returned by
-     * `.onAll()` to manage subscriptions.
-     */
-    offAll(handler) {
-        const toDestroy = this._wildcardSubs.find(sub => sub.handler === handler);
-        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
-    }
-    /**
-     * Publishes an event to the topic on the bus.
-     * @param topic The topic to publish to.
-     * @param data The data portion of the event.
-     * @param sync Whether or not this message needs to be synced on local stoage.
-     * @param isCached Whether or not this message will be resync'd across the bus on load.
-     */
-    pub(topic, data, sync = false, isCached = true) {
-        var _a;
-        if (isCached) {
-            this._eventCache.set(topic, { data: data, synced: sync });
-        }
-        const subs = this._topicSubsMap.get(topic);
-        if (subs !== undefined) {
-            let needCleanUpSubs = false;
-            const notifyDepth = (_a = this._notifyDepthMap.get(topic)) !== null && _a !== void 0 ? _a : 0;
-            this._notifyDepthMap.set(topic, notifyDepth + 1);
-            const len = subs.length;
-            for (let i = 0; i < len; i++) {
-                try {
-                    const sub = subs[i];
-                    if (sub.isAlive && !sub.isPaused) {
-                        sub.handler(data);
-                    }
-                    needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
-                }
-                catch (error) {
-                    console.error(`EventBus: error in handler: ${error}. topic: ${topic}. data: ${data}. sync: ${sync}. isCached: ${isCached}`, { error, topic, data, sync, isCached, subs });
-                    if (error instanceof Error) {
-                        console.error(error.stack);
-                    }
-                }
-            }
-            this._notifyDepthMap.set(topic, notifyDepth);
-            if (needCleanUpSubs && notifyDepth === 0) {
-                const filteredSubs = subs.filter(sub => sub.isAlive);
-                this._topicSubsMap.set(topic, filteredSubs);
-            }
-        }
-        // We don't know if anything is subscribed on busses in other instruments,
-        // so we'll unconditionally sync if sync is true and trust that the
-        // publisher knows what it's doing.
-        if (sync) {
-            this.syncEvent(topic, data, isCached);
-        }
-        // always push to wildcard handlers
-        let needCleanUpSubs = false;
-        this._wildcardNotifyDepth++;
-        const wcLen = this._wildcardSubs.length;
-        for (let i = 0; i < wcLen; i++) {
-            const sub = this._wildcardSubs[i];
-            if (sub.isAlive && !sub.isPaused) {
-                sub.handler(topic, data);
-            }
-            needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
-        }
-        this._wildcardNotifyDepth--;
-        if (needCleanUpSubs && this._wildcardNotifyDepth === 0) {
-            this._wildcardSubs = this._wildcardSubs.filter(sub => sub.isAlive);
-        }
-    }
-    /**
-     * Responds to when a wildcard subscription is destroyed.
-     * @param sub The destroyed subscription.
-     */
-    onWildcardSubDestroyed(sub) {
-        // If we are not in the middle of a notify operation, remove the subscription.
-        // Otherwise, do nothing and let the post-notify clean-up code handle it.
-        if (this._wildcardNotifyDepth === 0) {
-            this._wildcardSubs.splice(this._wildcardSubs.indexOf(sub), 1);
-        }
-    }
-    /**
-     * Re-sync all synced events
-     */
-    resyncEvents() {
-        for (const [topic, event] of this._eventCache) {
-            if (event.synced) {
-                this.syncEvent(topic, event.data, true);
-            }
-        }
-    }
-    /**
-     * Publish an event to the sync bus.
-     * @param topic The topic to publish to.
-     * @param data The data to publish.
-     * @param isCached Whether or not this message will be resync'd across the bus on load.
-     */
-    syncEvent(topic, data, isCached) {
-        this._busSync.sendEvent(topic, data, isCached);
-    }
-    /**
-     * Gets a typed publisher from the event bus..
-     * @returns The typed publisher.
-     */
-    getPublisher() {
-        return this;
-    }
-    /**
-     * Gets a typed subscriber from the event bus.
-     * @returns The typed subscriber.
-     */
-    getSubscriber() {
-        return new EventSubscriber(this);
-    }
-    /**
-     * Get the number of subscribes for a given topic.
-     * @param topic The name of the topic.
-     * @returns The number of subscribers.
-     **/
-    getTopicSubscriberCount(topic) {
-        var _a, _b;
-        return (_b = (_a = this._topicSubsMap.get(topic)) === null || _a === void 0 ? void 0 : _a.length) !== null && _b !== void 0 ? _b : 0;
-    }
-    /**
-     * Executes a function once for each topic with at least one subscriber.
-     * @param fn The function to execute.
-     */
-    forEachSubscribedTopic(fn) {
-        this._topicSubsMap.forEach((subs, topic) => { subs.length > 0 && fn(topic, subs.length); });
-    }
-}
-/**
- * An abstract class for bus sync implementations.
- */
-class EventBusSyncBase {
-    /**
-     * Creates an instance of EventBusFlowEventSync.
-     * @param recvEventCb A callback to execute when an event is received on the bus.
-     * @param busId The ID of the bus.
-     */
-    constructor(recvEventCb, busId) {
-        this.isPaused = false;
-        this.lastEventSynced = -1;
-        this.dataPackageQueue = [];
-        this.recvEventCb = recvEventCb;
-        this.busId = busId;
-        this.hookReceiveEvent();
-        /** Sends the queued up data packages */
-        const sendFn = () => {
-            if (!this.isPaused && this.dataPackageQueue.length > 0) {
-                // console.log(`Sending ${this.dataPackageQueue.length} packages`);
-                const syncDataPackage = {
-                    busId: this.busId,
-                    packagedId: Math.floor(Math.random() * 1000000000),
-                    data: this.dataPackageQueue
-                };
-                if (this.executeSync(syncDataPackage)) {
-                    this.dataPackageQueue.length = 0;
-                }
-                else {
-                    console.warn('Failed to send sync data package');
-                }
-            }
-            requestAnimationFrame(sendFn);
-        };
-        requestAnimationFrame(sendFn);
-    }
-    /**
-     * Processes events received and sends them onto the local bus.
-     * @param syncData The data package to process.
-     */
-    processEventsReceived(syncData) {
-        if (this.busId !== syncData.busId) {
-            // HINT: coherent events are still received twice, so check for this
-            if (this.lastEventSynced !== syncData.packagedId) {
-                this.lastEventSynced = syncData.packagedId;
-                syncData.data.forEach((data) => {
-                    try {
-                        this.recvEventCb(data.topic, data.data !== undefined ? data.data : undefined, false, data.isCached);
-                    }
-                    catch (e) {
-                        console.error(e);
-                        if (e instanceof Error) {
-                            console.error(e.stack);
-                        }
-                    }
-                });
-            }
-        }
-    }
-    /**
-     * Sends an event via flow events.
-     * @param topic The topic to send data on.
-     * @param data The data to send.
-     * @param isCached Whether or not this event is cached.
-     */
-    sendEvent(topic, data, isCached) {
-        // stringify data
-        const dataObj = data;
-        // build a data package
-        const dataPackage = {
-            topic: topic,
-            data: dataObj,
-            isCached: isCached
-        };
-        // queue data package
-        this.dataPackageQueue.push(dataPackage);
-    }
-}
-/**
- * A class that manages event bus synchronization via Flow Event Triggers.
- * DON'T USE this, it has bad performance implications.
- * @deprecated
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-class EventBusCoherentSync extends EventBusSyncBase {
-    /** @inheritdoc */
-    executeSync(syncDataPackage) {
-        // HINT: Stringifying the data again to circumvent the bad perf on Coherent interop
-        try {
-            this.listener.triggerToAllSubscribers(EventBusCoherentSync.EB_KEY, JSON.stringify(syncDataPackage));
-            return true;
-        }
-        catch (error) {
-            return false;
-        }
-    }
-    /** @inheritdoc */
-    hookReceiveEvent() {
-        this.listener = RegisterViewListener(EventBusCoherentSync.EB_LISTENER_KEY, undefined, true);
-        this.listener.on(EventBusCoherentSync.EB_KEY, (e) => {
-            try {
-                const evt = JSON.parse(e);
-                this.processEventsReceived(evt);
-            }
-            catch (error) {
-                console.error(error);
-            }
-        });
-    }
-}
-EventBusCoherentSync.EB_KEY = 'eb.evt';
-EventBusCoherentSync.EB_LISTENER_KEY = 'JS_LISTENER_SIMVARS';
-/**
- * A class that manages event bus synchronization via Flow Event Triggers.
- */
-class EventBusFlowEventSync extends EventBusSyncBase {
-    /** @inheritdoc */
-    executeSync(syncDataPackage) {
-        // console.log('Sending sync package: ' + syncDataPackage.packagedId);
-        try {
-            LaunchFlowEvent('ON_MOUSERECT_HTMLEVENT', EventBusFlowEventSync.EB_LISTENER_KEY, this.busId.toString(), JSON.stringify(syncDataPackage));
-            return true;
-        }
-        catch (error) {
-            return false;
-        }
-    }
-    /** @inheritdoc */
-    hookReceiveEvent() {
-        Coherent.on('OnInteractionEvent', (target, args) => {
-            // identify if its a busevent
-            if (args.length === 0 || args[0] !== EventBusFlowEventSync.EB_LISTENER_KEY || !args[2]) {
-                return;
-            }
-            this.processEventsReceived(JSON.parse(args[2]));
-        });
-    }
-}
-EventBusFlowEventSync.EB_LISTENER_KEY = 'EB_EVENTS';
-//// END GLOBALS DECLARATION
-/**
- * A class that manages event bus synchronization via the Generic Data Listener.
- */
-class EventBusListenerSync extends EventBusSyncBase {
-    /** @inheritdoc */
-    executeSync(syncDataPackage) {
-        try {
-            this.listener.send(EventBusListenerSync.EB_KEY, syncDataPackage);
-            return true;
-        }
-        catch (error) {
-            return false;
-        }
-    }
-    /** @inheritdoc */
-    hookReceiveEvent() {
-        // pause the sync until the listener is ready
-        this.isPaused = true;
-        this.listener = RegisterGenericDataListener(() => {
-            this.listener.onDataReceived(EventBusListenerSync.EB_KEY, (data) => {
-                try {
-                    this.processEventsReceived(data);
-                }
-                catch (error) {
-                    console.error(error);
-                }
-            });
-            this.isPaused = false;
-        });
-    }
-}
-EventBusListenerSync.EB_KEY = 'wt.eb.evt';
-EventBusListenerSync.EB_LISTENER_KEY = 'JS_LISTENER_GENERICDATA';
-
-/**
- * Captures the state of a value from a consumer.
- */
-class ConsumerValue {
-    /**
-     * Creates an instance of a ConsumerValue.
-     * @param consumer The consumer to track.
-     * @param initialValue The initial value.
-     */
-    constructor(consumer, initialValue) {
-        this.consumerHandler = (v) => { this.value = v; };
-        this._isPaused = false;
-        this.isDestroyed = false;
-        this.value = initialValue;
-        this.sub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler);
-    }
-    // eslint-disable-next-line jsdoc/require-returns
-    /**
-     * Whether event consumption is currently paused. While paused, this object's value will not update.
-     */
-    get isPaused() {
-        return this._isPaused;
-    }
-    /**
-     * Gets the current value.
-     * @returns The current value.
-     */
-    get() {
-        return this.value;
-    }
-    /**
-     * Sets the consumer from which this object derives its value. If the consumer is null, this object's value will
-     * not be updated until a non-null consumer is set.
-     * @param consumer An event consumer.
-     * @returns This object, after its consumer has been set.
-     */
-    setConsumer(consumer) {
-        var _a;
-        if (this.isDestroyed) {
-            return this;
-        }
-        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.destroy();
-        this.sub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler, this._isPaused);
-        return this;
-    }
-    /**
-     * Pauses consuming events for this object. Once paused, this object's value will not be updated.
-     * @returns This object, after it has been paused.
-     */
-    pause() {
-        var _a;
-        if (this._isPaused) {
-            return this;
-        }
-        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.pause();
-        this._isPaused = true;
-        return this;
-    }
-    /**
-     * Resumes consuming events for this object. Once resumed, this object's value will be updated from consumed
-     * events.
-     * @returns This object, after it has been resumed.
-     */
-    resume() {
-        var _a;
-        if (!this._isPaused) {
-            return this;
-        }
-        this._isPaused = false;
-        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.resume(true);
-        return this;
-    }
-    /**
-     * Destroys this object. Once destroyed, it will no longer consume events to update its value.
-     */
-    destroy() {
-        var _a;
-        this.isDestroyed = true;
-        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.destroy();
-    }
-    /**
-     * Creates a new ConsumerValue.
-     * @param consumer The consumer to track.
-     * @param initialValue The initial value.
-     * @returns The created ConsumerValue.
-     */
-    static create(consumer, initialValue) {
-        return new ConsumerValue(consumer, initialValue);
-    }
-}
-
-/**
- * A publisher for publishing H:Events on the bus.
- */
-class HEventPublisher extends BasePublisher {
-    /**
-     * Dispatches an H:Event to the event bus.
-     * @param hEvent The H:Event to dispatch.
-     * @param sync Whether this event should be synced (optional, default false)
-     */
-    dispatchHEvent(hEvent, sync = false) {
-        // console.log(`dispaching hevent:  ${hEvent}`);
-        this.publish('hEvent', hEvent, sync, false);
-    }
-}
-
-/**
- * A subscribable subject which derives its value from an event consumer.
- */
-class ConsumerSubject extends AbstractSubscribable {
-    /**
-     * Constructor.
-     * @param consumer The event consumer from which this subject obtains its value. If null, this subject's value will
-     * not be updated until its consumer is set to a non-null value.
-     * @param initialVal This subject's initial value.
-     * @param equalityFunc The function this subject uses check for equality between values.
-     * @param mutateFunc The function this subject uses to change its value. If not defined, variable assignment is used
-     * instead.
-     */
-    constructor(consumer, initialVal, equalityFunc, mutateFunc) {
-        super();
-        this.equalityFunc = equalityFunc;
-        this.mutateFunc = mutateFunc;
-        this.consumerHandler = this.onEventConsumed.bind(this);
-        this._isPaused = false;
-        this.isDestroyed = false;
-        this.value = initialVal;
-        this.consumerSub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler);
-    }
-    // eslint-disable-next-line jsdoc/require-returns
-    /**
-     * Whether event consumption is currently paused for this subject. While paused, this subject's value will not
-     * update.
-     */
-    get isPaused() {
-        return this._isPaused;
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    static create(consumer, initialVal, equalityFunc, mutateFunc) {
-        return new ConsumerSubject(consumer, initialVal, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : AbstractSubscribable.DEFAULT_EQUALITY_FUNC, mutateFunc);
-    }
-    /**
-     * Consumes an event.
-     * @param value The value of the event.
-     */
-    onEventConsumed(value) {
-        if (!this.equalityFunc(this.value, value)) {
-            if (this.mutateFunc) {
-                this.mutateFunc(this.value, value);
-            }
-            else {
-                this.value = value;
-            }
-            this.notify();
-        }
-    }
-    /**
-     * Sets the consumer from which this subject derives its value. If the consumer is null, this subject's value will
-     * not be updated until a non-null consumer is set.
-     * @param consumer An event consumer.
-     * @returns This subject, after its consumer has been set.
-     */
-    setConsumer(consumer) {
-        var _a;
-        if (this.isDestroyed) {
-            return this;
-        }
-        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.destroy();
-        this.consumerSub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler, this._isPaused);
-        return this;
-    }
-    /**
-     * Pauses consuming events for this subject. Once paused, this subject's value will not be updated.
-     * @returns This subject, after it has been paused.
-     */
-    pause() {
-        var _a;
-        if (this._isPaused) {
-            return this;
-        }
-        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.pause();
-        this._isPaused = true;
-        return this;
-    }
-    /**
-     * Resumes consuming events for this subject. Once resumed, this subject's value will be updated from consumed
-     * events.
-     * @returns This subject, after it has been resumed.
-     */
-    resume() {
-        var _a;
-        if (!this._isPaused) {
-            return this;
-        }
-        this._isPaused = false;
-        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.resume(true);
-        return this;
-    }
-    /** @inheritdoc */
-    get() {
-        return this.value;
-    }
-    /**
-     * Destroys this subject. Once destroyed, it will no longer consume events to update its value.
-     */
-    destroy() {
-        var _a;
-        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.destroy();
-        this.isDestroyed = true;
-    }
-}
-
-/// <reference types="@microsoft/msfs-types/pages/vcockpit/instruments/shared/utils/xmllogic" />
-/** The kind of data to return. */
-var CompositeLogicXMLValueType;
-(function (CompositeLogicXMLValueType) {
-    CompositeLogicXMLValueType[CompositeLogicXMLValueType["Any"] = 0] = "Any";
-    CompositeLogicXMLValueType[CompositeLogicXMLValueType["Number"] = 1] = "Number";
-    CompositeLogicXMLValueType[CompositeLogicXMLValueType["String"] = 2] = "String";
-})(CompositeLogicXMLValueType || (CompositeLogicXMLValueType = {}));
-/**
- *
- */
-class CompositeLogicXMLHost {
-    /**
-     * Ctor
-     * @param startPaused True to start paused.
-     */
-    constructor(startPaused = false) {
-        this.anyHandlers = new Array();
-        this.stringHandlers = new Array();
-        this.numberHandlers = new Array();
-        this.anyResultCache = new Array();
-        this.stringResultCache = new Array();
-        this.numberResultCache = new Array();
-        this.context = new LogicXMLContext();
-        this.isPaused = false;
-        this.isPaused = startPaused;
-    }
-    /**
-     * Set to pause the logic update loop.
-     * @param isPaused True to pause, false to resume.
-     */
-    setIsPaused(isPaused) {
-        this.isPaused = isPaused;
-    }
-    /**
-     * Add a new logic element to calcluate a number or a string.
-     * @param logic A CompositeLogicXMLElement.
-     * @param handler A callback hander to take new values of either type.
-     * @returns The current value of the logic.
-     */
-    addLogic(logic, handler) {
-        this.anyHandlers.push({ logic: logic, handler: handler });
-        return logic.getValue(this.context);
-    }
-    /**
-     * Add a new logic element to calcluate a number.
-     * @param logic A CompositeLogicXMLElement.
-     * @param handler A callback hander to take new values as numbers.
-     * @param precision An optional precision to require for updates to be sent.
-     * @param smoothFactor An optional linear smoothing factor to apply to the value when updating.
-     * @returns The current value of the logic.
-     */
-    addLogicAsNumber(logic, handler, precision, smoothFactor) {
-        this.numberHandlers.push({ logic: logic, handler: handler, precision: precision, smoothFactor: smoothFactor });
-        return logic.getValueAsNumber(this.context);
-    }
-    /**
-     * Add a new logic element to calcluate a string.
-     * @param logic A CompositeLogicXMLElement.
-     * @param handler A callback hander to take new values as strings.
-     * @returns The current value of the logic.
-     */
-    addLogicAsString(logic, handler) {
-        this.stringHandlers.push({ logic: logic, handler: handler });
-        return logic.getValueAsString(this.context);
-    }
-    /**
-     * Add a function to the logic context.
-     * @param funcSpec The XMLFunction configuration.
-     * @returns The function's current value.
-     */
-    addFunction(funcSpec) {
-        const func = new LogicXMLFunction();
-        func.name = funcSpec.name;
-        func.callback = funcSpec.logic;
-        this.context.addFunction(func);
-        return funcSpec.logic.getValue(this.context);
-    }
-    /**
-     * Update every logic element and publish updates.
-     * @param deltaTime The time since the last update, in ms.
-     */
-    update(deltaTime) {
-        if (!this.isPaused) {
-            for (let i = 0; i < this.anyHandlers.length; i++) {
-                const newVal = this.anyHandlers[i].logic.getValue(this.context);
-                if (newVal !== this.anyResultCache[i]) {
-                    this.anyResultCache[i] = newVal;
-                    this.anyHandlers[i].handler(newVal);
-                }
-            }
-            for (let i = 0; i < this.stringHandlers.length; i++) {
-                const newVal = this.stringHandlers[i].logic.getValueAsString(this.context);
-                if (newVal !== this.stringResultCache[i]) {
-                    this.stringResultCache[i] = newVal;
-                    this.stringHandlers[i].handler(newVal);
-                }
-            }
-            for (let i = 0; i < this.numberHandlers.length; i++) {
-                let newVal = this.numberHandlers[i].logic.getValueAsNumber(this.context);
-                let precision = this.numberHandlers[i].precision;
-                if (precision !== undefined) {
-                    precision = Math.pow(10, precision);
-                    newVal = Math.round(newVal * precision) / precision;
-                }
-                if (this.numberHandlers[i].smoothFactor !== undefined && this.numberHandlers[i].smoothFactor !== 0) {
-                    // A smoothFactor of 0 means no smoothing.  We don't trigger this update if the factor is
-                    // undefined or 0, but typescript still thinks is could be undefined due to the array indexing.
-                    // The 'or-0' here is just to get around that without having to do a temporary assignment.
-                    newVal = Utils.SmoothLinear(this.numberResultCache[i], newVal, this.numberHandlers[i].smoothFactor || 0, deltaTime);
-                }
-                if (newVal !== this.numberResultCache[i]) {
-                    this.numberResultCache[i] = newVal;
-                    this.numberHandlers[i].handler(newVal);
-                }
-            }
-            this.context.update();
-        }
-    }
-}
-
-/**
- * A utility class which provides the current game state.
- */
-class GameStateProvider {
-    /**
-     * Constructor.
-     */
-    constructor() {
-        this.gameState = Subject.create(undefined);
-        window.document.addEventListener('OnVCockpitPanelAttributesChanged', this.onAttributesChanged.bind(this));
-        this.onAttributesChanged();
-    }
-    /**
-     * Responds to changes in document attributes.
-     */
-    onAttributesChanged() {
-        var _a;
-        if ((_a = window.parent) === null || _a === void 0 ? void 0 : _a.document.body.hasAttribute('gamestate')) {
-            const attribute = window.parent.document.body.getAttribute('gamestate');
-            if (attribute !== null) {
-                const state = GameState[attribute];
-                // The game state is set briefly to ingame after loading is finished before changing to briefing. In order to
-                // not notify subscribers of this erroneous ingame state, we will debounce any state changes into ingame by two
-                // frames.
-                if (state === GameState.ingame && this.gameState.get() !== GameState.ingame) {
-                    setTimeout(() => {
-                        setTimeout(() => {
-                            const newAttribute = window.parent.document.body.getAttribute('gamestate');
-                            if (newAttribute !== null) {
-                                this.gameState.set(GameState[newAttribute]);
-                            }
-                        });
-                    });
-                }
-                else {
-                    this.gameState.set(state);
-                }
-                return;
-            }
-        }
-        this.gameState.set(undefined);
-    }
-    /**
-     * Gets a subscribable which provides the current game state.
-     * @returns A subscribable which provides the current game state.
-     */
-    static get() {
-        var _a;
-        return ((_a = GameStateProvider.INSTANCE) !== null && _a !== void 0 ? _a : (GameStateProvider.INSTANCE = new GameStateProvider())).gameState;
-    }
-}
-
-/**
- * A manager for key events. Allows key events to be triggered and intercepted, and also publishes intercepted key
- * events on the event bus.
- */
-class KeyEventManager {
-    /**
-     * Constructor.
-     * @param keyListener The Coherent key intercept view listener.
-     * @param bus The event bus.
-     */
-    constructor(keyListener, bus) {
-        this.keyListener = keyListener;
-        this.bus = bus;
-        Coherent.on('keyIntercepted', this.onKeyIntercepted.bind(this));
-    }
-    /**
-     * Responds to key intercept events.
-     * @param key The key that was intercepted.
-     * @param value1 The second data value of the key event.
-     * @param value0 The first data value of the key event.
-     * @param value2 The third data value of the key event.
-     */
-    onKeyIntercepted(key, value1, value0, value2) {
-        // Even though values are uint32, we will do what the sim does and pretend they're actually sint32
-        if (value0 !== undefined && value0 >= 2147483648) {
-            value0 -= 4294967296;
-        }
-        this.bus.pub('key_intercept', { key, value0, value1, value2 }, false, false);
-    }
-    /**
-     * Triggers a key event.
-     * @param key The key to trigger.
-     * @param bypass Whether the event should bypass intercepts.
-     * @param value0 The first data value of the key event. Defaults to `0`.
-     * @param value1 The second data value of the key event. Defaults to `0`.
-     * @param value2 The third data value of the key event. Defaults to `0`.
-     * @returns A Promise which is fulfilled after the key event has been triggered.
-     */
-    triggerKey(key, bypass, value0 = 0, value1 = 0, value2 = 0) {
-        return Coherent.call('TRIGGER_KEY_EVENT', key, bypass, value0, value1, value2);
-    }
-    /**
-     * Enables interception for a key.
-     * @param key The key to intercept.
-     * @param passThrough Whether to pass the event through to the sim after it has been intercepted.
-     */
-    interceptKey(key, passThrough) {
-        Coherent.call('INTERCEPT_KEY_EVENT', key, passThrough ? 0 : 1);
-    }
-    /**
-     * Gets an instance of KeyEventManager. If an instance does not already exist, a new one will be created.
-     * @param bus The event bus.
-     * @returns A Promise which will be fulfilled with an instance of KeyEventManager.
-     */
-    static getManager(bus) {
-        if (KeyEventManager.INSTANCE) {
-            return Promise.resolve(KeyEventManager.INSTANCE);
-        }
-        if (!KeyEventManager.isCreatingInstance) {
-            KeyEventManager.createInstance(bus);
-        }
-        return new Promise(resolve => {
-            KeyEventManager.pendingPromiseResolves.push(resolve);
-        });
-    }
-    /**
-     * Creates an instance of KeyEventManager and fulfills all pending Promises to get the manager instance once
-     * the instance is created.
-     * @param bus The event bus.
-     */
-    static async createInstance(bus) {
-        KeyEventManager.isCreatingInstance = true;
-        KeyEventManager.INSTANCE = await KeyEventManager.create(bus);
-        KeyEventManager.isCreatingInstance = false;
-        for (let i = 0; i < KeyEventManager.pendingPromiseResolves.length; i++) {
-            KeyEventManager.pendingPromiseResolves[i](KeyEventManager.INSTANCE);
-        }
-    }
-    /**
-     * Creates an instance of KeyEventManager.
-     * @param bus The event bus.
-     * @returns A Promise which is fulfilled with a new instance of KeyEventManager after it has been created.
-     */
-    static create(bus) {
-        return new Promise((resolve, reject) => {
-            const gameState = GameStateProvider.get();
-            const sub = gameState.sub(state => {
-                if (window['IsDestroying']) {
-                    sub.destroy();
-                    reject('KeyEventManager: cannot create a key intercept manager after the Coherent JS view has been destroyed');
-                    return;
-                }
-                if (state === GameState.briefing || state === GameState.ingame) {
-                    sub.destroy();
-                    const keyListener = RegisterViewListener('JS_LISTENER_KEYEVENT', () => {
-                        if (window['IsDestroying']) {
-                            reject('KeyEventManager: cannot create a key intercept manager after the Coherent JS view has been destroyed');
-                            return;
-                        }
-                        resolve(new KeyEventManager(keyListener, bus));
-                    });
-                }
-            }, false, true);
-            sub.resume(true);
-        });
-    }
-}
-KeyEventManager.isCreatingInstance = false;
-KeyEventManager.pendingPromiseResolves = [];
-
 /// <reference types="@microsoft/msfs-types/js/simplane" />
 /**
  * The available facility frequency types.
@@ -10470,6 +8413,556 @@ class ApproachUtils {
     }
 }
 
+/**
+ * A Subject which provides a {@link GeoPointInterface} value.
+ */
+class GeoPointSubject extends AbstractSubscribable {
+    /**
+     * Constructor.
+     * @param value The value of this subject.
+     * @param tolerance The tolerance of this subject's equality check, defined as the maximum allowed great-circle
+     * distance between two equal points in great-arc radians. Defaults to {@link GeoPoint.EQUALITY_TOLERANCE}.
+     */
+    constructor(value, tolerance) {
+        super();
+        this.value = value;
+        this.tolerance = tolerance;
+        /** @inheritdoc */
+        this.isMutableSubscribable = true;
+    }
+    /**
+     * Creates a GeoPointSubject.
+     * @param initialVal The initial value.
+     * @param tolerance The tolerance of the subject's equality check, defined as the maximum allowed great-circle
+     * distance between two equal points in great-arc radians. Defaults to {@link GeoPoint.EQUALITY_TOLERANCE}.
+     * @returns A GeoPointSubject.
+     */
+    static create(initialVal, tolerance) {
+        return new GeoPointSubject(initialVal, tolerance);
+    }
+    /**
+     * Creates a GeoPointSubject.
+     * @param initialVal The initial value.
+     * @returns A GeoPointSubject.
+     * @deprecated Use `GeoPointSubject.create()` instead.
+     */
+    static createFromGeoPoint(initialVal) {
+        return new GeoPointSubject(initialVal);
+    }
+    /** @inheritdoc */
+    get() {
+        return this.value.readonly;
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    set(arg1, arg2) {
+        const isArg1Number = typeof arg1 === 'number';
+        const equals = isArg1Number ? this.value.equals(arg1, arg2, this.tolerance) : this.value.equals(arg1, this.tolerance);
+        if (!equals) {
+            isArg1Number ? this.value.set(arg1, arg2) : this.value.set(arg1);
+            this.notify();
+        }
+    }
+}
+
+/**
+ * A partial implementation of a MutableGeoProjection. Subclasses should use the projectRaw() and invertRaw() methods
+ * to define the type of projection to be implemented.
+ */
+class AbstractGeoProjection {
+    constructor() {
+        this.center = new GeoPoint(0, 0);
+        this.centerTranslation = new Float64Array(2);
+        this.scaleFactor = UnitType.GA_RADIAN.convertTo(1, UnitType.NMILE); // 1 pixel = 1 nautical mile
+        this.preRotation = new Float64Array(3);
+        this.translation = new Float64Array(2);
+        this.postRotation = 0;
+        this.rotationSin = 0;
+        this.rotationCos = 1;
+        this.reflectY = 1;
+        this.preRotationForwardTransform = new Transform3D();
+        this.preRotationReverseTransform = new Transform3D();
+        this.rotationCache = [new Transform3D(), new Transform3D()];
+    }
+    /** @inheritdoc */
+    getCenter() {
+        return this.center.readonly;
+    }
+    /** @inheritdoc */
+    getScaleFactor() {
+        return this.scaleFactor;
+    }
+    /** @inheritdoc */
+    getPreRotation() {
+        return this.preRotation;
+    }
+    /** @inheritdoc */
+    getTranslation() {
+        return this.translation;
+    }
+    /** @inheritdoc */
+    getPostRotation() {
+        return this.postRotation;
+    }
+    /** @inheritdoc */
+    getReflectY() {
+        return this.reflectY === -1;
+    }
+    /** @inheritdoc */
+    setCenter(point) {
+        this.center.set(point);
+        this.updateCenterTranslation();
+        return this;
+    }
+    /** @inheritdoc */
+    setScaleFactor(factor) {
+        this.scaleFactor = factor;
+        return this;
+    }
+    /** @inheritdoc */
+    setPreRotation(vec) {
+        this.preRotation.set(vec);
+        this.updatePreRotationTransforms();
+        this.updateCenterTranslation();
+        return this;
+    }
+    /** @inheritdoc */
+    setTranslation(vec) {
+        this.translation.set(vec);
+        return this;
+    }
+    /** @inheritdoc */
+    setPostRotation(rotation) {
+        this.postRotation = rotation;
+        this.rotationCos = Math.cos(rotation);
+        this.rotationSin = Math.sin(rotation);
+        return this;
+    }
+    /** @inheritdoc */
+    setReflectY(val) {
+        this.reflectY = val ? -1 : 1;
+        return this;
+    }
+    /** @inheritdoc */
+    copyParametersFrom(other) {
+        return this.setCenter(other.getCenter())
+            .setPreRotation(other.getPreRotation())
+            .setScaleFactor(other.getScaleFactor())
+            .setTranslation(other.getTranslation())
+            .setPostRotation(other.getPostRotation())
+            .setReflectY(other.getReflectY());
+    }
+    /**
+     * Updates the pre-rotation transformation matrices.
+     */
+    updatePreRotationTransforms() {
+        const phi = this.preRotation[1];
+        const gamma = this.preRotation[2];
+        this.rotationCache[0].toRotationX(gamma);
+        this.rotationCache[1].toRotationY(-phi);
+        Transform3D.concat(this.preRotationForwardTransform, this.rotationCache);
+        this.preRotationReverseTransform.set(this.preRotationForwardTransform);
+        this.preRotationReverseTransform.invert();
+    }
+    /**
+     * Updates the translation vector to move the center of this projection to the origin.
+     */
+    updateCenterTranslation() {
+        const centerArray = AbstractGeoProjection.vec2Cache[0];
+        centerArray[0] = this.center.lon;
+        centerArray[1] = this.center.lat;
+        this.preRotateForward(centerArray, centerArray);
+        this.projectRaw(centerArray, this.centerTranslation);
+    }
+    /**
+     * Applies a forward rotation to a set of lat/lon coordinates using this projection's pre-projection rotation angles.
+     * @param vec - the lat/lon coordinates to rotate, as a vector ([long, lat]).
+     * @param out - the vector to which to write the result.
+     * @returns the rotated lat/lon coordinates.
+     */
+    preRotateForward(vec, out) {
+        const lambda = this.preRotation[0];
+        const phi = this.preRotation[1];
+        const gamma = this.preRotation[2];
+        if (lambda === 0 && phi === 0 && gamma === 0) {
+            out.set(vec);
+            return out;
+        }
+        const lat = vec[1];
+        const lon = vec[0];
+        const rotatedLon = ((lon + lambda * Avionics.Utils.RAD2DEG) % 360 + 540) % 360 - 180; // enforce [-180, 180)
+        if (phi === 0 && gamma === 0) {
+            return Vec2Math.set(rotatedLon, lat, out);
+        }
+        const cartesianVec = GeoPoint.sphericalToCartesian(lat, rotatedLon, AbstractGeoProjection.vec3Cache[0]);
+        const rotatedCartesianVec = this.preRotationForwardTransform.apply(cartesianVec, cartesianVec);
+        const rotated = AbstractGeoProjection.geoPointCache[0].setFromCartesian(rotatedCartesianVec);
+        return Vec2Math.set(rotated.lon, rotated.lat, out);
+    }
+    /**
+     * Applies a reverse rotation to a set of lat/lon coordinates using this projection's pre-projection rotation angles.
+     * @param vec - the lat/lon coordinates to rotate, as a vector ([long, lat]).
+     * @param out - the vector to which to write the result.
+     * @returns the rotated lat/lon coordinates.
+     */
+    preRotateReverse(vec, out) {
+        const lambda = this.preRotation[0];
+        const phi = this.preRotation[1];
+        const gamma = this.preRotation[2];
+        if (lambda === 0 && phi === 0 && gamma === 0) {
+            out.set(vec);
+            return out;
+        }
+        const lat = vec[1];
+        const lon = vec[0];
+        let rotatedLat = lat;
+        let rotatedLon = lon;
+        if (phi !== 0 || gamma !== 0) {
+            const rotatedCartesianVec = GeoPoint.sphericalToCartesian(rotatedLat, rotatedLon, AbstractGeoProjection.vec3Cache[0]);
+            const cartesianVec = this.preRotationReverseTransform.apply(rotatedCartesianVec, rotatedCartesianVec);
+            const unrotated = AbstractGeoProjection.geoPointCache[0].setFromCartesian(cartesianVec);
+            rotatedLat = unrotated.lat;
+            rotatedLon = unrotated.lon;
+        }
+        rotatedLon = ((rotatedLon - lambda * Avionics.Utils.RAD2DEG) % 360 + 540) % 360 - 180; // enforce [-180, 180)
+        return Vec2Math.set(rotatedLon, rotatedLat, out);
+    }
+    /** @inheritdoc */
+    project(point, out) {
+        if (point instanceof Float64Array) {
+            out.set(point);
+        }
+        else {
+            out[0] = point.lon;
+            out[1] = point.lat;
+        }
+        this.preRotateForward(out, out);
+        this.projectRaw(out, out);
+        // translate projected center point to origin
+        out[0] -= this.centerTranslation[0];
+        out[1] -= this.centerTranslation[1];
+        // apply y-reflection
+        out[1] *= this.reflectY;
+        // apply scale factor
+        out[0] *= this.scaleFactor;
+        out[1] *= this.scaleFactor;
+        // apply post-projection rotation
+        const x = out[0];
+        const y = out[1];
+        out[0] = x * this.rotationCos - y * this.rotationSin;
+        out[1] = x * this.rotationSin + y * this.rotationCos;
+        // apply post-projection translation
+        out[0] += this.translation[0];
+        out[1] += this.translation[1];
+        return out;
+    }
+    /** @inheritdoc */
+    invert(vec, out) {
+        const projected = AbstractGeoProjection.vec2Cache[0];
+        projected.set(vec);
+        // invert post-projection translation
+        projected[0] -= this.translation[0];
+        projected[1] -= this.translation[1];
+        // invert post-projection rotation
+        const x = projected[0];
+        const y = projected[1];
+        projected[0] = x * this.rotationCos + y * this.rotationSin;
+        projected[1] = -x * this.rotationSin + y * this.rotationCos;
+        // invert scale factor
+        projected[0] /= this.scaleFactor;
+        projected[1] /= this.scaleFactor;
+        // invert y-reflection
+        projected[1] *= this.reflectY;
+        // translate projected center point to default projected position
+        projected[0] += this.centerTranslation[0];
+        projected[1] += this.centerTranslation[1];
+        const inverted = this.invertRaw(projected, projected);
+        this.preRotateReverse(inverted, inverted);
+        if (out instanceof Float64Array) {
+            out.set(inverted);
+            return out;
+        }
+        else {
+            return out.set(inverted[1], inverted[0]);
+        }
+    }
+}
+AbstractGeoProjection.vec2Cache = [new Float64Array(2)];
+AbstractGeoProjection.vec3Cache = [new Float64Array(3)];
+AbstractGeoProjection.geoPointCache = [new GeoPoint(0, 0)];
+/**
+ * A Mercator projection.
+ */
+class MercatorProjection extends AbstractGeoProjection {
+    /**
+     * Applies a raw projection.
+     * @param vec - a [lon, lat] vector describing the geographic point to project.
+     * @param out - a 2D vector to which to write the result.
+     * @returns the projected point.
+     */
+    projectRaw(vec, out) {
+        out[0] = vec[0] * Avionics.Utils.DEG2RAD;
+        out[1] = Math.log(Math.tan((90 + vec[1]) * Avionics.Utils.DEG2RAD / 2));
+        return out;
+    }
+    /**
+     * Inverts a raw projection.
+     * @param vec - a 2D vector describing the projected point to invert.
+     * @param out - a 2D vector to which to write the result.
+     * @returns the inverted point.
+     */
+    invertRaw(vec, out) {
+        out[0] = vec[0] * Avionics.Utils.RAD2DEG;
+        out[1] = 2 * Math.atan(Math.exp(vec[1])) * Avionics.Utils.RAD2DEG - 90;
+        return out;
+    }
+}
+
+/**
+ * Resamples projected great- and small-circle paths between defined endpoints into series of straight line segments and circular arcs.
+ */
+class GeoCircleResampler {
+    /**
+     * Constructor.
+     * @param minDistance The minimum great-circle distance this resampler enforces between two adjacent resampled
+     * points, in great-arc radians.
+     * @param dpTolerance The Douglas-Peucker tolerance, in pixels, this resampler uses when deciding whether to discard
+     * a resampled point during the simplification process.
+     * @param maxDepth The maximum depth of the resampling algorithm used by this resampler. The number of resampled
+     * points is bounded from above by `2^[maxDepth] - 1`.
+     */
+    constructor(minDistance, dpTolerance, maxDepth) {
+        this.minDistance = minDistance;
+        this.dpTolerance = dpTolerance;
+        this.maxDepth = maxDepth;
+        this.geoPointCache = [new GeoPoint(0, 0), new GeoPoint(0, 0)];
+        this.vec2Cache = [new Float64Array(2), new Float64Array(2), new Float64Array(2)];
+        this.vec3Cache = [new Float64Array(3), new Float64Array(3), new Float64Array(3), new Float64Array(3), new Float64Array(3)];
+        this.startVector = {
+            type: 'start',
+            point: new GeoPoint(0, 0),
+            projected: new Float64Array(2),
+            index: 0
+        };
+        this.lineVector = {
+            type: 'line',
+            point: new GeoPoint(0, 0),
+            projected: new Float64Array(2),
+            index: 0
+        };
+        this.arcVector = {
+            type: 'arc',
+            point: new GeoPoint(0, 0),
+            projected: new Float64Array(2),
+            projectedArcCenter: new Float64Array(2),
+            projectedArcRadius: 0,
+            projectedArcStartAngle: 0,
+            projectedArcEndAngle: 0,
+            index: 0
+        };
+        this.state = {
+            index: 0,
+            prevX: 0,
+            prevY: 0,
+            vectorType: 'line',
+            arcCenterX: 0,
+            arcCenterY: 0,
+            arcRadius: 0,
+            isArcCounterClockwise: false
+        };
+        this.cosMinDistance = Math.cos(minDistance);
+        this.dpTolSq = dpTolerance * dpTolerance;
+    }
+    /**
+     * Resamples a projected great- or small-circle path.
+     * @param projection The projection to use.
+     * @param circle The geo circle along which the path lies.
+     * @param start The start of the path.
+     * @param end The end of the path.
+     * @param handler A function to handle the resampled points. The function is called once for each resampled point,
+     * in order.
+     */
+    resample(projection, circle, start, end, handler) {
+        let startPoint, startVec, endPoint, endVec;
+        if (start instanceof Float64Array) {
+            startPoint = this.geoPointCache[0].setFromCartesian(start);
+            startVec = start;
+        }
+        else {
+            startPoint = start;
+            startVec = GeoPoint.sphericalToCartesian(start, this.vec3Cache[0]);
+        }
+        if (end instanceof Float64Array) {
+            endPoint = this.geoPointCache[0].setFromCartesian(end);
+            endVec = end;
+        }
+        else {
+            endPoint = end;
+            endVec = GeoPoint.sphericalToCartesian(end, this.vec3Cache[1]);
+        }
+        const startLat = startPoint.lat;
+        const startLon = startPoint.lon;
+        const endLat = endPoint.lat;
+        const endLon = endPoint.lon;
+        const startProjected = projection.project(start, this.vec2Cache[0]);
+        const endProjected = projection.project(end, this.vec2Cache[1]);
+        const startX = startProjected[0];
+        const startY = startProjected[1];
+        const endX = endProjected[0];
+        const endY = endProjected[1];
+        this.startVector.point.set(startLat, startLon);
+        Vec2Math.copy(startProjected, this.startVector.projected);
+        handler(this.startVector);
+        this.state.index = 1;
+        this.state.prevX = startX;
+        this.state.prevY = startY;
+        this.state.vectorType = 'line';
+        const state = this.resampleHelper(projection, circle, startLat, startLon, startVec[0], startVec[1], startVec[2], startX, startY, endLat, endLon, endVec[0], endVec[1], endVec[2], endX, endY, handler, 0, this.state);
+        this.callHandler(handler, endLat, endLon, endX, endY, state);
+    }
+    /**
+     * Resamples a projected great- or small-circle path. This method will recursively split the path into two halves
+     * and resample the midpoint. Based on the projected position of the midpoint relative to those of the start and end
+     * points, the projected path is modeled as either a straight line from the start to the end or a circular arc
+     * connecting the start, end, and midpoints. Recursion continues as long as the maximum depth has not been reached
+     * and at least one of the following conditions is met:
+     * * The distance from the midpoint to the endpoints is greater than or equal to the minimum resampling distance.
+     * * If the path is modeled as a line: the distance from the projected midpoint to the model line is greater than
+     * this resampler's Douglas-Peucker tolerance.
+     * * If the path is modeled as an arc: the distance from the projected one-quarter or the three-quarter point along
+     * the path to the model arc is greater than this resampler's Douglas-Peucker tolerance.
+     * @param projection The projection to use.
+     * @param circle The geo circle along which the path lies.
+     * @param lat1 The latitude of the start of the path, in degrees.
+     * @param lon1 The longitude of the start of the path, in degrees.
+     * @param x1 The x-component of the Cartesian position vector of the start of the path.
+     * @param y1 The y-component of the Cartesian position vector of the start of the path.
+     * @param z1 The z-component of the Cartesian position vector of the start of the path.
+     * @param projX1 The x-component of the projected location of the start of the path, in pixels.
+     * @param projY1 The y-component of the projected location of the start of the path, in pixels.
+     * @param lat2 The latitude of the end of the path, in degrees.
+     * @param lon2 The longitude of the end of the path, in degrees.
+     * @param x2 The x-component of the Cartesian position vector of the end of the path.
+     * @param y2 The y-component of the Cartesian position vector of the end of the path.
+     * @param z2 The z-component of the Cartesian position vector of the end of the path.
+     * @param projX2 The x-component of the projected location of the end of the path, in pixels.
+     * @param projY2 The y-component of the projected location of the end of the path, in pixels.
+     * @param handler A function to handle the resampled points.
+     * @param depth The current depth of the resampling algorithm.
+     * @param state The current state of the resampling algorithm.
+     * @returns The index of the next resampled point.
+     */
+    resampleHelper(projection, circle, lat1, lon1, x1, y1, z1, projX1, projY1, lat2, lon2, x2, y2, z2, projX2, projY2, handler, depth, state) {
+        if (depth >= this.maxDepth) {
+            return state;
+        }
+        const startVec = Vec3Math.set(x1, y1, z1, this.vec3Cache[0]);
+        const endVec = Vec3Math.set(x2, y2, z2, this.vec3Cache[1]);
+        const angularWidth = circle.angleAlong(startVec, endVec, Math.PI);
+        if (angularWidth <= GeoCircle.ANGULAR_TOLERANCE) {
+            return state;
+        }
+        const midVec = circle.offsetAngleAlong(startVec, angularWidth / 2, this.vec3Cache[2]);
+        const startProjected = Vec2Math.set(projX1, projY1, this.vec2Cache[0]);
+        const endProjected = Vec2Math.set(projX2, projY2, this.vec2Cache[1]);
+        const deltaProjected = Vec2Math.sub(endProjected, startProjected, this.vec2Cache[2]);
+        const deltaProjectedDot = Vec2Math.dot(deltaProjected, deltaProjected);
+        const midPoint = this.geoPointCache[0].setFromCartesian(midVec);
+        const midProjected = projection.project(midPoint, this.vec2Cache[2]);
+        const lat0 = midPoint.lat;
+        const lon0 = midPoint.lon;
+        const x0 = midVec[0];
+        const y0 = midVec[1];
+        const z0 = midVec[2];
+        const projX0 = midProjected[0];
+        const projY0 = midProjected[1];
+        const A = projX2 - projX1;
+        const B = projY2 - projY1;
+        const C = projX1 * projX1 - projX2 * projX2 + projY1 * projY1 - projY2 * projY2;
+        const D = projX0 - projX1;
+        const E = projY0 - projY1;
+        const F = projX1 * projX1 - projX0 * projX0 + projY1 * projY1 - projY0 * projY0;
+        // Calculate the Douglas-Peucker metric
+        const det = 2 * (A * E - B * D);
+        const dpDisSq = (det * det / 4) / deltaProjectedDot;
+        if (dpDisSq > this.dpTolSq) {
+            // Attempt to model the projected path with an arc
+            // Find the center of circle containing the arc passing through the projected start, end, and mid points.
+            const arcCenterX = (B * F - C * E) / det;
+            const arcCenterY = (C * D - A * F) / det;
+            const arcRadius = Math.hypot(arcCenterX - projX1, arcCenterY - projY1);
+            const startToEndVec = Vec3Math.set(A, B, 0, this.vec3Cache[3]);
+            const centerToMidVec = Vec3Math.set(projX0 - arcCenterX, projY0 - arcCenterY, 0, this.vec3Cache[4]);
+            const cross = Vec3Math.cross(startToEndVec, centerToMidVec, this.vec3Cache[4]);
+            state.vectorType = 'arc';
+            state.arcCenterX = arcCenterX;
+            state.arcCenterY = arcCenterY;
+            state.arcRadius = arcRadius;
+            state.isArcCounterClockwise = cross[2] > 0;
+        }
+        else {
+            state.vectorType = 'line';
+        }
+        const cosDistance = Vec3Math.dot(startVec, midVec);
+        if (cosDistance > this.cosMinDistance) { // cosine of distance increases with decreasing distance
+            // We are below the minimum distance required to continue resampling -> decide if we need to continue or if
+            // the path can satisfactorily be modeled as either a straight line or a circular arc.
+            if (state.vectorType === 'line') {
+                // The path can be modeled as a line.
+                return state;
+            }
+            // To find whether the path can be modeled as an arc, we need to project the one-quarter and three-quarter points
+            // along the path and find the projected points' distances from the arc modeled above. If the distances are
+            // within the D-P tolerance, then the path can be modeled as an arc.
+            const query = circle.offsetAngleAlong(startVec, angularWidth / 4, this.geoPointCache[0]);
+            const projectedQuery = projection.project(query, this.vec2Cache[0]);
+            let distance = Math.hypot(projectedQuery[0] - state.arcCenterX, projectedQuery[1] - state.arcCenterY);
+            if ((distance - state.arcRadius) * (distance - state.arcRadius) <= this.dpTolSq) {
+                circle.offsetAngleAlong(startVec, 3 * angularWidth / 4, query);
+                projection.project(query, projectedQuery);
+                distance = Math.hypot(projectedQuery[0] - state.arcCenterX, projectedQuery[1] - state.arcCenterY);
+                if ((distance - state.arcRadius) * (distance - state.arcRadius) <= this.dpTolSq) {
+                    return state;
+                }
+            }
+        }
+        state = this.resampleHelper(projection, circle, lat1, lon1, x1, y1, z1, projX1, projY1, lat0, lon0, x0, y0, z0, projX0, projY0, handler, depth + 1, state);
+        this.callHandler(handler, lat0, lon0, projX0, projY0, state);
+        state.index++;
+        state.prevX = projX0;
+        state.prevY = projY0;
+        return this.resampleHelper(projection, circle, lat0, lon0, x0, y0, z0, projX0, projY0, lat2, lon2, x2, y2, z2, projX2, projY2, handler, depth + 1, state);
+    }
+    /**
+     * Calls a handler function for a resampled point.
+     * @param handler The handler function to call.
+     * @param lat The latitude of the resampled point, in degrees.
+     * @param lon The longitude of the resampled point, in degrees.
+     * @param projX The x-coordinate of the projected resampled point, in pixels.
+     * @param projY The y-coordinate of the projected resampled point, in pixels.
+     * @param state The current state of the resampling algorithm.
+     */
+    callHandler(handler, lat, lon, projX, projY, state) {
+        let vector;
+        if (state.vectorType === 'line') {
+            vector = this.lineVector;
+        }
+        else {
+            vector = this.arcVector;
+            Vec2Math.set(state.arcCenterX, state.arcCenterY, vector.projectedArcCenter);
+            vector.projectedArcRadius = state.arcRadius;
+            vector.projectedArcStartAngle = Math.atan2(state.prevY - state.arcCenterY, state.prevX - state.arcCenterX);
+            vector.projectedArcEndAngle = Math.atan2(projY - state.arcCenterY, projX - state.arcCenterX);
+            if (vector.projectedArcEndAngle < vector.projectedArcStartAngle !== state.isArcCounterClockwise) {
+                vector.projectedArcEndAngle += state.isArcCounterClockwise ? -MathUtils.TWO_PI : MathUtils.TWO_PI;
+            }
+        }
+        vector.point.set(lat, lon);
+        Vec2Math.set(projX, projY, vector.projected);
+        vector.index = state.index;
+        handler(vector);
+    }
+}
+
 /// <reference types="@microsoft/msfs-types/js/common" />
 const airportIcaoRegionPattern = new RegExp(/^A../);
 /**
@@ -11251,6 +9744,269 @@ class AirwayBuilder {
         });
     }
 }
+
+/**
+ * Utility functions for working with arrays.
+ */
+class ArrayUtils {
+    /**
+     * Creates a new array with initialized values.
+     * @param length The length of the new array.
+     * @param init A function which generates initial values for the new array at each index.
+     * @returns A new array of the specified length with initialized values.
+     */
+    static create(length, init) {
+        const newArray = [];
+        for (let i = 0; i < length; i++) {
+            newArray[i] = init(i);
+        }
+        return newArray;
+    }
+    /**
+     * Creates a new array containing a sequence of evenly-spaced numbers.
+     * @param length The length of the new array.
+     * @param start The number contained at index 0 of the new array. Defaults to `0`.
+     * @param increment The increment between each successive number in the new array. Defaults to `1`.
+     * @returns A new array containing the specified sequence of evenly-spaced numbers.
+     */
+    static range(length, start = 0, increment = 1) {
+        return ArrayUtils.fillRange([], length, 0, start, increment);
+    }
+    /**
+     * Fills an existing array with a sequence of evenly-spaced numbers. The sequence is written to the array in a single
+     * contiguous block of consecutive indexes.
+     * @param array The array to fill.
+     * @param length The length of the number sequence.
+     * @param startIndex The index at which to start filling the array. Defaults to `0`.
+     * @param start The first number in the sequence. Defaults to {@linkcode startIndex}.
+     * @param increment The increment between each successive number in the new array. Defaults to `1`.
+     * @returns The array, after it has been filled with the specified number sequence.
+     */
+    static fillRange(array, length, startIndex = 0, start = startIndex, increment = 1) {
+        const endIndex = startIndex + length;
+        for (let i = startIndex; i < endIndex; i++) {
+            array[i] = start + i * increment;
+        }
+        return array;
+    }
+    /**
+     * Gets the element at a specific index in an array.
+     * @param array An array.
+     * @param index The index to access. Negative indexes are supported and access elements starting from the end of the
+     * array (`-1` accesses the last element, `-2` the second to last element, etc).
+     * @returns The element at the specified index in the array.
+     * @throws RangeError if the index is out of bounds.
+     */
+    static at(array, index) {
+        if (index < 0) {
+            index += array.length;
+        }
+        if (index < 0 || index >= array.length) {
+            throw new RangeError();
+        }
+        return array[index];
+    }
+    /**
+     * Gets the element at a specific index in an array, or `undefined` if the index is out of bounds.
+     * @param array An array.
+     * @param index The index to access. Negative indexes are supported and access elements starting from the end of the
+     * array (`-1` accesses the last element, `-2` the second to last element, etc).
+     * @returns The element at the specified index in the array, or `undefined` if the index is out of bounds.
+     */
+    static peekAt(array, index) {
+        if (index < 0) {
+            index += array.length;
+        }
+        return array[index];
+    }
+    /**
+     * Gets the first element of an array.
+     * @param array An array.
+     * @returns The first element of the specified array.
+     * @throws RangeError if the array is empty.
+     */
+    static first(array) {
+        if (array.length === 0) {
+            throw new RangeError();
+        }
+        return array[0];
+    }
+    /**
+     * Gets the first element of an array if it is not empty, or `undefined` otherwise.
+     * @param array An array.
+     * @returns The first element of an array if it is not empty, or `undefined` otherwise.
+     */
+    static peekFirst(array) {
+        return array[0];
+    }
+    /**
+     * Gets the last element of an array.
+     * @param array An array.
+     * @returns The last element of the specified array.
+     * @throws RangeError if the array is empty.
+     */
+    static last(array) {
+        if (array.length === 0) {
+            throw new RangeError();
+        }
+        return array[array.length - 1];
+    }
+    /**
+     * Gets the last element of an array if it is not empty, or `undefined` otherwise.
+     * @param array An array.
+     * @returns The last element of an array if it is not empty, or `undefined` otherwise.
+     */
+    static peekLast(array) {
+        return array[array.length - 1];
+    }
+    /**
+     * Checks if a certain element is included in an array.
+     * @param array An array.
+     * @param searchElement The element to search for.
+     * @param fromIndex The position in this array at which to begin searching for `searchElement`.
+     * @returns Whether the search element is included in the specified array.
+     */
+    static includes(array, searchElement, fromIndex) {
+        return array.includes(searchElement, fromIndex);
+    }
+    /**
+     * Checks if two arrays are equal to each other. This method considers two arrays `a` and `b` if their lengths are
+     * equal and `a[i]` equals `b[i]` for every valid index `i`. All empty arrays are considered equal to one another.
+     * @param a The first array.
+     * @param b The second array.
+     * @param equalsFunc The function to use to determine whether two array elements are equal to each other. Defaults
+     * to a function which uses the strict equality operator (`===`).
+     * @returns Whether the two specified arrays are equal.
+     */
+    static equals(a, b, equalsFunc = ArrayUtils.STRICT_EQUALS) {
+        if (a.length !== b.length) {
+            return false;
+        }
+        for (let i = 0; i < a.length; i++) {
+            if (!equalsFunc(a[i], b[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+    /**
+     * Creates a new array by mapping each element of an existing array using a mapping function, then flattening the
+     * mapped elements to a maximum depth of one, leaving the original array intact.
+     * @param array An array.
+     * @param map A function which is called once on each element of the original array to map it to an arbitrary value.
+     * @returns A new array which was created by mapping each element of the specified array, then flattening the mapped
+     * elements to a maximum depth of one.
+     */
+    static flatMap(array, map) {
+        const out = [];
+        for (let i = 0; i < array.length; i++) {
+            const mapped = map(array[i], i, array);
+            if (Array.isArray(mapped)) {
+                for (let j = 0; j < mapped.length; j++) {
+                    out[out.length] = mapped[j];
+                }
+            }
+            else {
+                out[out.length] = mapped;
+            }
+        }
+        return out;
+    }
+    /**
+     * Creates a new array by flattening an existing array to a maximum depth, leaving the original array intact. The
+     * process of flattening replaces each element in the array that is itself an array with the sequence of elements
+     * found in the sub-array, recursively up to the maximum depth.
+     * @param array An array.
+     * @param depth The maximum depth to which to flatten. Values less than or equal to zero will result in no flattening
+     * (in other words, a shallow copy of the original array will be returned). Defaults to `1`.
+     * @returns A new array which was created by flattening the specified array to the specified maximum depth.
+     */
+    static flat(array, depth = 1) {
+        const out = [];
+        this.flatHelper(array, depth, 0, out);
+        return out;
+    }
+    /**
+     * Recursively flattens an array and writes the flattened sequence of elements into another array.
+     * @param array The array to flatten.
+     * @param maxDepth The maximum depth to which to flatten.
+     * @param depth The current flattening depth.
+     * @param out The array to which to write the flattened sequence of elements.
+     */
+    static flatHelper(array, maxDepth, depth, out) {
+        for (let i = 0; i < array.length; i++) {
+            const element = array[i];
+            if (Array.isArray(element) && depth < maxDepth) {
+                this.flatHelper(element, maxDepth, depth + 1, out);
+            }
+            else {
+                out[out.length] = element;
+            }
+        }
+    }
+    /**
+     * Performs a shallow copy of an array. After the operation is complete, the target array will have the same
+     * length and the same elements in the same order as the source array.
+     * @param source The array to copy.
+     * @param target The array to copy into. If not defined, a new array will be created.
+     * @returns The target array, after the source array has been copied into it.
+     */
+    static shallowCopy(source, target = []) {
+        target.length = source.length;
+        for (let i = 0; i < source.length; i++) {
+            target[i] = source[i];
+        }
+        return target;
+    }
+    /**
+     * Performs a binary search on a sorted array to find the index of the first or last element in the array whose
+     * sorting order is equal to a query element. If no such element in the array exists, `-(index + 1)` is returned,
+     * where `index` is the index at which the query element would be found if it were contained in the sorted array.
+     * @param array An array.
+     * @param element The element to search for.
+     * @param comparator A function which determines the sorting order of elements in the array. The function should
+     * return a negative number if the first element is to be sorted before the second, a positive number if the first
+     * element is to be sorted after the second, or zero if both elements are to be sorted equivalently.
+     * @param first If `true`, this method will find the first (lowest) matching index if there are multiple matching
+     * indexes, otherwise this method will find the last (highest) matching index. Defaults to `true`.
+     * @returns The index of the first (if `first` is `true`) or last (if `first` is `false`) element in the specified
+     * array whose sorting order is equal to the query element, or `-(index + 1)`, where `index` is the index at which
+     * the query element would be found if it were contained in the sorted array, if no element in the array has a
+     * sorting order equal to the query.
+     */
+    static binarySearch(array, element, comparator, first = true) {
+        let min = 0;
+        let max = array.length;
+        let index = Math.floor((min + max) / 2);
+        while (min < max) {
+            const compare = comparator(element, array[index]);
+            if (compare < 0) {
+                max = index;
+            }
+            else if (compare > 0) {
+                min = index + 1;
+            }
+            else {
+                const delta = first ? -1 : 1;
+                while (index + delta >= 0 && index + delta < array.length && comparator(element, array[index + delta]) === 0) {
+                    index += delta;
+                }
+                return index;
+            }
+            index = Math.floor((min + max) / 2);
+        }
+        return -(index + 1);
+    }
+    /**
+     * Gets the length of the longest string in the array.
+     * @param array The array to search in.
+     * @returns length of the longest string
+     */
+    static getMaxStringLength(array) {
+        return array.reduce((accum, curr) => curr.length > accum ? curr.length : accum, 0);
+    }
+}
+ArrayUtils.STRICT_EQUALS = (a, b) => a === b;
 
 /**
  * A binary min-heap. Each element added to the heap is ordered according to the value of an assigned key relative
@@ -21213,6 +19969,1657 @@ class ObjectSubject {
 
 /// <reference types="@microsoft/msfs-types/js/simvar" />
 /**
+ * A publisher for air data computer information.
+ */
+class AdcPublisher extends SimVarPublisher {
+    /**
+     * Creates an AdcPublisher.
+     * @param bus The event bus to which to publish.
+     * @param pacer An optional pacer to use to control the rate of publishing.
+     */
+    constructor(bus, pacer) {
+        var _a, _b, _c, _d, _e, _f, _g, _h;
+        const simvars = new Map([
+            ['indicated_alt', { name: 'INDICATED ALTITUDE:#index#', type: SimVarValueType.Feet, indexed: true }],
+            ['altimeter_baro_setting_inhg', { name: 'KOHLSMAN SETTING HG:#index#', type: SimVarValueType.InHG, indexed: true }],
+            ['altimeter_baro_setting_mb', { name: 'KOHLSMAN SETTING MB:#index#', type: SimVarValueType.MB, indexed: true }],
+            ['altimeter_baro_preselect_raw', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, indexed: true }],
+            ['altimeter_baro_preselect_inhg', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, map: raw => UnitType.HPA.convertTo(raw / 16, UnitType.IN_HG), indexed: true }],
+            ['altimeter_baro_preselect_mb', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, map: raw => raw / 16, indexed: true }],
+            ['altimeter_baro_is_std', { name: 'L:XMLVAR_Baro#index#_ForcedToSTD', type: SimVarValueType.Bool, indexed: true }],
+            ['radio_alt', { name: 'RADIO HEIGHT', type: SimVarValueType.Feet }],
+            ['pressure_alt', { name: 'PRESSURE ALTITUDE', type: SimVarValueType.Feet }],
+            ['vertical_speed', { name: 'VERTICAL SPEED', type: SimVarValueType.FPM }],
+            ['ambient_density', { name: 'AMBIENT DENSITY', type: SimVarValueType.SlugsPerCubicFoot }],
+            ['isa_temp_c', { name: 'STANDARD ATM TEMPERATURE', type: SimVarValueType.Celsius }],
+            ['ram_air_temp_c', { name: 'TOTAL AIR TEMPERATURE', type: SimVarValueType.Celsius }],
+            ['ambient_wind_velocity', { name: 'AMBIENT WIND VELOCITY', type: SimVarValueType.Knots }],
+            ['ambient_wind_direction', { name: 'AMBIENT WIND DIRECTION', type: SimVarValueType.Degree }],
+            ['on_ground', { name: 'SIM ON GROUND', type: SimVarValueType.Bool }],
+            ['aoa', { name: 'INCIDENCE ALPHA', type: SimVarValueType.Degree }],
+            ['stall_aoa', { name: 'STALL ALPHA', type: SimVarValueType.Degree }],
+            ['zero_lift_aoa', { name: 'ZERO LIFT ALPHA', type: SimVarValueType.Degree }],
+            ['density_alt', { name: 'DENSITY ALTITUDE', type: SimVarValueType.Feet }],
+        ]);
+        super(simvars, bus, pacer);
+        (_a = this.needPublish) !== null && _a !== void 0 ? _a : (this.needPublish = {
+            'mach_number': false,
+            'ambient_pressure_inhg': false,
+            'ambient_temp_c': false
+        });
+        (_b = this.needPublishIasTopics) !== null && _b !== void 0 ? _b : (this.needPublishIasTopics = new Map());
+        (_c = this.needRetrievePressure) !== null && _c !== void 0 ? _c : (this.needRetrievePressure = false);
+        (_d = this.needRetrieveTemperature) !== null && _d !== void 0 ? _d : (this.needRetrieveTemperature = false);
+        (_e = this.needRetrieveMach) !== null && _e !== void 0 ? _e : (this.needRetrieveMach = false);
+        (_f = this.pressure) !== null && _f !== void 0 ? _f : (this.pressure = 1013.25);
+        (_g = this.temperature) !== null && _g !== void 0 ? _g : (this.temperature = 0);
+        (_h = this.mach) !== null && _h !== void 0 ? _h : (this.mach = 0);
+    }
+    /** @inheritDoc */
+    handleSubscribedTopic(topic) {
+        var _a, _b;
+        (_a = this.needPublish) !== null && _a !== void 0 ? _a : (this.needPublish = {
+            'mach_number': false,
+            'ambient_pressure_inhg': false,
+            'ambient_temp_c': false
+        });
+        (_b = this.needPublishIasTopics) !== null && _b !== void 0 ? _b : (this.needPublishIasTopics = new Map());
+        if (this.resolvedSimVars.has(topic)
+            || topic in this.needPublish
+            || AdcPublisher.TOPIC_REGEXES['ias'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['tas'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['indicated_mach_number'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['indicated_tas'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['mach_to_kias_factor'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['tas_to_ias_factor'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['indicated_mach_to_kias_factor'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['indicated_tas_to_ias_factor'].test(topic)) {
+            // If topic matches an already resolved topic -> start publishing.
+            this.onTopicSubscribed(topic);
+        }
+        else {
+            // Check if topic matches indexed topic.
+            this.tryMatchIndexedSubscribedTopic(topic);
+        }
+    }
+    /** @inheritDoc */
+    onTopicSubscribed(topic) {
+        if (topic in this.needPublish) {
+            this.needPublish[topic] = true;
+            switch (topic) {
+                case 'ambient_pressure_inhg':
+                    this.needRetrievePressure = true;
+                    if (this.publishActive) {
+                        this.retrieveAmbientPressure(true);
+                    }
+                    break;
+                case 'ambient_temp_c':
+                    this.needRetrieveTemperature = true;
+                    if (this.publishActive) {
+                        this.retrieveAmbientTemperature(true);
+                    }
+                    break;
+                case 'mach_number':
+                    this.needRetrieveMach = true;
+                    if (this.publishActive) {
+                        this.retrieveMach(true);
+                    }
+                    break;
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['ias'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['ias'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.iasTopic = index < 0 ? 'ias' : `ias_${index}`;
+            if (this.publishActive) {
+                this.retrieveIas(entry, true);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['tas'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['tas'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.tasTopic = index < 0 ? 'tas' : `tas_${index}`;
+            if (this.publishActive) {
+                this.retrieveTas(entry, true);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['indicated_mach_number'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['indicated_mach_number'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.indicatedMachTopic = index < 0 ? 'indicated_mach_number' : `indicated_mach_number_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveIas(entry, false);
+                this.retrieveIndicatedMach(entry, true);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['indicated_tas'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['indicated_tas'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            this.needRetrieveTemperature = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.indicatedTasTopic = index < 0 ? 'indicated_tas' : `indicated_tas_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveAmbientTemperature(false);
+                this.retrieveIas(entry, false);
+                this.retrieveIndicatedTas(entry, true);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['mach_to_kias_factor'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['mach_to_kias_factor'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            this.needRetrieveMach = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.machToKiasTopic = index < 0 ? 'mach_to_kias_factor' : `mach_to_kias_factor_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveMach(false);
+                this.retrieveIas(entry, false);
+                this.publishMachToKias(entry);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['tas_to_ias_factor'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['tas_to_ias_factor'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            this.needRetrieveTemperature = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.tasToIasTopic = index < 0 ? 'tas_to_ias_factor' : `tas_to_ias_factor_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveAmbientTemperature(false);
+                this.retrieveIas(entry, false);
+                this.retrieveTas(entry, false);
+                this.publishTasToIas(entry);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['indicated_mach_to_kias_factor'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['indicated_mach_to_kias_factor'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.indicatedMachToKiasTopic = index < 0 ? 'indicated_mach_to_kias_factor' : `indicated_mach_to_kias_factor_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveIas(entry, false);
+                this.retrieveIndicatedMach(entry, false);
+                this.publishIndicatedMachToKias(entry);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['indicated_tas_to_ias_factor'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['indicated_tas_to_ias_factor'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            this.needRetrieveTemperature = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.indicatedTasToIasTopic = index < 0 ? 'indicated_tas_to_ias_factor' : `indicated_tas_to_ias_factor_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveAmbientTemperature(false);
+                this.retrieveIas(entry, false);
+                this.retrieveIndicatedTas(entry, false);
+                this.publishIndicatedTasToIas(entry);
+            }
+        }
+        else {
+            super.onTopicSubscribed(topic);
+        }
+    }
+    /**
+     * Gets the entry describing indicated airspeed-related topics to publish for a given airspeed indicator index, or
+     * creates a new one if it does not exist.
+     * @param index The airspeed indicator index for which to get an entry, or `-1` for the un-indexed airspeed
+     * indicator.
+     * @returns An entry describing indicated airspeed-related topics to publish for the specified airspeed indicator
+     * index.
+     */
+    getOrCreateIasTopicEntry(index) {
+        let entry = this.needPublishIasTopics.get(index);
+        if (!entry) {
+            entry = {
+                iasSimVar: index < 0 ? 'AIRSPEED INDICATED:1' : `AIRSPEED INDICATED:${index}`,
+                tasSimVar: index < 0 ? 'AIRSPEED TRUE:1' : `AIRSPEED TRUE:${index}`,
+                kias: 0,
+                iasMps: 0,
+                ktas: 0,
+                indicatedMach: 0,
+                indicatedTas: 0
+            };
+            this.needPublishIasTopics.set(index, entry);
+        }
+        return entry;
+    }
+    /** @inheritDoc */
+    onUpdate() {
+        const isSlewing = SimVar.GetSimVarValue('IS SLEW ACTIVE', 'bool');
+        if (!isSlewing) {
+            if (this.needRetrievePressure) {
+                this.retrieveAmbientPressure(this.needPublish['ambient_pressure_inhg']);
+            }
+            if (this.needRetrieveTemperature) {
+                this.retrieveAmbientTemperature(this.needPublish['ambient_temp_c']);
+            }
+            if (this.needRetrieveMach) {
+                this.retrieveMach(this.needPublish['mach_number']);
+            }
+            for (const entry of this.needPublishIasTopics.values()) {
+                this.retrieveIas(entry, true);
+                if (entry.tasTopic || entry.tasToIasTopic) {
+                    this.retrieveTas(entry, true);
+                }
+                if (entry.indicatedMachTopic || entry.indicatedMachToKiasTopic) {
+                    this.retrieveIndicatedMach(entry, true);
+                }
+                if (entry.indicatedTasTopic || entry.indicatedTasToIasTopic) {
+                    this.retrieveIndicatedTas(entry, true);
+                }
+                this.publishMachToKias(entry);
+                this.publishTasToIas(entry);
+                this.publishIndicatedMachToKias(entry);
+                this.publishIndicatedTasToIas(entry);
+            }
+            super.onUpdate();
+        }
+    }
+    /**
+     * Retrieves and optionally publishes the current ambient pressure.
+     * @param publish Whether to publish the value.
+     */
+    retrieveAmbientPressure(publish) {
+        const pressureInHg = SimVar.GetSimVarValue('AMBIENT PRESSURE', SimVarValueType.InHG);
+        this.pressure = UnitType.IN_HG.convertTo(pressureInHg, UnitType.HPA);
+        publish && this.publish('ambient_pressure_inhg', pressureInHg);
+    }
+    /**
+     * Retrieves and optionally publishes the current ambient temperature.
+     * @param publish Whether to publish the value.
+     */
+    retrieveAmbientTemperature(publish) {
+        this.temperature = SimVar.GetSimVarValue('AMBIENT TEMPERATURE', SimVarValueType.Celsius);
+        publish && this.publish('ambient_temp_c', this.temperature);
+    }
+    /**
+     * Retrieves and optionally publishes the airplane's current mach number.
+     * @param publish Whether to publish the value.
+     */
+    retrieveMach(publish) {
+        this.mach = SimVar.GetSimVarValue('AIRSPEED MACH', SimVarValueType.Mach);
+        publish && this.publish('mach_number', this.mach);
+    }
+    /**
+     * Retrieves and optionally publishes the current indicated airspeed for an airspeed indicator index.
+     * @param entry The entry for the airspeed indicator index for which to retrieve the value.
+     * @param publish Whether to publish the value.
+     */
+    retrieveIas(entry, publish) {
+        entry.kias = SimVar.GetSimVarValue(entry.iasSimVar, SimVarValueType.Knots);
+        entry.iasMps = UnitType.KNOT.convertTo(entry.kias, UnitType.MPS);
+        publish && entry.iasTopic && this.publish(entry.iasTopic, entry.kias);
+    }
+    /**
+     * Retrieves and optionally publishes the current true airspeed for an airspeed indicator index.
+     * @param entry The entry for the airspeed indicator index for which to retrieve the value.
+     * @param publish Whether to publish the value.
+     */
+    retrieveTas(entry, publish) {
+        entry.ktas = SimVar.GetSimVarValue(entry.tasSimVar, SimVarValueType.Knots);
+        publish && entry.tasTopic && this.publish(entry.tasTopic, entry.ktas);
+    }
+    /**
+     * Retrieves and optionally publishes the current indicated mach number for an airspeed indicator index.
+     * @param entry The entry for the airspeed indicator index for which to retrieve the value.
+     * @param publish Whether to publish the value.
+     */
+    retrieveIndicatedMach(entry, publish) {
+        entry.indicatedMach = AeroMath.casToMach(entry.iasMps, this.pressure);
+        publish && entry.indicatedMachTopic && this.publish(entry.indicatedMachTopic, entry.indicatedMach);
+    }
+    /**
+     * Retrieves and optionally publishes the current indicated true airspeed for an airspeed indicator index.
+     * @param entry The entry for the airspeed indicator index for which to retrieve the value.
+     * @param publish Whether to publish the value.
+     */
+    retrieveIndicatedTas(entry, publish) {
+        entry.indicatedTas = UnitType.MPS.convertTo(AeroMath.casToTas(entry.iasMps, this.pressure, this.temperature), UnitType.KNOT);
+        publish && entry.indicatedTasTopic && this.publish(entry.indicatedTasTopic, entry.indicatedTas);
+    }
+    /**
+     * Publishes the current conversion factor from mach number to knots indicated airspeed for an airspeed indicator
+     * index.
+     * @param entry The entry for the airspeed indicator index for which to publish the value.
+     */
+    publishMachToKias(entry) {
+        if (!entry.machToKiasTopic) {
+            return;
+        }
+        const factor = entry.kias < 1 || this.mach === 0
+            ? 1 / AeroMath.casToMach(1, this.pressure)
+            : entry.kias / this.mach;
+        this.publish(entry.machToKiasTopic, isFinite(factor) ? factor : 1);
+    }
+    /**
+     * Publishes the current conversion factor from true airspeed to indicated airspeed for an airspeed indicator index.
+     * @param entry The entry for the airspeed indicator index for which to publish the value.
+     */
+    publishTasToIas(entry) {
+        if (!entry.tasToIasTopic) {
+            return;
+        }
+        const factor = entry.kias < 1 || entry.ktas === 0
+            ? 1 / AeroMath.casToTas(1, this.pressure, this.temperature)
+            : entry.kias / entry.ktas;
+        this.publish(entry.tasToIasTopic, isFinite(factor) ? factor : 1);
+    }
+    /**
+     * Publishes the current conversion factor from indicated mach number to knots indicated airspeed for an airspeed
+     * indicator index.
+     * @param entry The entry for the airspeed indicator index for which to publish the value.
+     */
+    publishIndicatedMachToKias(entry) {
+        if (!entry.indicatedMachToKiasTopic) {
+            return;
+        }
+        const factor = entry.kias < 1 || entry.indicatedMach === 0
+            ? 1 / AeroMath.casToMach(1, this.pressure)
+            : entry.kias / entry.indicatedMach;
+        this.publish(entry.indicatedMachToKiasTopic, isFinite(factor) ? factor : 1);
+    }
+    /**
+     * Publishes the current conversion factor from indicated true airspeed to indicated airspeed for an airspeed
+     * indicator index.
+     * @param entry The entry for the airspeed indicator index for which to publish the value.
+     */
+    publishIndicatedTasToIas(entry) {
+        if (!entry.indicatedTasToIasTopic) {
+            return;
+        }
+        const factor = entry.kias < 1 || entry.indicatedTas === 0
+            ? 1 / AeroMath.casToTas(1, this.pressure, this.temperature)
+            : entry.kias / entry.indicatedTas;
+        this.publish(entry.indicatedTasToIasTopic, isFinite(factor) ? factor : 1);
+    }
+}
+AdcPublisher.TOPIC_REGEXES = {
+    'ias': /^ias(?:_(0|(?:[1-9])\d*))?$/,
+    'tas': /^tas(?:_(0|(?:[1-9])\d*))?$/,
+    'indicated_mach_number': /^indicated_mach_number(?:_(0|(?:[1-9])\d*))?$/,
+    'indicated_tas': /^indicated_tas(?:_(0|(?:[1-9])\d*))?$/,
+    'mach_to_kias_factor': /^mach_to_kias_factor(?:_(0|(?:[1-9])\d*))?$/,
+    'tas_to_ias_factor': /^tas_to_ias_factor(?:_(0|(?:[1-9])\d*))?$/,
+    'indicated_mach_to_kias_factor': /^indicated_mach_to_kias_factor(?:_(0|(?:[1-9])\d*))?$/,
+    'indicated_tas_to_ias_factor': /^indicated_tas_to_ias_factor(?:_(0|(?:[1-9])\d*))?$/
+};
+
+/**
+ * A publisher for AHRS information.
+ */
+class AhrsPublisher extends SimVarPublisher {
+    /**
+     * Creates an AhrsPublisher.
+     * @param bus The event bus to which to publish.
+     * @param pacer An optional pacer to use to control the rate of publishing.
+     */
+    constructor(bus, pacer) {
+        var _a;
+        const simvars = new Map([
+            ['pitch_deg', { name: 'ATTITUDE INDICATOR PITCH DEGREES:#index#', type: SimVarValueType.Degree, indexed: true }],
+            ['roll_deg', { name: 'ATTITUDE INDICATOR BANK DEGREES:#index#', type: SimVarValueType.Degree, indexed: true }],
+            ['hdg_deg', { name: 'HEADING INDICATOR:#index#', type: SimVarValueType.Degree, indexed: true }],
+            ['hdg_deg_true', { name: 'HEADING INDICATOR:#index#', type: SimVarValueType.Degree, map: (heading) => MagVar.magneticToTrue(heading, this.magVar), indexed: true }],
+            ['delta_heading_rate', { name: 'DELTA HEADING RATE:#index#', type: SimVarValueType.Degree, indexed: true }],
+            ['turn_coordinator_ball', { name: 'TURN COORDINATOR BALL', type: SimVarValueType.Number }],
+            ['actual_hdg_deg', { name: 'PLANE HEADING DEGREES MAGNETIC', type: SimVarValueType.Degree }],
+            ['actual_hdg_deg_true', { name: 'PLANE HEADING DEGREES TRUE', type: SimVarValueType.Degree }],
+            ['actual_pitch_deg', { name: 'PLANE PITCH DEGREES', type: SimVarValueType.Degree }],
+            ['actual_roll_deg', { name: 'PLANE BANK DEGREES', type: SimVarValueType.Degree }],
+        ]);
+        super(simvars, bus, pacer);
+        this.magVar = 0;
+        (_a = this.needUpdateMagVar) !== null && _a !== void 0 ? _a : (this.needUpdateMagVar = false);
+    }
+    /** @inheritdoc */
+    onTopicSubscribed(topic) {
+        super.onTopicSubscribed(topic);
+        if (topic.startsWith('hdg_deg_true')) {
+            this.needUpdateMagVar = true;
+        }
+    }
+    /** @inheritdoc */
+    onUpdate() {
+        if (this.needUpdateMagVar) {
+            this.magVar = SimVar.GetSimVarValue('MAGVAR', SimVarValueType.Degree);
+        }
+        super.onUpdate();
+    }
+}
+
+/**
+ * A publisher for events related to the sim's AI piloting feature.
+ */
+class AiPilotPublisher extends SimVarPublisher {
+    /**
+     * Creates a new instance of AiPilotPublisher.
+     * @param bus The event bus to which to publish.
+     */
+    constructor(bus) {
+        super(new Map([
+            ['ai_delegate_controls_active', { name: 'DELEGATE CONTROLS TO AI', type: SimVarValueType.Bool }],
+            ['ai_auto_rudder_active', { name: 'AUTO COORDINATION', type: SimVarValueType.Bool }]
+        ]), bus);
+    }
+}
+
+/**
+ * Ambient precipitation states.
+ */
+var AmbientPrecipState;
+(function (AmbientPrecipState) {
+    AmbientPrecipState[AmbientPrecipState["None"] = 2] = "None";
+    AmbientPrecipState[AmbientPrecipState["Rain"] = 4] = "Rain";
+    AmbientPrecipState[AmbientPrecipState["Snow"] = 8] = "Snow";
+})(AmbientPrecipState || (AmbientPrecipState = {}));
+/**
+ * A publisher for ambient environment information.
+ */
+class AmbientPublisher extends SimVarPublisher {
+    /**
+     * Creates an AmbientPublisher.
+     * @param bus The event bus to which to publish.
+     * @param pacer An optional pacer to use to control the rate of publishing.
+     */
+    constructor(bus, pacer) {
+        const simvars = new Map([
+            ['ambient_precip_state', { name: 'AMBIENT PRECIP STATE', type: SimVarValueType.Number }],
+            ['ambient_precip_rate', { name: 'AMBIENT PRECIP RATE', type: SimVarValueType.MillimetersWater }],
+            ['ambient_visibility', { name: 'AMBIENT VISIBILITY', type: SimVarValueType.Meters }],
+            ['ambient_in_cloud', { name: 'AMBIENT IN CLOUD', type: SimVarValueType.Bool }],
+            ['ambient_qnh_inhg', { name: 'SEA LEVEL PRESSURE', type: SimVarValueType.InHG }],
+            ['ambient_qnh_mb', { name: 'SEA LEVEL PRESSURE', type: SimVarValueType.MB }],
+        ]);
+        super(simvars, bus, pacer);
+    }
+}
+
+var APLockType;
+(function (APLockType) {
+    APLockType[APLockType["Heading"] = 0] = "Heading";
+    APLockType[APLockType["Nav"] = 1] = "Nav";
+    APLockType[APLockType["Alt"] = 2] = "Alt";
+    APLockType[APLockType["Bank"] = 3] = "Bank";
+    APLockType[APLockType["WingLevel"] = 4] = "WingLevel";
+    APLockType[APLockType["Vs"] = 5] = "Vs";
+    APLockType[APLockType["Flc"] = 6] = "Flc";
+    APLockType[APLockType["Pitch"] = 7] = "Pitch";
+    APLockType[APLockType["Approach"] = 8] = "Approach";
+    APLockType[APLockType["Backcourse"] = 9] = "Backcourse";
+    APLockType[APLockType["Glideslope"] = 10] = "Glideslope";
+    APLockType[APLockType["VNav"] = 11] = "VNav";
+})(APLockType || (APLockType = {}));
+/** base publisher for simvars */
+class APSimVarPublisher extends SimVarPublisher {
+    /**
+     * Create an APSimVarPublisher
+     * @param bus The EventBus to publish to
+     * @param pacer An optional pacer to use to control the pace of publishing
+     */
+    constructor(bus, pacer = undefined) {
+        super(APSimVarPublisher.simvars, bus, pacer);
+    }
+}
+APSimVarPublisher.simvars = new Map([
+    ['ap_master_status', { name: 'AUTOPILOT MASTER', type: SimVarValueType.Bool }],
+    ['ap_yd_status', { name: 'AUTOPILOT YAW DAMPER', type: SimVarValueType.Bool }],
+    ['ap_disengage_status', { name: 'AUTOPILOT DISENGAGED', type: SimVarValueType.Bool }],
+    ['ap_heading_hold', { name: 'AUTOPILOT HEADING LOCK', type: SimVarValueType.Bool }],
+    ['ap_nav_hold', { name: 'AUTOPILOT NAV1 LOCK', type: SimVarValueType.Bool }],
+    ['ap_bank_hold', { name: 'AUTOPILOT BANK HOLD', type: SimVarValueType.Bool }],
+    ['ap_max_bank_id', { name: 'AUTOPILOT MAX BANK ID', type: SimVarValueType.Number }],
+    ['ap_max_bank_value', { name: 'AUTOPILOT MAX BANK', type: SimVarValueType.Degree }],
+    ['ap_wing_lvl_hold', { name: 'AUTOPILOT WING LEVELER', type: SimVarValueType.Bool }],
+    ['ap_approach_hold', { name: 'AUTOPILOT APPROACH HOLD', type: SimVarValueType.Bool }],
+    ['ap_backcourse_hold', { name: 'AUTOPILOT BACKCOURSE HOLD', type: SimVarValueType.Bool }],
+    ['ap_vs_hold', { name: 'AUTOPILOT VERTICAL HOLD', type: SimVarValueType.Bool }],
+    ['ap_flc_hold', { name: 'AUTOPILOT FLIGHT LEVEL CHANGE', type: SimVarValueType.Bool }],
+    ['ap_alt_hold', { name: 'AUTOPILOT ALTITUDE LOCK', type: SimVarValueType.Bool }],
+    ['ap_glideslope_hold', { name: 'AUTOPILOT GLIDESLOPE HOLD', type: SimVarValueType.Bool }],
+    ['ap_pitch_hold', { name: 'AUTOPILOT PITCH HOLD', type: SimVarValueType.Bool }],
+    ['ap_toga_hold', { name: 'AUTOPILOT TAKEOFF POWER ACTIVE', type: SimVarValueType.Bool }],
+    ['ap_heading_selected', { name: 'AUTOPILOT HEADING LOCK DIR:#index#', type: SimVarValueType.Degree, indexed: true }],
+    ['ap_altitude_selected', { name: 'AUTOPILOT ALTITUDE LOCK VAR:#index#', type: SimVarValueType.Feet, indexed: true }],
+    ['ap_pitch_selected', { name: 'AUTOPILOT PITCH HOLD REF', type: SimVarValueType.Degree }],
+    ['ap_vs_selected', { name: 'AUTOPILOT VERTICAL HOLD VAR:#index#', type: SimVarValueType.FPM, indexed: true }],
+    ['ap_fpa_selected', { name: 'L:WT_AP_FPA_Target:#index#', type: SimVarValueType.Degree, indexed: true }],
+    ['ap_ias_selected', { name: 'AUTOPILOT AIRSPEED HOLD VAR:#index#', type: SimVarValueType.Knots, indexed: true }],
+    ['ap_mach_selected', { name: 'AUTOPILOT MACH HOLD VAR:#index#', type: SimVarValueType.Number, indexed: true }],
+    ['ap_selected_speed_is_mach', { name: 'AUTOPILOT MANAGED SPEED IN MACH', type: SimVarValueType.Bool }],
+    ['ap_selected_speed_is_manual', { name: 'L:XMLVAR_SpeedIsManuallySet', type: SimVarValueType.Bool }],
+    ['flight_director_bank', { name: 'AUTOPILOT FLIGHT DIRECTOR BANK', type: SimVarValueType.Degree }],
+    ['flight_director_pitch', { name: 'AUTOPILOT FLIGHT DIRECTOR PITCH', type: SimVarValueType.Degree }],
+    ['flight_director_is_active_1', { name: 'AUTOPILOT FLIGHT DIRECTOR ACTIVE:1', type: SimVarValueType.Bool }],
+    ['flight_director_is_active_2', { name: 'AUTOPILOT FLIGHT DIRECTOR ACTIVE:2', type: SimVarValueType.Bool }],
+    ['vnav_active', { name: 'L:XMLVAR_VNAVButtonValue', type: SimVarValueType.Bool }]
+]);
+/**
+ * Publishes autopilot data
+ */
+class AutopilotPublisher extends BasePublisher {
+    /**
+     * Creates an AutopilotPublisher
+     * @param bus The event bus to publish to.
+     * @param pacer An optional pacer to use to control the rate of publishing.
+     */
+    constructor(bus, pacer) {
+        super(bus, pacer);
+    }
+    /**
+     * Publish an AP master engage event
+     */
+    publishMasterEngage() {
+        this.publish('ap_master_on', true);
+    }
+    /**
+     * Publish an AP master disengage event
+     */
+    publishMasterDisengage() {
+        this.publish('ap_master_off', true);
+    }
+    /**
+     * Publish a YD engage event
+     */
+    publishYdEngage() {
+        this.publish('ap_yd_on', true);
+    }
+    /**
+     * Publish a YD disengage event
+     */
+    publishYdDisengage() {
+        this.publish('ap_yd_off', true);
+    }
+    /**
+     * Publish a lock set event
+     * @param lock The lock/hold set
+     */
+    publishLockSet(lock) {
+        this.publish('ap_lock_set', lock);
+    }
+    /**
+     * Publish a lock release event
+     * @param lock The lock/hold released
+     */
+    publishLockRelease(lock) {
+        this.publish('ap_lock_release', lock);
+    }
+}
+/**
+ * Manages an autopilot system
+ */
+class AutopilotInstrument {
+    /**
+     * Create an AutopilotInstrument
+     * @param bus The event bus to publish to
+     */
+    constructor(bus) {
+        this.bus = bus;
+        // this.hEvents = this.bus.getSubscriber<HEvent>();
+        this.publisher = new AutopilotPublisher(bus);
+        this.simVarPublisher = new APSimVarPublisher(bus);
+        this.simVarSubscriber = new EventSubscriber(bus);
+    }
+    /**
+     * Initialize the instrument
+     */
+    init() {
+        this.publisher.startPublish();
+        this.simVarPublisher.startPublish();
+        // console.log('initting autopilot');
+        this.simVarSubscriber.on('ap_master_status').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishMasterEngage();
+            }
+            else {
+                this.publisher.publishMasterDisengage();
+            }
+        });
+        this.simVarSubscriber.on('ap_yd_status').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishYdEngage();
+            }
+            else {
+                this.publisher.publishYdDisengage();
+            }
+        });
+        this.simVarSubscriber.on('ap_alt_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Alt);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Alt);
+            }
+        });
+        this.simVarSubscriber.on('ap_pitch_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Pitch);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Pitch);
+            }
+        });
+        this.simVarSubscriber.on('ap_heading_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Heading);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Heading);
+            }
+        });
+        this.simVarSubscriber.on('ap_nav_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Nav);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Nav);
+            }
+        });
+        this.simVarSubscriber.on('ap_approach_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Approach);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Approach);
+            }
+        });
+        this.simVarSubscriber.on('ap_backcourse_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Backcourse);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Backcourse);
+            }
+        });
+        this.simVarSubscriber.on('ap_bank_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Bank);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Bank);
+            }
+        });
+        this.simVarSubscriber.on('ap_wing_lvl_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.WingLevel);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.WingLevel);
+            }
+        });
+        this.simVarSubscriber.on('ap_flc_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Flc);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Flc);
+            }
+        });
+        this.simVarSubscriber.on('ap_vs_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Vs);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Vs);
+            }
+        });
+        this.simVarSubscriber.on('ap_glideslope_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Glideslope);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Glideslope);
+            }
+        });
+        this.simVarSubscriber.on('vnav_active').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.VNav);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.VNav);
+            }
+        });
+    }
+    /** update our publishers */
+    onUpdate() {
+        this.simVarPublisher.onUpdate();
+    }
+}
+
+/** A collection of helper functions dealing with radios and frequencies. */
+class RadioUtils {
+    /**
+     * Checks whether a frequency is a NAV frequency.
+     * @param freq The frequency to check, in megahertz.
+     * @returns Whether the specified frequency is a NAV frequency.
+     */
+    static isNavFrequency(freq) {
+        const freqKhz = Math.round(freq * 1000);
+        if (freqKhz < 108e3 || freqKhz > 117950) {
+            return false;
+        }
+        return freqKhz % 50 === 0;
+    }
+    /**
+     * Checks if frequency is a localizer frequency based on the number.
+     * @param freq The frequency to check, in megahertz.
+     * @returns True if frequency is between 108.1 and 111.95 MHz (inclusive) and the tenths place is odd.
+     */
+    static isLocalizerFrequency(freq) {
+        return freq >= 108.1 && freq <= 111.95 && (Math.trunc(freq * 10) % 2 === 1);
+    }
+    /**
+     * Checks whether a frequency is a 8.33 kHz-spacing COM frequency.
+     * @param freq The frequency to check, in megahertz.
+     * @returns Whether the specified frequency is a 8.33 kHz-spacing COM frequency.
+     */
+    static isCom833Frequency(freq) {
+        const freqKhz = Math.round(freq * 1000);
+        if (freqKhz < 118e3 || freqKhz > 136990) {
+            return false;
+        }
+        return RadioUtils.COM_833_ENDINGS.includes(freqKhz % 50);
+    }
+    /**
+     * Checks whether a frequency is a 25 kHz-spacing COM frequency.
+     * @param freq The frequency to check, in megahertz.
+     * @returns Whether the specified frequency is a 25 kHz-spacing COM frequency.
+     */
+    static isCom25Frequency(freq) {
+        const freqKhz = Math.round(freq * 1000);
+        if (freqKhz < 118e3 || freqKhz > 136975) {
+            return false;
+        }
+        return freqKhz % 25 === 0;
+    }
+    /**
+     * Checks whether a frequency is an ADF frequency.
+     * @param freq The frequency to check, in kilohertz.
+     * @returns Whether the specified frequency is an ADF frequency.
+     */
+    static isAdfFrequency(freq) {
+        const freqHz = Math.round(freq * 1000);
+        if (freqHz < 190e3 || freqHz > 1799500) {
+            return false;
+        }
+        return freqHz % 500 === 0;
+    }
+}
+RadioUtils.COM_833_ENDINGS = [5, 10, 15, 30, 35, 40];
+
+/**
+ * VOR signal to/from flags.
+ */
+var VorToFrom;
+(function (VorToFrom) {
+    VorToFrom[VorToFrom["OFF"] = 0] = "OFF";
+    VorToFrom[VorToFrom["TO"] = 1] = "TO";
+    VorToFrom[VorToFrom["FROM"] = 2] = "FROM";
+})(VorToFrom || (VorToFrom = {}));
+/** Marker beacon signal state. */
+var MarkerBeaconState;
+(function (MarkerBeaconState) {
+    MarkerBeaconState[MarkerBeaconState["Inactive"] = 0] = "Inactive";
+    MarkerBeaconState[MarkerBeaconState["Outer"] = 1] = "Outer";
+    MarkerBeaconState[MarkerBeaconState["Middle"] = 2] = "Middle";
+    MarkerBeaconState[MarkerBeaconState["Inner"] = 3] = "Inner";
+})(MarkerBeaconState || (MarkerBeaconState = {}));
+/**
+ * A publisher of NAV, COM, ADF radio and marker beacon tuning-related sim var events.
+ */
+class NavComSimVarPublisher extends SimVarPublisher {
+    /**
+     * Creates a new instance of NavComSimVarPublisher.
+     * @param bus The event bus to which to publish.
+     * @param pacer An optional pacer to use to control the pace of publishing
+     */
+    constructor(bus, pacer = undefined) {
+        const simvars = new Map([
+            ...NavComSimVarPublisher.createNavRadioDefinitions(),
+            ...NavComSimVarPublisher.createComRadioDefinitions(),
+            ...NavComSimVarPublisher.createAdfRadioDefinitions(),
+            ...NavComSimVarPublisher.createMarkerBeaconDefinitions(),
+            ...NavComSimVarPublisher.createGpsDefinitions()
+        ]);
+        super(simvars, bus, pacer);
+    }
+    /**
+     * Creates an array of nav radio sim var event definitions.
+     * @returns An array of nav radio sim var event definitions.
+     */
+    static createNavRadioDefinitions() {
+        return [
+            ['nav_active_frequency', { name: 'NAV ACTIVE FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_standby_frequency', { name: 'NAV STANDBY FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_signal', { name: 'NAV SIGNAL:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_sound', { name: 'NAV SOUND:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_ident', { name: 'NAV IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_volume', { name: 'NAV VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_obs', { name: 'NAV OBS:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_has_dme', { name: 'NAV HAS DME:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_has_nav', { name: 'NAV HAS NAV:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_cdi', { name: 'NAV CDI:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_dme', { name: 'NAV DME:#index#', type: SimVarValueType.NM, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_radial', { name: 'NAV RADIAL:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_radial_error', { name: 'NAV RADIAL ERROR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_to_from', { name: 'NAV TOFROM:#index#', type: SimVarValueType.Enum, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_localizer', { name: 'NAV HAS LOCALIZER:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_localizer_crs', { name: 'NAV LOCALIZER:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_loc_airport_ident', { name: 'NAV LOC AIRPORT IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_loc_runway_designator', { name: 'NAV LOC RUNWAY DESIGNATOR:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_loc_runway_number', { name: 'NAV LOC RUNWAY NUMBER:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_glideslope', { name: 'NAV HAS GLIDE SLOPE:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_gs_error', { name: 'NAV GLIDE SLOPE ERROR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_raw_gs', { name: 'NAV RAW GLIDE SLOPE:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_lla', { name: 'NAV VOR LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_dme_lla', { name: 'NAV DME LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_gs_lla', { name: 'NAV GS LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_magvar', { name: 'NAV MAGVAR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }]
+        ];
+    }
+    /**
+     * Creates an array of com radio sim var event definitions.
+     * @returns An array of com radio sim var event definitions.
+     */
+    static createComRadioDefinitions() {
+        return [
+            ['com_active_frequency', { name: 'COM ACTIVE FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_standby_frequency', { name: 'COM STANDBY FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_active_facility_name', { name: 'COM ACTIVE FREQ NAME:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_active_facility_type', { name: 'COM ACTIVE FREQ TYPE:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_active_facility_ident', { name: 'COM ACTIVE FREQ IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
+            // Note: 'COM RECEIVE' is whether the radio is receiving OR transmitting,
+            // whereas 'COM RECEIVE EX1' is exclusively its receiving state.
+            ['com_receive', { name: 'COM RECEIVE EX1:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_status', { name: 'COM STATUS:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_transmit', { name: 'COM TRANSMIT:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_spacing_mode', { name: 'COM SPACING MODE:#index#', type: SimVarValueType.Enum, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_volume', { name: 'COM VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2, 3], defaultIndex: null }],
+        ];
+    }
+    /**
+     * Creates an array of ADF radio sim var event definitions.
+     * @returns An array of ADF radio sim var event definitions.
+     */
+    static createAdfRadioDefinitions() {
+        return [
+            ['adf_active_frequency', { name: 'ADF ACTIVE FREQUENCY:#index#', type: SimVarValueType.KHz, indexed: [1, 2], defaultIndex: null }],
+            ['adf_standby_frequency', { name: 'ADF STANDBY FREQUENCY:#index#', type: SimVarValueType.KHz, indexed: [1, 2], defaultIndex: null }],
+            ['adf_sound', { name: 'ADF SOUND:#index#', type: SimVarValueType.Bool, indexed: [1, 2], defaultIndex: null }],
+            ['adf_volume', { name: 'ADF VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2], defaultIndex: null }],
+            ['adf_ident', { name: 'ADF IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2], defaultIndex: null }],
+            ['adf_signal', { name: 'ADF SIGNAL:#index#', type: SimVarValueType.Number, indexed: [1, 2], defaultIndex: null }],
+            ['adf_bearing', { name: 'ADF RADIAL:#index#', type: SimVarValueType.Degree, indexed: [1, 2], defaultIndex: null }],
+            ['adf_lla', { name: 'ADF LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2], defaultIndex: null }]
+        ];
+    }
+    /**
+     * Creates an array of GPS sim var event definitions.
+     * @returns An array of GPS sim var event definitions.
+     */
+    static createMarkerBeaconDefinitions() {
+        return [
+            ['marker_beacon_hisense_on', { name: 'MARKER BEACON SENSITIVITY HIGH', type: SimVarValueType.Bool }],
+            ['marker_beacon_sound', { name: 'MARKER SOUND', type: SimVarValueType.Bool }],
+            ['marker_beacon_state', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }],
+            ['mkr_bcn_state_simvar', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }]
+        ];
+    }
+    /**
+     * Creates an array of GPS sim var event definitions.
+     * @returns An array of GPS sim var event definitions.
+     */
+    static createGpsDefinitions() {
+        return [
+            ['gps_dtk', { name: 'GPS WP DESIRED TRACK', type: SimVarValueType.Degree }],
+            ['gps_xtk', { name: 'GPS WP CROSS TRK', type: SimVarValueType.NM }],
+            ['gps_wp', { name: 'GPS WP NEXT ID', type: SimVarValueType.NM }],
+            ['gps_wp_bearing', { name: 'GPS WP BEARING', type: SimVarValueType.Degree }],
+            ['gps_wp_distance', { name: 'GPS WP DISTANCE', type: SimVarValueType.NM }],
+            ['gps_obs_active_simvar', { name: 'GPS OBS ACTIVE', type: SimVarValueType.Bool }],
+            ['gps_obs_value_simvar', { name: 'GPS OBS VALUE', type: SimVarValueType.Degree }]
+        ];
+    }
+}
+
+/// <reference types="@microsoft/msfs-types/js/simvar" />
+/**
+ * A publisher of nav radio, ADF radio, GPS, and marker beacon-related sim var events.
+ *
+ * @deprecated Please use `NavComSimVarPublisher` instead.
+ */
+class NavProcSimVarPublisher extends SimVarPublisher {
+    /**
+     * Create a NavProcSimVarPublisher
+     * @param bus The EventBus to publish to
+     * @param pacer An optional pacer to use to control the pace of publishing
+     */
+    constructor(bus, pacer = undefined) {
+        super(NavProcSimVarPublisher.simvars, bus, pacer);
+    }
+    /**
+     * Creates an array of nav radio sim var event definitions for an indexed nav radio.
+     * @param index The index of the nav radio.
+     * @returns An array of nav radio sim var event definitions for the specified nav radio.
+     */
+    static createNavRadioDefinitions(index) {
+        return [
+            [`nav_signal_${index}`, { name: `NAV SIGNAL:${index}`, type: SimVarValueType.Number }],
+            [`nav_obs_${index}`, { name: `NAV OBS:${index}`, type: SimVarValueType.Degree }],
+            [`nav_has_dme_${index}`, { name: `NAV HAS DME:${index}`, type: SimVarValueType.Bool }],
+            [`nav_has_nav_${index}`, { name: `NAV HAS NAV:${index}`, type: SimVarValueType.Bool }],
+            [`nav_cdi_${index}`, { name: `NAV CDI:${index}`, type: SimVarValueType.Number }],
+            [`nav_dme_${index}`, { name: `NAV DME:${index}`, type: SimVarValueType.NM }],
+            [`nav_radial_${index}`, { name: `NAV RADIAL:${index}`, type: SimVarValueType.Degree }],
+            [`nav_radial_error_${index}`, { name: `NAV RADIAL ERROR:${index}`, type: SimVarValueType.Degree }],
+            [`nav_ident_${index}`, { name: `NAV IDENT:${index}`, type: SimVarValueType.String }],
+            [`nav_to_from_${index}`, { name: `NAV TOFROM:${index}`, type: SimVarValueType.Enum }],
+            [`nav_localizer_${index}`, { name: `NAV HAS LOCALIZER:${index}`, type: SimVarValueType.Bool }],
+            [`nav_localizer_crs_${index}`, { name: `NAV LOCALIZER:${index}`, type: SimVarValueType.Number }],
+            [`nav_loc_airport_ident_${index}`, { name: `NAV LOC AIRPORT IDENT:${index}`, type: SimVarValueType.String }],
+            [`nav_loc_runway_designator_${index}`, { name: `NAV LOC RUNWAY DESIGNATOR:${index}`, type: SimVarValueType.Number }],
+            [`nav_loc_runway_number_${index}`, { name: `NAV LOC RUNWAY NUMBER:${index}`, type: SimVarValueType.Number }],
+            [`nav_glideslope_${index}`, { name: `NAV HAS GLIDE SLOPE:${index}`, type: SimVarValueType.Bool }],
+            [`nav_gs_error_${index}`, { name: `NAV GLIDE SLOPE ERROR:${index}`, type: SimVarValueType.Degree }],
+            [`nav_raw_gs_${index}`, { name: `NAV RAW GLIDE SLOPE:${index}`, type: SimVarValueType.Degree }],
+            [`nav_lla_${index}`, { name: `NAV VOR LATLONALT:${index}`, type: SimVarValueType.LLA }],
+            [`nav_dme_lla_${index}`, { name: `NAV DME LATLONALT:${index}`, type: SimVarValueType.LLA }],
+            [`nav_gs_lla_${index}`, { name: `NAV GS LATLONALT:${index}`, type: SimVarValueType.LLA }],
+            [`nav_magvar_${index}`, { name: `NAV MAGVAR:${index}`, type: SimVarValueType.Degree }]
+        ];
+    }
+    /**
+     * Creates an array of ADF radio sim var event definitions for an indexed ADF radio.
+     * @param index The index of the ADF radio.
+     * @returns An array of ADF radio sim var event definitions for the specified ADF radio.
+     */
+    static createAdfRadioDefinitions(index) {
+        return [
+            [`adf_signal_${index}`, { name: `ADF SIGNAL:${index}`, type: SimVarValueType.Number }],
+            [`adf_bearing_${index}`, { name: `ADF RADIAL:${index}`, type: SimVarValueType.Degree }],
+            [`adf_lla_${index}`, { name: `ADF LATLONALT:${index}`, type: SimVarValueType.LLA }]
+        ];
+    }
+}
+NavProcSimVarPublisher.simvars = new Map([
+    ...NavProcSimVarPublisher.createNavRadioDefinitions(1),
+    ...NavProcSimVarPublisher.createNavRadioDefinitions(2),
+    ...NavProcSimVarPublisher.createNavRadioDefinitions(3),
+    ...NavProcSimVarPublisher.createNavRadioDefinitions(4),
+    ...NavProcSimVarPublisher.createAdfRadioDefinitions(1),
+    ...NavProcSimVarPublisher.createAdfRadioDefinitions(2),
+    ['gps_dtk', { name: 'GPS WP DESIRED TRACK', type: SimVarValueType.Degree }],
+    ['gps_xtk', { name: 'GPS WP CROSS TRK', type: SimVarValueType.NM }],
+    ['gps_wp', { name: 'GPS WP NEXT ID', type: SimVarValueType.NM }],
+    ['gps_wp_bearing', { name: 'GPS WP BEARING', type: SimVarValueType.Degree }],
+    ['gps_wp_distance', { name: 'GPS WP DISTANCE', type: SimVarValueType.NM }],
+    ['mkr_bcn_state_simvar', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }],
+    ['gps_obs_active_simvar', { name: 'GPS OBS ACTIVE', type: SimVarValueType.Bool }],
+    ['gps_obs_value_simvar', { name: 'GPS OBS VALUE', type: SimVarValueType.Degree }]
+]);
+//
+// Navigation event configurations
+//
+var NavSourceType;
+(function (NavSourceType) {
+    NavSourceType[NavSourceType["Nav"] = 0] = "Nav";
+    NavSourceType[NavSourceType["Gps"] = 1] = "Gps";
+    NavSourceType[NavSourceType["Adf"] = 2] = "Adf";
+})(NavSourceType || (NavSourceType = {}));
+
+/**
+ * An instrument that gathers localizer and glideslope information for use by
+ * the AP systems.
+ *
+ * Requires that the topics defined in {@link NavComEvents} are published to the event bus.
+ */
+class APRadioNavInstrument {
+    /**
+     * Creates an instance of the APRadioNavInstrument.
+     * @param bus The event bus to use with this instance.
+     */
+    constructor(bus) {
+        this.bus = bus;
+        this.navRadioData = ArrayUtils.create(5, index => {
+            index = Math.max(1, index);
+            return {
+                gsLocation: new LatLongAlt(0, 0),
+                navLocation: new LatLongAlt(0, 0),
+                glideslope: this.createEmptyGlideslope({ index, type: NavSourceType.Nav }),
+                localizer: this.createEmptyLocalizer({ index, type: NavSourceType.Nav }),
+                cdi: this.createEmptyCdi({ index, type: NavSourceType.Nav }),
+                obs: this.createEmptyObs({ index, type: NavSourceType.Nav }),
+                radialError: 0,
+                magVar: 0
+            };
+        });
+        this.currentCdiIndex = 1;
+        this.publisher = bus.getPublisher();
+    }
+    /** @inheritdoc */
+    init() {
+        const navComSubscriber = this.bus.getSubscriber();
+        for (let i = 1; i < 5; i++) {
+            navComSubscriber.on(`nav_glideslope_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'isValid'));
+            navComSubscriber.on(`nav_gs_lla_${i}`).handle(this.setGlideslopePosition.bind(this, i));
+            navComSubscriber.on(`nav_gs_error_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'deviation'));
+            navComSubscriber.on(`nav_raw_gs_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'gsAngle'));
+            navComSubscriber.on(`nav_localizer_${i}`).whenChanged().handle(this.setLocalizerValue.bind(this, i, 'isValid'));
+            navComSubscriber.on(`nav_localizer_crs_${i}`).whenChanged().handle(this.setLocalizerValue.bind(this, i, 'course'));
+            navComSubscriber.on(`nav_cdi_${i}`).whenChanged().handle(this.setCDIValue.bind(this, i, 'deviation'));
+            navComSubscriber.on(`nav_has_nav_${i}`).whenChanged().handle(hasNav => !hasNav && this.setCDIValue(i, 'deviation', null));
+            navComSubscriber.on(`nav_obs_${i}`).whenChanged().handle(this.setOBSValue.bind(this, i, 'heading'));
+            navComSubscriber.on(`nav_lla_${i}`).handle(this.setNavPosition.bind(this, i));
+            navComSubscriber.on(`nav_radial_error_${i}`).whenChanged().handle(this.setRadialError.bind(this, i));
+            navComSubscriber.on(`nav_magvar_${i}`).whenChanged().handle(this.setMagVar.bind(this, i));
+        }
+        const navEvents = this.bus.getSubscriber();
+        navEvents.on('cdi_select').handle(source => {
+            const oldIndex = this.currentCdiIndex;
+            this.currentCdiIndex = source.type === NavSourceType.Nav ? source.index : 0;
+            if (oldIndex !== this.currentCdiIndex) {
+                const data = this.navRadioData[this.currentCdiIndex];
+                this.publisher.pub('nav_radio_active_gs_location', data.gsLocation);
+                this.publisher.pub('nav_radio_active_nav_location', data.navLocation);
+                this.publisher.pub('nav_radio_active_glideslope', data.glideslope);
+                this.publisher.pub('nav_radio_active_localizer', data.localizer);
+                this.publisher.pub('nav_radio_active_cdi_deviation', data.cdi);
+                this.publisher.pub('nav_radio_active_obs_setting', data.obs);
+                this.publisher.pub('nav_radio_active_radial_error', data.radialError);
+                this.publisher.pub('nav_radio_active_magvar', data.magVar);
+            }
+        });
+    }
+    /** @inheritdoc */
+    onUpdate() {
+        // noop
+    }
+    /**
+     * Sets a value in a nav radio glideslope.
+     * @param index The index of the nav radio.
+     * @param field The field to set.
+     * @param value The value to set the field to.
+     */
+    setGlideslopeValue(index, field, value) {
+        this.navRadioData[index].glideslope[field] = value;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_glideslope', this.navRadioData[index].glideslope);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_glideslope_1', this.navRadioData[index].glideslope);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_glideslope_2', this.navRadioData[index].glideslope);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_glideslope_3', this.navRadioData[index].glideslope);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_glideslope_4', this.navRadioData[index].glideslope);
+                break;
+        }
+    }
+    /**
+     * Sends the current glideslope's LLA position.
+     * @param index The index of the nav radio.
+     * @param lla The LLA to send.
+     */
+    setGlideslopePosition(index, lla) {
+        this.navRadioData[index].gsLocation = lla;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_gs_location', lla);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_gs_location_1', this.navRadioData[index].gsLocation);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_gs_location_2', this.navRadioData[index].gsLocation);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_gs_location_3', this.navRadioData[index].gsLocation);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_gs_location_4', this.navRadioData[index].gsLocation);
+                break;
+        }
+    }
+    /**
+     * Sends the current nav's LLA position.
+     * @param index The index of the nav radio.
+     * @param lla The LLA to send.
+     */
+    setNavPosition(index, lla) {
+        this.navRadioData[index].navLocation = lla;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_nav_location', lla);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_nav_location_1', this.navRadioData[index].navLocation);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_nav_location_2', this.navRadioData[index].navLocation);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_nav_location_3', this.navRadioData[index].navLocation);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_nav_location_4', this.navRadioData[index].navLocation);
+                break;
+        }
+    }
+    /**
+     * Sets a value in a nav radio localizer.
+     * @param index The index of the nav radio.
+     * @param field The field to set.
+     * @param value The value to set the field to.
+     */
+    setLocalizerValue(index, field, value) {
+        this.navRadioData[index].localizer[field] = value;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_localizer', this.navRadioData[index].localizer);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_localizer_1', this.navRadioData[index].localizer);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_localizer_2', this.navRadioData[index].localizer);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_localizer_3', this.navRadioData[index].localizer);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_localizer_4', this.navRadioData[index].localizer);
+                break;
+        }
+    }
+    /**
+     * Sets a value in a nav radio localizer.
+     * @param index The index of the nav radio.
+     * @param field The field to set.
+     * @param value The value to set the field to.
+     */
+    setCDIValue(index, field, value) {
+        this.navRadioData[index].cdi[field] = value;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_cdi_deviation', this.navRadioData[index].cdi);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_cdi_1', this.navRadioData[index].cdi);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_cdi_2', this.navRadioData[index].cdi);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_cdi_3', this.navRadioData[index].cdi);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_cdi_4', this.navRadioData[index].cdi);
+                break;
+        }
+    }
+    /**
+     * Sets a value in a nav radio localizer.
+     * @param index The index of the nav radio.
+     * @param field The field to set.
+     * @param value The value to set the field to.
+     */
+    setOBSValue(index, field, value) {
+        this.navRadioData[index].obs[field] = value;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_obs_setting', this.navRadioData[index].obs);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_obs_1', this.navRadioData[index].obs);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_obs_2', this.navRadioData[index].obs);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_obs_3', this.navRadioData[index].obs);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_obs_4', this.navRadioData[index].obs);
+                break;
+        }
+    }
+    /**
+     * Sets the radial error of a nav radio signal source.
+     * @param index The index of the nav radio.
+     * @param radialError The radial error to set.
+     */
+    setRadialError(index, radialError) {
+        this.navRadioData[index].radialError = radialError;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_radial_error', radialError);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_radial_error_1', this.navRadioData[index].radialError);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_radial_error_2', this.navRadioData[index].radialError);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_radial_error_3', this.navRadioData[index].radialError);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_radial_error_4', this.navRadioData[index].radialError);
+                break;
+        }
+    }
+    /**
+     * Sets the magnetic variation of a nav radio signal source.
+     * @param index The index of the nav radio.
+     * @param magVar The magvar to set.
+     */
+    setMagVar(index, magVar) {
+        magVar = NavMath.normalizeHeading(-magVar + 180) % 360 - 180;
+        this.navRadioData[index].magVar = magVar;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_magvar', magVar);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_magvar_1', this.navRadioData[index].magVar);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_magvar_2', this.navRadioData[index].magVar);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_magvar_3', this.navRadioData[index].magVar);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_magvar_4', this.navRadioData[index].magVar);
+                break;
+        }
+    }
+    /**
+     * Creates an empty localizer data.
+     * @param id The nav source ID.
+     * @returns New empty localizer data.
+     */
+    createEmptyLocalizer(id) {
+        return {
+            isValid: false,
+            course: 0,
+            source: id
+        };
+    }
+    /**
+     * Creates an empty glideslope data.
+     * @param id The nav source ID.
+     * @returns New empty glideslope data.
+     */
+    createEmptyGlideslope(id) {
+        return {
+            isValid: false,
+            gsAngle: 0,
+            deviation: 0,
+            source: id
+        };
+    }
+    /**
+     * Creates an empty CDI data.
+     * @param id The nav source ID.
+     * @returns New empty CDI data.
+     */
+    createEmptyCdi(id) {
+        return {
+            deviation: 0,
+            source: id
+        };
+    }
+    /**
+     * Creates an empty OBS data.
+     * @param id The nav source ID.
+     * @returns New empty OBS data.
+     */
+    createEmptyObs(id) {
+        return {
+            heading: 0,
+            source: id
+        };
+    }
+}
+
+/**
+ * InstrumentBackplane provides a common control point for aggregating and
+ * managing any number of publishers.  This can be used as an "update loop"
+ * corral", amongst other things.
+ */
+class InstrumentBackplane {
+    /**
+     * Create an InstrumentBackplane
+     */
+    constructor() {
+        this.publishers = new Map();
+        this.instruments = new Map();
+    }
+    /**
+     * Initialize all the things. This is initially just a proxy for the
+     * private initPublishers() and initInstruments() methods.
+     *
+     * This should be simplified.
+     */
+    init() {
+        this.initPublishers();
+        this.initInstruments();
+    }
+    /**
+     * Update all the things.  This is initially just a proxy for the private
+     * updatePublishers() and updateInstruments() methods.
+     *
+     * This should be simplified.
+     */
+    onUpdate() {
+        this.updatePublishers();
+        this.updateInstruments();
+    }
+    /**
+     * Add a publisher to this backplane.
+     * @param name A symbolic name for the publisher for reference.
+     * @param publisher The publisher to add.
+     * @param override Whether to override any existing publishers added to this backplane under the same name. If
+     * `true`, any existing publisher with the same name will removed from this backplane and the new one added in its
+     * place. If `false`, the new publisher will not be added if this backplane already has a publisher with the same
+     * name or a publisher of the same type. Defaults to `false`.
+     */
+    addPublisher(name, publisher, override = false) {
+        if (override || !InstrumentBackplane.checkAlreadyExists(name, publisher, this.publishers)) {
+            this.publishers.set(name, publisher);
+        }
+    }
+    /**
+     * Add an instrument to this backplane.
+     * @param name A symbolic name for the instrument for reference.
+     * @param instrument The instrument to add.
+     * @param override Whether to override any existing instruments added to this backplane under the same name. If
+     * `true`, any existing instrument with the same name will removed from this backplane and the new one added in its
+     * place. If `false`, the new instrument will not be added if this backplane already has an instrument with the same
+     * name or an instrument of the same type. Defaults to `false`.
+     */
+    addInstrument(name, instrument, override = false) {
+        if (override || !InstrumentBackplane.checkAlreadyExists(name, instrument, this.instruments)) {
+            this.instruments.set(name, instrument);
+        }
+    }
+    /**
+     * Gets a publisher from this backplane.
+     * @param name The name of the publisher to get.
+     * @returns The publisher in this backplane with the specified name, or `undefined` if there is no such publisher.
+     */
+    getPublisher(name) {
+        return this.publishers.get(name);
+    }
+    /**
+     * Gets an instrument from this backplane.
+     * @param name The name of the instrument to get.
+     * @returns The instrument in this backplane with the specified name, or `undefined` if there is no such instrument.
+     */
+    getInstrument(name) {
+        return this.instruments.get(name);
+    }
+    /**
+     * Checks for duplicate publishers or instruments of the same name or type.
+     * @param name the name of the publisher or instrument
+     * @param objToCheck the object to check
+     * @param map the map to check
+     * @returns true if the object is already in the map
+     */
+    static checkAlreadyExists(name, objToCheck, map) {
+        if (map.has(name)) {
+            console.warn(`${name} already exists in backplane.`);
+            return true;
+        }
+        // check if there already is a publisher with the same type
+        for (const p of map.values()) {
+            if (p.constructor === objToCheck.constructor) {
+                console.warn(`${name} already exists in backplane.`);
+                return true;
+            }
+        }
+        return false;
+    }
+    /**
+     * Initialize all of the publishers that you hold.
+     */
+    initPublishers() {
+        for (const publisher of this.publishers.values()) {
+            publisher.startPublish();
+        }
+    }
+    /**
+     * Initialize all of the instruments that you hold.
+     */
+    initInstruments() {
+        for (const instrument of this.instruments.values()) {
+            instrument.init();
+        }
+    }
+    /**
+     * Update all of the publishers that you hold.
+     */
+    updatePublishers() {
+        for (const publisher of this.publishers.values()) {
+            publisher.onUpdate();
+        }
+    }
+    /**
+     * Update all of the instruments that you hold.
+     */
+    updateInstruments() {
+        for (const instrument of this.instruments.values()) {
+            instrument.onUpdate();
+        }
+    }
+}
+
+/// <reference types="@microsoft/msfs-types/js/simvar" />
+/**
+ * A publisher for Brake information.
+ */
+class BrakeSimvarPublisher extends SimVarPublisher {
+    /**
+     * Create a BrakePublisher.
+     * @param bus The EventBus to publish to
+     * @param pacer An optional pacer to use to control the rate of publishing
+     */
+    constructor(bus, pacer = undefined) {
+        const simvars = new Map([
+            ['brake_position_left', { name: 'BRAKE LEFT POSITION', type: SimVarValueType.Percent }],
+            ['brake_position_right', { name: 'BRAKE RIGHT POSITION', type: SimVarValueType.Percent }],
+            ['brake_position_left_raw', { name: 'BRAKE LEFT POSITION EX1', type: SimVarValueType.Percent }],
+            ['brake_position_right_raw', { name: 'BRAKE RIGHT POSITION EX1', type: SimVarValueType.Percent }],
+            ['left_wheel_rpm', { name: 'LEFT WHEEL RPM', type: SimVarValueType.RPM }],
+            ['right_wheel_rpm', { name: 'RIGHT WHEEL RPM', type: SimVarValueType.RPM }],
+            ['parking_brake_set', { name: 'BRAKE PARKING POSITION', type: SimVarValueType.Bool }],
+            ['autobrake_switch_pos', { name: 'AUTO BRAKE SWITCH CB', type: SimVarValueType.Number }],
+            ['autobrake_active', { name: 'AUTOBRAKES ACTIVE', type: SimVarValueType.Bool }],
+        ]);
+        super(simvars, bus, pacer);
+    }
+    /** @inheritdoc */
+    onUpdate() {
+        super.onUpdate();
+    }
+}
+
+/**
+ * A publisher of clock events.
+ */
+class ClockPublisher extends BasePublisher {
+    /**
+     * Creates a new instance of ClockPublisher.
+     * @param bus The event bus.
+     * @param pacer An optional pacer to control the rate of publishing.
+     */
+    constructor(bus, pacer) {
+        super(bus, pacer);
+        this.needPublishRealTime = false;
+        this.simVarPublisher = new SimVarPublisher(new Map([
+            ['simTime', { name: 'E:ABSOLUTE TIME', type: SimVarValueType.Seconds, map: ClockPublisher.absoluteTimeToUNIXTime }],
+            ['simRate', { name: 'E:SIMULATION RATE', type: SimVarValueType.Number }],
+            ['zulu_sunrise', { name: 'E:ZULU SUNRISE TIME', type: SimVarValueType.Seconds }],
+            ['zulu_sunset', { name: 'E:ZULU SUNSET TIME', type: SimVarValueType.Seconds }],
+        ]), bus, pacer);
+        if (this.bus.getTopicSubscriberCount('realTime') > 0) {
+            this.needPublishRealTime = true;
+        }
+        else {
+            const sub = this.bus.getSubscriber().on('event_bus_topic_first_sub').handle(topic => {
+                if (topic === 'realTime') {
+                    this.needPublishRealTime = true;
+                    sub.destroy();
+                }
+            }, true);
+            sub.resume();
+        }
+    }
+    /** @inheritdoc */
+    startPublish() {
+        super.startPublish();
+        this.simVarPublisher.startPublish();
+        if (this.hiFreqInterval === undefined) {
+            this.hiFreqInterval = setInterval(() => this.publish('simTimeHiFreq', ClockPublisher.absoluteTimeToUNIXTime(SimVar.GetSimVarValue('E:ABSOLUTE TIME', 'seconds'))), 0);
+        }
+    }
+    /** @inheritdoc */
+    stopPublish() {
+        super.stopPublish();
+        this.simVarPublisher.stopPublish();
+        if (this.hiFreqInterval !== undefined) {
+            clearInterval(this.hiFreqInterval);
+            this.hiFreqInterval = undefined;
+        }
+    }
+    /** @inheritdoc */
+    onUpdate() {
+        if (this.needPublishRealTime) {
+            this.publish('realTime', Date.now());
+        }
+        this.simVarPublisher.onUpdate();
+    }
+    /**
+     * Converts the sim's absolute time to a UNIX timestamp. The sim's absolute time value is equivalent to a .NET
+     * DateTime.Ticks value (epoch = 00:00:00 01 Jan 0001).
+     * @param absoluteTime an absolute time value, in units of seconds.
+     * @returns the UNIX timestamp corresponding to the absolute time value.
+     */
+    static absoluteTimeToUNIXTime(absoluteTime) {
+        return (absoluteTime - 62135596800) * 1000;
+    }
+}
+/**
+ * A clock which keeps track of real-world and sim time.
+ */
+class Clock {
+    /**
+     * Constructor.
+     * @param bus The event bus to use to publish events from this clock.
+     */
+    constructor(bus) {
+        this.publisher = new ClockPublisher(bus);
+    }
+    /**
+     * Initializes this clock.
+     */
+    init() {
+        this.publisher.startPublish();
+    }
+    /**
+     * Updates this clock.
+     */
+    onUpdate() {
+        this.publisher.onUpdate();
+    }
+}
+
+/**
+ * A publisher for control surfaces information.
+ */
+class ControlSurfacesPublisher extends SimVarPublisher {
+    /**
+     * Create an ControlSurfacesPublisher.
+     * @param bus The EventBus to publish to.
+     * @param gearCount The number of landing gear to support.
+     * @param pacer An optional pacer to use to control the rate of publishing.
+     */
+    constructor(bus, gearCount, pacer) {
+        const nonIndexedSimVars = [
+            ['flaps_handle_index', { name: 'FLAPS HANDLE INDEX', type: SimVarValueType.Number }],
+            ['flaps_left_angle', { name: 'TRAILING EDGE FLAPS LEFT ANGLE', type: SimVarValueType.Degree }],
+            ['flaps_right_angle', { name: 'TRAILING EDGE FLAPS RIGHT ANGLE', type: SimVarValueType.Degree }],
+            ['flaps_left_percent', { name: 'TRAILING EDGE FLAPS LEFT PERCENT', type: SimVarValueType.Percent }],
+            ['flaps_right_percent', { name: 'TRAILING EDGE FLAPS RIGHT PERCENT', type: SimVarValueType.Percent }],
+            ['slats_left_angle', { name: 'LEADING EDGE FLAPS LEFT ANGLE', type: SimVarValueType.Degree }],
+            ['slats_right_angle', { name: 'LEADING EDGE FLAPS RIGHT ANGLE', type: SimVarValueType.Degree }],
+            ['slats_left_percent', { name: 'LEADING EDGE FLAPS LEFT PERCENT', type: SimVarValueType.Percent }],
+            ['slats_right_percent', { name: 'LEADING EDGE FLAPS RIGHT PERCENT', type: SimVarValueType.Percent }],
+            ['spoilers_left_percent', { name: 'SPOILERS LEFT POSITION', type: SimVarValueType.Percent }],
+            ['spoilers_right_percent', { name: 'SPOILERS RIGHT POSITION', type: SimVarValueType.Percent }],
+            ['spoilers_without_spoilerons_left_percent', { name: 'SPOILERS WITHOUT SPOILERONS LEFT POSITION', type: SimVarValueType.Percent }],
+            ['elevator_trim_angle', { name: 'ELEVATOR TRIM POSITION', type: SimVarValueType.Degree }],
+            ['elevator_trim_pct', { name: 'ELEVATOR TRIM PCT', type: SimVarValueType.Percent }],
+            ['elevator_trim_neutral_pct', { name: 'AIRCRAFT ELEVATOR TRIM NEUTRAL', type: SimVarValueType.Percent }],
+            ['aileron_trim_angle', { name: 'AILERON TRIM', type: SimVarValueType.Degree }],
+            ['aileron_trim_pct', { name: 'AILERON TRIM PCT', type: SimVarValueType.Percent }],
+            ['rudder_trim_angle', { name: 'RUDDER TRIM', type: SimVarValueType.Degree }],
+            ['rudder_trim_pct', { name: 'RUDDER TRIM PCT', type: SimVarValueType.Percent }],
+            ['aileron_left_percent', { name: 'AILERON LEFT DEFLECTION PCT', type: SimVarValueType.Percent }],
+            ['aileron_right_percent', { name: 'AILERON RIGHT DEFLECTION PCT', type: SimVarValueType.Percent }],
+            ['elevator_percent', { name: 'ELEVATOR DEFLECTION PCT', type: SimVarValueType.Percent }],
+            ['elevator_position', { name: 'ELEVATOR POSITION', type: SimVarValueType.Percent }],
+            ['rudder_percent', { name: 'RUDDER DEFLECTION PCT', type: SimVarValueType.Percent }]
+        ];
+        const gearIndexedSimVars = [
+            ['gear_position', { name: 'GEAR POSITION', type: SimVarValueType.Number }],
+            ['gear_is_on_ground', { name: 'GEAR IS ON GROUND', type: SimVarValueType.Bool }]
+        ];
+        const simvars = new Map(nonIndexedSimVars);
+        // set un-indexed simvar topics to pull from index 0
+        for (const [topic, simvar] of [...gearIndexedSimVars]) {
+            simvars.set(`${topic}`, {
+                name: `${simvar.name}:0`,
+                type: simvar.type,
+                map: simvar.map
+            });
+        }
+        // add landing gear indexed simvar topics
+        // HINT: for some reason index 0 is nose. not 1-based.
+        gearCount = Math.max(gearCount, 1);
+        for (let i = 0; i < gearCount; i++) {
+            for (const [topic, simvar] of gearIndexedSimVars) {
+                simvars.set(`${topic}_${i}`, {
+                    name: `${simvar.name}:${i}`,
+                    type: simvar.type,
+                    map: simvar.map
+                });
+            }
+        }
+        super(simvars, bus, pacer);
+    }
+}
+
+/// <reference types="@microsoft/msfs-types/js/simvar" />
+/**
  * A publisher for electrical information.
  */
 class ElectricalPublisher extends SimVarPublisher {
@@ -21316,7 +21723,7 @@ class EISPublisher extends SimVarPublisher {
     constructor(bus, pacer = undefined) {
         const isUsingAdvancedFuelSystem = SimVar.GetSimVarValue('NEW FUEL SYSTEM', SimVarValueType.Bool) !== 0;
         const totalUnusableFuelGal = SimVar.GetSimVarValue('UNUSABLE FUEL TOTAL QUANTITY', SimVarValueType.GAL);
-        const totalUnusableFuelLb = SimVar.GetSimVarValue('UNUSABLE FUEL TOTAL QUANTITY', SimVarValueType.LBS);
+        const totalUnusableFuelLb = UnitType.GALLON_FUEL.convertTo(totalUnusableFuelGal, UnitType.POUND);
         const nonIndexedSimVars = [
             ['vac', { name: 'SUCTION PRESSURE', type: SimVarValueType.InHG }],
             ['fuel_total', { name: 'FUEL TOTAL QUANTITY', type: SimVarValueType.GAL, map: isUsingAdvancedFuelSystem ? v => v + totalUnusableFuelGal : undefined }],
@@ -21340,6 +21747,7 @@ class EISPublisher extends SimVarPublisher {
             ['apu_pct_starter', { name: 'APU PCT STARTER', type: SimVarValueType.Percent }],
             ['apu_switch', { name: 'APU SWITCH', type: SimVarValueType.Bool }],
             ['eng_starter_active', { name: 'GENERAL ENG STARTER ACTIVE:#index#', type: SimVarValueType.Bool, indexed: true }],
+            ['throttle_lower_limit', { name: 'THROTTLE LOWER LIMIT', type: SimVarValueType.Number }],
         ];
         const engineIndexedSimVars = [
             ['rpm', { name: 'GENERAL ENG RPM', type: SimVarValueType.RPM }],
@@ -21364,6 +21772,11 @@ class EISPublisher extends SimVarPublisher {
             ['eng_fuel_pump_switch_state', { name: 'GENERAL ENG FUEL PUMP SWITCH EX1', type: SimVarValueType.Number }],
             ['eng_vibration', { name: 'ENG VIBRATION', type: SimVarValueType.Number }],
             ['fuel_flow_pph', { name: 'ENG FUEL FLOW PPH', type: SimVarValueType.PPH }],
+            ['torque_moment', { name: 'ENG TORQUE', type: SimVarValueType.FtLb }],
+            ['eng_manifold_pressure', { name: 'ENG MANIFOLD PRESSURE', type: SimVarValueType.PSI }],
+            ['reverse_thrust_engaged', { name: 'GENERAL ENG REVERSE THRUST ENGAGED', type: SimVarValueType.Bool }],
+            ['cylinder_head_temp_avg', { name: 'ENG CYLINDER HEAD TEMPERATURE', type: SimVarValueType.Farenheit }],
+            ['recip_turbine_inlet_temp_avg', { name: 'RECIP ENG TURBINE INLET TEMPERATURE', type: SimVarValueType.Farenheit }],
         ];
         const simvars = new Map(nonIndexedSimVars);
         // add engine-indexed simvars
@@ -21617,6 +22030,7 @@ class GNSSPublisher extends BasePublisher {
             ['zulu_time', { name: 'E:ZULU TIME', type: SimVarValueType.Seconds }],
             ['time_of_day', { name: 'E:TIME OF DAY', type: SimVarValueType.Number }],
             ['ground_speed', { name: 'GROUND VELOCITY', type: SimVarValueType.Knots }],
+            ['above_ground_height', { name: 'PLANE ALT ABOVE GROUND', type: SimVarValueType.Feet }],
             ['inertial_vertical_speed', { name: 'VELOCITY WORLD Y', type: SimVarValueType.FPM }]
         ]), this.bus, this.pacer);
         this.needPublish = {
@@ -21757,88 +22171,6 @@ class GNSSPublisher extends BasePublisher {
 }
 
 /**
- * A heap which allocates instances of a resource.
- */
-class ResourceHeap {
-    /**
-     * Constructor.
-     * @param factory A function which creates new instances of this heap's resource.
-     * @param destructor A function which destroys instances of this heap's resource.
-     * @param onAllocated A function which is called when an instance of this heap's resource is allocated.
-     * @param onFreed A function which is called when an instance of this heap's resource is freed.
-     * @param initialSize The initial size of this heap. Defaults to `0`.
-     * @param maxSize The maximum size of this heap. Defaults to `Number.MAX_SAFE_INTEGER`. This heap cannot allocate
-     * more resources than its maximum size.
-     * @param autoShrinkThreshold The size above which this heap will attempt to automatically reduce its size when
-     * resources are freed. The heap will never reduce its size below this threshold. Defaults to
-     * `Number.MAX_SAFE_INTEGER`.
-     */
-    constructor(factory, destructor, onAllocated, onFreed, initialSize = 0, maxSize = Number.MAX_SAFE_INTEGER, autoShrinkThreshold = Number.MAX_SAFE_INTEGER) {
-        this.factory = factory;
-        this.destructor = destructor;
-        this.onAllocated = onAllocated;
-        this.onFreed = onFreed;
-        this.maxSize = maxSize;
-        this.autoShrinkThreshold = autoShrinkThreshold;
-        this.cache = [];
-        this.numAllocated = 0;
-        for (let i = 0; i < Math.min(initialSize, maxSize); i++) {
-            this.cache.push(factory());
-        }
-    }
-    /**
-     * Allocates a resource instance from this heap. If this heap has an existing free resource available, one will be
-     * returned. Otherwise, a new resource instance will be created, added to the heap, and returned.
-     * @returns A resource.
-     * @throws Error if this heap has reached its allocation limit.
-     */
-    allocate() {
-        if (this.numAllocated >= this.maxSize) {
-            throw new Error(`ResourceHeap: maximum number of allocations (${this.maxSize}) reached`);
-        }
-        let resource;
-        if (this.numAllocated < this.cache.length) {
-            resource = this.cache[this.numAllocated];
-        }
-        else {
-            this.cache.push(resource = this.factory());
-        }
-        this.numAllocated++;
-        if (this.onAllocated !== undefined) {
-            this.onAllocated(resource);
-        }
-        return resource;
-    }
-    /**
-     * Frees a resource instance allocated from this heap, allowing it to be re-used.
-     * @param resource The resource to free.
-     */
-    free(resource) {
-        const index = this.cache.indexOf(resource);
-        if (index < 0 || index >= this.numAllocated) {
-            return;
-        }
-        const freed = this.cache[index];
-        this.numAllocated--;
-        this.cache[index] = this.cache[this.numAllocated];
-        this.cache[this.numAllocated] = freed;
-        // If the heap size is over the auto-shrink threshold and the number of allocated instances drops to less than or
-        // equal to half of the heap size, then reduce the size of the heap to the threshold, or 125% of the number of
-        // allocated instances, whichever is greater.
-        if (this.cache.length > this.autoShrinkThreshold && this.numAllocated <= this.cache.length / 2) {
-            const newLength = Math.max(this.autoShrinkThreshold, this.numAllocated * 1.25);
-            for (let i = newLength; i < this.cache.length; i++) {
-                this.destructor(this.cache[i]);
-            }
-            this.cache.length = newLength;
-        }
-        if (this.onFreed !== undefined) {
-            this.onFreed(resource);
-        }
-    }
-}
-
-/**
  * SBAS group names.
  */
 var SBASGroupName;
@@ -21852,6 +22184,52 @@ var SBASGroupName;
     /** Multi-functional Satellite Augmentation System (Japan). */
     SBASGroupName["MSAS"] = "MSAS";
 })(SBASGroupName || (SBASGroupName = {}));
+/**
+ * Possible state on GPS satellites.
+ */
+var GPSSatelliteState;
+(function (GPSSatelliteState) {
+    /** There is no current valid state. */
+    GPSSatelliteState["None"] = "None";
+    /** The satellite is out of view and cannot be reached. */
+    GPSSatelliteState["Unreachable"] = "Unreachable";
+    /** The satellite has been found and data is being downloaded. */
+    GPSSatelliteState["Acquired"] = "Acquired";
+    /** The satellite is faulty. */
+    GPSSatelliteState["Faulty"] = "Faulty";
+    /** The satellite has been found, data is downloaded, but is not presently used in the GPS solution. */
+    GPSSatelliteState["DataCollected"] = "DataCollected";
+    /** The satellite is being active used in the GPS solution. */
+    GPSSatelliteState["InUse"] = "InUse";
+    /** The satellite is being active used in the GPS solution and SBAS differential corrections are being applied. */
+    GPSSatelliteState["InUseDiffApplied"] = "InUseDiffApplied";
+})(GPSSatelliteState || (GPSSatelliteState = {}));
+/**
+ * Possible {@link GPSSatComputer} states.
+ */
+var GPSSystemState;
+(function (GPSSystemState) {
+    /** The GPS receiver is searching for any visible satellites to acquire. */
+    GPSSystemState["Searching"] = "Searching";
+    /** The GPS receiver is in the process of acquiring satellites. */
+    GPSSystemState["Acquiring"] = "Acquiring";
+    /** A 3D solution has been acquired. */
+    GPSSystemState["SolutionAcquired"] = "SolutionAcquired";
+    /** A 3D solution using differential computations has been acquired. */
+    GPSSystemState["DiffSolutionAcquired"] = "DiffSolutionAcquired";
+})(GPSSystemState || (GPSSystemState = {}));
+/**
+ * Possible SBAS connection states.
+ */
+var GPSSystemSBASState;
+(function (GPSSystemSBASState) {
+    /** SBAS is disabled. */
+    GPSSystemSBASState["Disabled"] = "Disabled";
+    /** SBAS is enabled but not receiving differential corrections. */
+    GPSSystemSBASState["Inactive"] = "Inactive";
+    /** SBAS is enabled and is receiving differential corrections. */
+    GPSSystemSBASState["Active"] = "Active";
+})(GPSSystemSBASState || (GPSSystemSBASState = {}));
 /**
  * An instrument that computes GPS satellite information.
  */
@@ -21868,8 +22246,12 @@ class GPSSatComputer {
      * satellite positions are calculated, satellite states change, or the system is reset. A `replica` system will
      * listen for the aforementioned sync events on the event bus and set its state accordingly. A system with a sync
      * role of `none` does neither; it maintains its own independent state and does not sync it to other systems.
+* Defaults to `none`.
+     * @param options Options with which to configure the computer.
      */
-    constructor(index, bus, ephemerisFile, sbasFile, updateInterval, enabledSBASGroups, syncRole = 'none') {
+    constructor(index, bus, ephemerisFile, sbasFile, updateInterval, enabledSBASGroups, syncRole = 'none', options) {
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t;
+        var _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4, _5, _6, _7;
         this.index = index;
         this.bus = bus;
         this.ephemerisFile = ephemerisFile;
@@ -21885,23 +22267,27 @@ class GPSSatComputer {
         this.pdopTopic = `gps_system_pdop_${this.index}`;
         this.hdopTopic = `gps_system_hdop_${this.index}`;
         this.vdopTopic = `gps_system_vdop_${this.index}`;
+        this.channelStateSyncTopic = `gps_system_sync_channel_state_changed_${this.index}`;
         this.satCalcSyncTopic = `gps_system_sync_sat_calc_${this.index}`;
         this.satStateSyncTopic = `gps_system_sync_sat_state_changed_${this.index}`;
         this.resetSyncTopic = `gps_system_sync_reset_${this.index}`;
-        this.satStateRequestSyncTopic = `gps_system_sync_sat_state_request_${this.index}`;
-        this.satStateResponseSyncTopic = `gps_system_sync_sat_state_response_${this.index}`;
+        this.stateRequestSyncTopic = `gps_system_sync_state_request_${this.index}`;
+        this.stateResponseSyncTopic = `gps_system_sync_state_response_${this.index}`;
         this.ephemerisData = {};
         this.sbasData = [];
         this.sbasServiceAreas = new Map();
-        this.currentSbasGroupsInView = new Set();
+        this.currentAvailableSbasGroups = new Set();
         this.satellites = [];
+        this.publishedSatStates = [];
+        this.channels = [];
         this.ppos = new GeoPoint(0, 0);
         this.pposVec = new Float64Array(2);
-        this.vecHeap = new ResourceHeap(() => Vec3Math.create(), () => { });
+        this.lastKnownPosition = new GeoPoint(NaN, NaN);
+        this.distanceFromLastKnownPos = 0;
         this.altitude = 0;
-        this.previousSimTime = 0;
-        this.previousUpdate = 0;
         this.simTime = 0;
+        this.previousSimTime = 0;
+        this.lastUpdateTime = 0;
         this._state = GPSSystemState.Searching;
         this._sbasState = GPSSystemSBASState.Disabled;
         this.dops = Vec3Math.create();
@@ -21911,14 +22297,77 @@ class GPSSatComputer {
         this.isInit = false;
         this.needAcquireAndUse = false;
         this.needSatCalc = false;
+        this.pendingChannelStateUpdates = new Map();
         this.pendingSatStateUpdates = new Map();
+        this.almanacProgress = 0;
+        this.lastAlamanacTime = undefined;
+        this._isAlmanacValid = false;
+        this.covarMatrix = [
+            new Float64Array(4),
+            new Float64Array(4),
+            new Float64Array(4),
+            new Float64Array(4),
+        ];
+        this.ephemerisCollectedSatelliteFilter = (sat) => {
+            return GPSSatComputer.EPHEMERIS_COLLECTED_SATELLITE_STATES.has(sat.state.get());
+        };
+        this.losSatelliteFilter = (sat) => {
+            return sat.signalStrength.get() > 0.05
+                && ((this.distanceFromLastKnownPos < 0.0290367 // 100 nautical miles
+                    && (this._isAlmanacValid || sat.isCachedEphemerisValid(this.simTime)))
+                    || GPSSatComputer.EPHEMERIS_COLLECTED_SATELLITE_STATES.has(sat.state.get()));
+        };
+        this.losSatelliteFilterOmniscient = (sat) => {
+            return sat.signalStrength.get() > 0.05;
+        };
+        this.untrackedSatelliteFilter = (sat) => {
+            return !this.channels.includes(sat) && sat.state.get() !== GPSSatelliteState.Unreachable;
+        };
+        this.satelliteCosts = [];
+        this.satelliteCostCompare = (indexA, indexB) => {
+            return this.satelliteCosts[indexA] - this.satelliteCosts[indexB];
+        };
+        this.collectingDataSatelliteFilter = (sat) => {
+            return sat !== null && GPSSatComputer.COLLECTING_DATA_SATELLITE_STATES.has(sat.state.get());
+        };
+        this.channelCount = Math.max((_a = options === null || options === void 0 ? void 0 : options.channelCount) !== null && _a !== void 0 ? _a : Infinity, 4);
+        this.satInUseMaxCount = SubscribableUtils.toSubscribable((_b = options === null || options === void 0 ? void 0 : options.satInUseMaxCount) !== null && _b !== void 0 ? _b : Infinity, true);
+        this.satInUsePdopTarget = SubscribableUtils.toSubscribable((_c = options === null || options === void 0 ? void 0 : options.satInUsePdopTarget) !== null && _c !== void 0 ? _c : -1, true);
+        this.satInUseOptimumCount = SubscribableUtils.toSubscribable((_d = options === null || options === void 0 ? void 0 : options.satInUseOptimumCount) !== null && _d !== void 0 ? _d : 4, true);
+        this.satelliteTimingOptions = Object.assign({}, options === null || options === void 0 ? void 0 : options.timingOptions);
+        (_e = (_u = this.satelliteTimingOptions).almanacExpireTime) !== null && _e !== void 0 ? _e : (_u.almanacExpireTime = 7776000000);
+        (_f = (_v = this.satelliteTimingOptions).ephemerisExpireTime) !== null && _f !== void 0 ? _f : (_v.ephemerisExpireTime = 7200000);
+        (_g = (_w = this.satelliteTimingOptions).acquisitionTimeout) !== null && _g !== void 0 ? _g : (_w.acquisitionTimeout = 30000);
+        (_h = (_x = this.satelliteTimingOptions).acquisitionTime) !== null && _h !== void 0 ? _h : (_x.acquisitionTime = 30000);
+        (_j = (_y = this.satelliteTimingOptions).acquisitionTimeRange) !== null && _j !== void 0 ? _j : (_y.acquisitionTimeRange = 15000);
+        (_k = (_z = this.satelliteTimingOptions).acquisitionTimeWithEphemeris) !== null && _k !== void 0 ? _k : (_z.acquisitionTimeWithEphemeris = 15000);
+        (_l = (_0 = this.satelliteTimingOptions).acquisitionTimeRangeWithEphemeris) !== null && _l !== void 0 ? _l : (_0.acquisitionTimeRangeWithEphemeris = 5000);
+        (_m = (_1 = this.satelliteTimingOptions).unreachableExpireTime) !== null && _m !== void 0 ? _m : (_1.unreachableExpireTime = 3600000);
+        (_o = (_2 = this.satelliteTimingOptions).ephemerisDownloadTime) !== null && _o !== void 0 ? _o : (_2.ephemerisDownloadTime = 30000);
+        (_p = (_3 = this.satelliteTimingOptions).almanacDownloadTime) !== null && _p !== void 0 ? _p : (_3.almanacDownloadTime = 750000);
+        (_q = (_4 = this.satelliteTimingOptions).sbasEphemerisDownloadTime) !== null && _q !== void 0 ? _q : (_4.sbasEphemerisDownloadTime = 60500);
+        (_r = (_5 = this.satelliteTimingOptions).sbasEphemerisDownloadTimeRange) !== null && _r !== void 0 ? _r : (_5.sbasEphemerisDownloadTimeRange = 59500);
+        (_s = (_6 = this.satelliteTimingOptions).sbasCorrectionDownloadTime) !== null && _s !== void 0 ? _s : (_6.sbasCorrectionDownloadTime = 150500);
+        (_t = (_7 = this.satelliteTimingOptions).sbasCorrectionDownloadTimeRange) !== null && _t !== void 0 ? _t : (_7.sbasCorrectionDownloadTimeRange = 149500);
         this.enabledSBASGroups = 'isSubscribableSet' in enabledSBASGroups ? enabledSBASGroups : SetSubject.create(enabledSBASGroups);
+        // Initialize these properties directly from SimVars in case the computer is created before values are published
+        // to the bus.
+        this.ppos.set(SimVar.GetSimVarValue('PLANE LATITUDE', SimVarValueType.Degree), SimVar.GetSimVarValue('PLANE LONGITUDE', SimVarValueType.Degree));
+        this.altitude = SimVar.GetSimVarValue('PLANE ALTITUDE', SimVarValueType.Meters);
+        this.simTime = (SimVar.GetSimVarValue('E:ABSOLUTE TIME', SimVarValueType.Seconds) - 62135596800) * 1000;
         this.bus.getSubscriber().on('gps-position').handle(pos => {
             this.ppos.set(pos.lat, pos.long);
             Vec2Math.set(pos.lat, pos.long, this.pposVec);
             this.altitude = pos.alt;
         });
         this.bus.getSubscriber().on('simTime').handle(time => this.simTime = time);
+    }
+    /**
+     * Gets the current satellites that are being tracked by this computer.
+     * @returns The collection of current satellites.
+     */
+    get sats() {
+        return this.satellites;
     }
     /**
      * Gets the current GPS system state.
@@ -21972,7 +22421,7 @@ class GPSSatComputer {
             const sbasDef = this.sbasData[i];
             this.sbasServiceAreas.set(sbasDef.group, sbasDef.coverage);
             for (const satDef of sbasDef.constellation) {
-                const sat = new GPSSatellite(satDef.prn, sbasDef.group);
+                const sat = new GPSSatellite(satDef.prn, sbasDef.group, undefined, this.satelliteTimingOptions);
                 tempGeoPoint.set(0, satDef.lon);
                 const positionCartesian = Vec3Math.multScalar(tempGeoPoint.toCartesian(tempVec), orbitHeight, tempVec);
                 sat.positionCartesian.set(positionCartesian);
@@ -21989,24 +22438,38 @@ class GPSSatComputer {
         this.publisher.pub(this.hdopTopic, this._hdop, false, true);
         this.publisher.pub(this.vdopTopic, this._vdop, false, true);
         this.loadEphemerisData().then(() => this.loadSbasData()).then(() => {
+            this.publishedSatStates.length = this.satellites.length;
+            this.publishedSatStates.fill(GPSSatelliteState.None);
+            this.channelCount = Math.min(this.channelCount, this.satellites.length);
+            this.channels.length = this.channelCount;
+            this.channels.fill(null);
             this.isInit = true;
             // Setup sync logic.
             if (this.syncRole === 'replica') {
                 const sub = this.bus.getSubscriber();
+                sub.on(this.channelStateSyncTopic).handle(data => { this.pendingChannelStateUpdates.set(data.index, data); });
                 sub.on(this.satCalcSyncTopic).handle(() => { this.needSatCalc = true; });
                 sub.on(this.satStateSyncTopic).handle(data => { this.pendingSatStateUpdates.set(data.prn, data); });
                 sub.on(this.resetSyncTopic).handle(() => { this.reset(); });
-                sub.on(this.satStateResponseSyncTopic).handle(response => {
+                sub.on(this.stateResponseSyncTopic).handle(response => {
                     this.needSatCalc = true;
-                    response.forEach(data => { this.pendingSatStateUpdates.set(data.prn, data); });
+                    for (const channelState of response.channels) {
+                        this.pendingChannelStateUpdates.set(channelState.index, channelState);
+                    }
+                    for (const satState of response.satStates) {
+                        this.pendingSatStateUpdates.set(satState.prn, satState);
+}
                 });
                 // Request initial state.
-                this.syncPublisher.pub(this.satStateRequestSyncTopic, undefined, true, false);
+                this.syncPublisher.pub(this.stateRequestSyncTopic, undefined, true, false);
             }
             else if (this.syncRole === 'primary') {
                 const sub = this.bus.getSubscriber();
-                sub.on(this.satStateRequestSyncTopic).handle(() => {
-                    this.syncPublisher.pub(this.satStateResponseSyncTopic, this.satellites.map(sat => { return { prn: sat.prn, state: sat.state.get() }; }), true, false);
+                sub.on(this.stateRequestSyncTopic).handle(() => {
+                    this.syncPublisher.pub(this.stateResponseSyncTopic, {
+                        channels: this.channels.map((sat, index) => { return { index, prn: sat === null ? null : sat.prn }; }),
+                        satStates: this.satellites.map(sat => { return { prn: sat.prn, state: sat.state.get() }; })
+                    }, true, false);
                 });
             }
             if (this.needAcquireAndUse) {
@@ -22029,7 +22492,7 @@ class GPSSatComputer {
                     if (request.status === 200) {
                         this.ephemerisData = JSON.parse(request.responseText);
                         for (const prn in this.ephemerisData) {
-                            this.satellites.push(new GPSSatellite(parseInt(prn), undefined, this.ephemerisData[prn]));
+                            this.satellites.push(new GPSSatellite(parseInt(prn), undefined, this.ephemerisData[prn], this.satelliteTimingOptions));
                         }
                         resolve();
                     }
@@ -22065,12 +22528,77 @@ class GPSSatComputer {
         });
     }
     /**
-     * Instantly acquires and starts using all satellites with sufficient signal strength. If signal strength allows,
-     * SBAS satellites are instantly promoted to the {@link GPSSatelliteState.Acquired} state, and GPS satellites are
-     * instantly promoted to the {@link GPSSatelliteState.InUse}/{@link GPSSatelliteState.InUseDiffApplied} state.
-     *
-     * If this system is not initialized, the operation will be delayed until just after initialization, unless `reset()`
-     * is called between now and then.
+     * Gets the index of a satellite with a given PRN identifier.
+     * @param prn The PRN identifier for which to get the satellite index.
+     * @returns The index of the satellite with the specified PRN identifier, or `-1` if the PRN does not belong to any
+     * satellite.
+     */
+    getSatelliteIndexFromPrn(prn) {
+        for (let i = 0; i < this.satellites.length; i++) {
+            if (this.satellites[i].prn === prn) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    /**
+     * Calculates the horizon zenith angle.
+     * @returns The calculated horizon zenith angle based on the current altitude.
+     */
+    calcHorizonAngle() {
+        return Math.acos(6378100 / (6378100 + this.altitude));
+    }
+    /**
+     * Syncs this computer's last known position with a given value.
+     * @param pos The position with which to sync the last known position. Defaults to the airplane's current position.
+     */
+    syncLastKnownPosition(pos = this.ppos) {
+        this.lastKnownPosition.set(pos);
+    }
+    /**
+     * Erases this computer's last known position.
+     */
+    eraseLastKnownPosition() {
+        this.lastKnownPosition.set(NaN, NaN);
+    }
+    /**
+     * Checks whether this computer's downloaded almanac data is valid at a given simulation time.
+     * @param simTime The simulation time at which to check for almanac validity, as a Javascript timestamp. Defaults to
+     * the current simulation time.
+     * @returns Whether this computer's downloaded almanac data is valid at the specified simulation time.
+     */
+    isAlmanacValid(simTime = this.simTime) {
+        return this.lastAlamanacTime !== undefined && Math.abs(simTime - this.lastAlamanacTime) < this.satelliteTimingOptions.almanacExpireTime;
+    }
+    /**
+     * Forces this computer to immediately download a complete alamanac.
+     * @param simTime The simulation time at which the almanac is considered to have been downloaded, as a Javascript
+     * timestamp. Defaults to the current simulation time.
+     */
+    downloadAlamanac(simTime = this.simTime) {
+        this.almanacProgress = 0;
+        this.lastAlamanacTime = simTime;
+    }
+    /**
+     * Erases this computer's downloaded almanac and any partial download progress.
+     */
+    eraseAlamanac() {
+        this.almanacProgress = 0;
+        this.lastAlamanacTime = undefined;
+    }
+    /**
+     * Erases this computer's cached ephemeris data for all satellites.
+     */
+    eraseCachedEphemeris() {
+        for (let i = 0; i < this.satellites.length; i++) {
+            this.satellites[i].eraseCachedEphemeris();
+        }
+    }
+    /**
+     * Instantly chooses the optimal satellites to track for all receiver channels, then acquires and downloads all data
+     * (ephemeris, almanac, and differential corrections) from tracked satellites with sufficient signal strength. If
+     * this system is not initialized, the operation will be delayed until just after initialization, unless `reset()` is
+     * called in the interim.
      *
      * Has no effect if this system is a replica.
      */
@@ -22079,15 +22607,15 @@ class GPSSatComputer {
             return;
         }
         if (this.isInit) {
-            this.updateSatellites(0, true, true);
+            this.updateSatellites(this.simTime, 0, true, true);
         }
         else {
             this.needAcquireAndUse = true;
         }
     }
     /**
-     * Resets the GPSSatComputer system. This will set the of the system to {@link GPSSystemState.Searching} and the
-     * state of every satellite to {@link GPSSatelliteState.None}.
+     * Resets the GPSSatComputer system. This will set the state of the system to {@link GPSSystemState.Searching},
+     * unassign all receiver channels, and set the state of every satellite to {@link GPSSatelliteState.None}.
      *
      * If this system is not initialized, this method has no effect other than to cancel any pending operations triggered
      * by previous calls to `acquireAndUseSatellites()`.
@@ -22097,13 +22625,16 @@ class GPSSatComputer {
         if (!this.isInit) {
             return;
         }
-        this.satellites.forEach(sat => {
+        for (let i = 0; i < this.channels.length; i++) {
+            this.channels[i] = null;
+        }
+        for (const sat of this.satellites) {
             const currentState = sat.state.get();
             sat.state.set(GPSSatelliteState.None);
             if (currentState !== GPSSatelliteState.None) {
                 this.publisher.pub(this.satStateChangedTopic, sat, false, false);
             }
-        });
+        }
         const currentState = this._state;
         this._state = GPSSystemState.Searching;
         if (currentState !== GPSSystemState.Searching) {
@@ -22123,33 +22654,41 @@ class GPSSatComputer {
         if (this.syncRole !== 'replica') {
             if (deltaTime < 0 || deltaTime > (this.updateInterval * 2)) {
                 this.previousSimTime = this.simTime;
-                this.previousUpdate = this.simTime;
+                this.lastUpdateTime = this.simTime;
                 return;
             }
         }
         const shouldUpdatePositions = this.syncRole === 'replica'
             ? this.needSatCalc
-            : this.simTime >= this.previousUpdate + this.updateInterval;
+            : this.simTime >= this.lastUpdateTime + this.updateInterval;
         this.needSatCalc = false;
-        this.updateSatellites(deltaTime, shouldUpdatePositions, false);
+        this.updateSatellites(this.simTime, deltaTime, shouldUpdatePositions, false);
     }
     /**
      * Updates the states and optionally the orbital positions of all satellites.
+     * @param simTime The current simulation time, as a Javascript timestamp.
      * @param deltaTime The time elapsed, in milliseconds, since the last satellite update.
      * @param shouldUpdatePositions Whether to update the orbital positions of the satellites.
-     * @param forceAcquireAndUse Whether to immediately force satellites to the highest possible use state
-     * ({@link GPSSatelliteState.Acquired} for SBAS satellites and {@link GPSSatelliteState.InUse}/
-     * {@link GPSSatelliteState.InUseDiffApplied} for GPS satellites) if signal strength is sufficient.
+     * @param forceAcquireAndUse Whether to immediately choose the optimal satellites to track for all receiver channels,
+     * then acquire and download all data (ephemeris, almanac, and differential corrections) from tracked satellites with
+     * sufficient signal strength.
      */
-    updateSatellites(deltaTime, shouldUpdatePositions, forceAcquireAndUse) {
+    updateSatellites(simTime, deltaTime, shouldUpdatePositions, forceAcquireAndUse) {
         var _a, _b, _c, _d;
         let numAcquiring = 0;
-        let numActiveSbas = 0;
+        let canApplyDiffCorrections = false;
         let shouldUpdateDop = shouldUpdatePositions;
         if (shouldUpdatePositions && this.syncRole === 'primary') {
             (_a = this.syncPublisher) === null || _a === void 0 ? void 0 : _a.pub(this.satCalcSyncTopic, undefined, true, false);
         }
-        this.currentSbasGroupsInView.clear();
+        if (forceAcquireAndUse) {
+            this.lastKnownPosition.set(this.ppos);
+        }
+        this.distanceFromLastKnownPos = isNaN(this.lastKnownPosition.lat) || isNaN(this.lastKnownPosition.lon)
+            ? Infinity
+            : this.ppos.distance(this.lastKnownPosition);
+        this._isAlmanacValid = this.isAlmanacValid();
+        this.updateAvailableSbasGroups();
         const enabledSBASGroups = this.enabledSBASGroups.get();
         for (let i = 0; i < this.satellites.length; i++) {
             const sat = this.satellites[i];
@@ -22158,51 +22697,80 @@ class GPSSatComputer {
                 sat.applyProjection(this.ppos, this.altitude);
             }
             sat.calculateSignalStrength(this.altitude);
+}
+        if (this.syncRole === 'replica') {
+            for (const update of this.pendingChannelStateUpdates.values()) {
+                const sat = update.prn === null ? null : ((_b = this.satellites[this.getSatelliteIndexFromPrn(update.prn)]) !== null && _b !== void 0 ? _b : null);
+                this.assignSatelliteToChannel(update.index, sat);
+            }
+        }
+        else if (shouldUpdatePositions) {
+            this.updateChannelAssignments(forceAcquireAndUse);
+        }
+        this.pendingChannelStateUpdates.clear();
+        for (let i = 0; i < this.satellites.length; i++) {
+            const sat = this.satellites[i];
             const updatedState = this.syncRole === 'replica'
-                ? sat.forceUpdateState((_c = (_b = this.pendingSatStateUpdates.get(sat.prn)) === null || _b === void 0 ? void 0 : _b.state) !== null && _c !== void 0 ? _c : sat.state.get())
-                : sat.updateState(deltaTime, this._state === GPSSystemState.DiffSolutionAcquired, forceAcquireAndUse);
+                ? sat.forceUpdateState(simTime, (_d = (_c = this.pendingSatStateUpdates.get(sat.prn)) === null || _c === void 0 ? void 0 : _c.state) !== null && _d !== void 0 ? _d : sat.state.get())
+                : sat.updateState(simTime, deltaTime, this.distanceFromLastKnownPos, forceAcquireAndUse);
             if (updatedState) {
-                this.publisher.pub(this.satStateChangedTopic, sat, false, false);
-                if (this.syncRole === 'primary') {
-                    this.syncPublisher.pub(this.satStateSyncTopic, { prn: sat.prn, state: sat.state.get() }, true, false);
-                }
-                shouldUpdateDop = true;
+                                shouldUpdateDop = true;
             }
             const satState = sat.state.get();
-            if (satState === GPSSatelliteState.Acquired || satState === GPSSatelliteState.DataCollected) {
+            if (satState === GPSSatelliteState.DataCollected
+                || satState === GPSSatelliteState.InUse
+                || satState === GPSSatelliteState.InUseDiffApplied) {
                 numAcquiring++;
-                if (sat.sbasGroup !== undefined && enabledSBASGroups.has(sat.sbasGroup)) {
-                    numActiveSbas++;
-                    this.currentSbasGroupsInView.add(sat.sbasGroup);
+                if (sat.areDiffCorrectionsDownloaded && this.currentAvailableSbasGroups.has(sat.sbasGroup)) {
+                    canApplyDiffCorrections = true;
                 }
+            }
+            else if (satState === GPSSatelliteState.Acquired) {
+                numAcquiring++;
             }
         }
         this.pendingSatStateUpdates.clear();
-        let withinSbasArea = false;
-        for (const group of this.currentSbasGroupsInView) {
-            const coverage = this.sbasServiceAreas.get(group);
-            if (coverage !== undefined) {
-                withinSbasArea = (_d = Vec2Math.pointWithinPolygon(coverage, this.pposVec)) !== null && _d !== void 0 ? _d : false;
-            }
-            if (withinSbasArea) {
-                break;
-            }
-        }
-        const newSBASState = withinSbasArea
+        const newSBASState = canApplyDiffCorrections
             ? GPSSystemSBASState.Active
             : enabledSBASGroups.size === 0 ? GPSSystemSBASState.Disabled : GPSSystemSBASState.Inactive;
-        let newSystemState = GPSSystemState.Searching;
-        if (numAcquiring > 0) {
-            newSystemState = GPSSystemState.Acquiring;
-        }
-        let pdop = this._pdop, hdop = this._hdop, vdop = this._vdop;
+                let pdop = this._pdop, hdop = this._hdop, vdop = this._vdop;
         if (shouldUpdateDop) {
+            if (this.syncRole !== 'replica') {
+                [pdop, hdop, vdop] = this.selectSatellites(this.dops);
+            }
+            else if (shouldUpdateDop) {
             [pdop, hdop, vdop] = this.calculateDop(this.dops);
         }
-        const is3dSolutionPossible = pdop >= 0;
-        if (is3dSolutionPossible) {
-            newSystemState = numActiveSbas > 0 && withinSbasArea ? GPSSystemState.DiffSolutionAcquired : GPSSystemState.SolutionAcquired;
         }
+        let newSystemState = GPSSystemState.Searching;
+        if (pdop >= 0) {
+            newSystemState = canApplyDiffCorrections ? GPSSystemState.DiffSolutionAcquired : GPSSystemState.SolutionAcquired;
+            this.lastKnownPosition.set(this.ppos);
+        }
+        else if (numAcquiring > 0) {
+            newSystemState = GPSSystemState.Acquiring;
+        }
+        else if (this.distanceFromLastKnownPos < 0.0290367 /* 100 nautical miles */) {
+            // Set system state to 'Acquiring' if we are attempting to acquire at least one satellite for which we have
+            // predicted geometry data (either from the almanac or cached ephemeris data).
+            for (let i = 0; i < this.channels.length; i++) {
+                const sat = this.channels[i];
+                if (sat && sat.state.get() === GPSSatelliteState.None && (this._isAlmanacValid || sat.isCachedEphemerisValid(this.simTime))) {
+                    newSystemState = GPSSystemState.Acquiring;
+                    break;
+                }
+            }
+        }
+        if (this.syncRole !== 'replica') {
+            for (let i = 0; i < this.channels.length; i++) {
+                const sat = this.channels[i];
+                if (sat) {
+                    sat.updateDiffCorrectionsApplied(canApplyDiffCorrections);
+                }
+            }
+            this.updateAlmanacState(simTime, deltaTime, forceAcquireAndUse);
+        }
+this.diffAndPublishSatelliteStates();
         if (this._state !== newSystemState) {
             this._state = newSystemState;
             this.publisher.pub(this.stateChangedTopic, newSystemState, false, true);
@@ -22212,69 +22780,447 @@ class GPSSatComputer {
             this.publisher.pub(this.sbasStateChangedTopic, newSBASState, false, true);
         }
         if (shouldUpdatePositions) {
-            this.previousUpdate = this.simTime;
+            this.lastUpdateTime = this.simTime;
             this.publisher.pub(this.satPosCalcTopic, undefined, false, false);
         }
         this.setDop(pdop, hdop, vdop);
         this.previousSimTime = this.simTime;
     }
     /**
-     * Gets the current satellites that are being tracked by this computer.
-     * @returns The collection of current satellites.
+     * Updates which SBAS groups are enabled and whose coverage area contain the airplane's current position.
      */
-    get sats() {
-        return this.satellites;
+    updateAvailableSbasGroups() {
+        const enabledSBASGroups = this.enabledSBASGroups.get();
+        for (let i = 0; i < this.sbasData.length; i++) {
+            const sbasData = this.sbasData[i];
+            if (enabledSBASGroups.has(sbasData.group) && Vec2Math.pointWithinPolygon(sbasData.coverage, this.pposVec)) {
+                this.currentAvailableSbasGroups.add(sbasData.group);
+            }
+            else {
+                this.currentAvailableSbasGroups.delete(sbasData.group);
+            }
+        }
     }
     /**
-     * Calculates the horizon zenith angle.
-     * @returns The calculated horizon zenith angle based on the current altitude.
+     * Updates the satellites assigned to be tracked by this computer's receiver channels.
+     * @param forceAcquireAndUse Whether to immediately choose the optimal satellites to track and acquire all data from
+     * tracked satellites if signal strength is sufficient.
      */
-    calcHorizonAngle() {
-        return Math.acos(6378100 / (6378100 + this.altitude));
+    updateChannelAssignments(forceAcquireAndUse) {
+        // If we have at least one channel for every satellite, then we will simply assign each satellite to its own
+        // channel.
+        if (this.channelCount >= this.satellites.length) {
+            const end = Math.min(this.channelCount, this.satellites.length);
+            for (let i = 0; i < end; i++) {
+                if (this.channels[i] === null) {
+                    this.assignSatelliteToChannel(i, this.satellites[i]);
+                }
+            }
+            return;
+        }
+        const losSatellites = this.satellites.filter(forceAcquireAndUse ? this.losSatelliteFilterOmniscient : this.losSatelliteFilter);
+        let losSatellitesNotTrackedIndexes;
+        let openChannelIndexes;
+        let isTrackingSbasSatelliteInLos = false;
+        if (forceAcquireAndUse) {
+            losSatellitesNotTrackedIndexes = ArrayUtils.range(losSatellites.length);
+            openChannelIndexes = ArrayUtils.range(this.channelCount, this.channelCount - 1, -1);
+        }
+        else {
+            losSatellitesNotTrackedIndexes = [];
+            for (let i = 0; i < losSatellites.length; i++) {
+                const sat = losSatellites[i];
+                if (this.channels.includes(sat)) {
+                    if (sat.sbasGroup !== undefined && this.currentAvailableSbasGroups.has(sat.sbasGroup)) {
+                        isTrackingSbasSatelliteInLos = true;
+                    }
+                }
+                else {
+                    losSatellitesNotTrackedIndexes.push(i);
+                }
+            }
+            openChannelIndexes = [];
+            for (let i = this.channels.length - 1; i >= 0; i--) {
+                const sat = this.channels[i];
+                if (!sat || sat.state.get() === GPSSatelliteState.Unreachable) {
+                    openChannelIndexes.push(i);
+                }
+            }
+        }
+        if (openChannelIndexes.length === 0 && this.channels.every(this.ephemerisCollectedSatelliteFilter)) {
+            // There are no open channels and we have collected ephemeris data from every tracked satellite.
+            const trackedLosMatrix = GPSSatComputer.getLosMatrix(this.channels);
+            const trackedCovarMatrix = GPSSatComputer.calculateCovarMatrix(trackedLosMatrix, this.covarMatrix);
+            if (!isFinite(trackedCovarMatrix[0][0]) || !isFinite(trackedCovarMatrix[1][1]) || !isFinite(trackedCovarMatrix[2][2])) {
+                // The currently tracked satellites are not sufficient to produce a 3D position solution. In this case we
+                // will replace a random tracked satellite with an untracked.
+                openChannelIndexes.push(Math.trunc(Math.random() * this.channelCount));
+            }
+            else {
+                // The currently tracked satellites are sufficient to produce a 3D position solution. In this case we will
+                // only try to replace a tracked satellite if we are tracking at least one redundant satellite, we are not
+                // tracking an SBAS satellite within LOS, and there is a SBAS satellite within LOS available for us to track.
+                // If the above is true, then we will replace the tracked satellite with the smallest contribution to reducing
+                // PDOP with the SBAS satellite with highest signal strength.
+                if (this.channelCount > 4 && !isTrackingSbasSatelliteInLos) {
+                    let highestSbasSignal = 0;
+                    let highestSbasSignalIndex = -1;
+                    for (let i = 0; i < losSatellitesNotTrackedIndexes.length; i++) {
+                        const index = losSatellitesNotTrackedIndexes[i];
+                        const sat = losSatellites[index];
+                        const signalStrength = sat.signalStrength.get();
+                        if (sat.sbasGroup !== undefined && this.currentAvailableSbasGroups.has(sat.sbasGroup) && signalStrength > highestSbasSignal) {
+                            highestSbasSignal = signalStrength;
+                            highestSbasSignalIndex = index;
+                        }
+                    }
+                    if (highestSbasSignalIndex >= 0) {
+                        const sTranspose = this.channels.map(GPSSatComputer.createVec4);
+                        GPSSatComputer.calculateDowndateSTranspose(trackedLosMatrix, trackedCovarMatrix, sTranspose);
+                        const pDiag = GPSSatComputer.calculateDowndatePDiag(trackedLosMatrix, sTranspose, new Float64Array(trackedLosMatrix.length));
+                        GPSSatComputer.calculateSatelliteCosts(sTranspose, pDiag, this.satelliteCosts);
+                        let satToReplaceCost = Infinity;
+                        let satToReplaceChannelIndex = -1;
+                        for (let i = 0; i < this.channels.length; i++) {
+                            const cost = this.satelliteCosts[i];
+                            if (cost < satToReplaceCost) {
+                                satToReplaceCost = cost;
+                                satToReplaceChannelIndex = i;
+                            }
+                        }
+                        if (satToReplaceChannelIndex >= 0) {
+                            this.assignSatelliteToChannel(satToReplaceChannelIndex, losSatellites[highestSbasSignalIndex]);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+        if (openChannelIndexes.length > 0) {
+            if (openChannelIndexes.length < losSatellitesNotTrackedIndexes.length) {
+                // We don't have enough open channels to begin tracking all satellites currently within line-of-sight.
+                // Therefore, we will choose those with the largest contribution to reducing PDOP.
+                const losMatrix = GPSSatComputer.getLosMatrix(losSatellites);
+                const covarMatrix = GPSSatComputer.calculateCovarMatrix(losMatrix, this.covarMatrix);
+                const sTranspose = losSatellites.map(GPSSatComputer.createVec4);
+                GPSSatComputer.calculateDowndateSTranspose(losMatrix, covarMatrix, sTranspose);
+                const pDiag = GPSSatComputer.calculateDowndatePDiag(losMatrix, sTranspose, new Float64Array(losMatrix.length));
+                GPSSatComputer.calculateSatelliteCosts(sTranspose, pDiag, this.satelliteCosts);
+                // If we are not already tracking an SBAS satellite within LOS, we will prioritize adding the SBAS satellite
+                // with the highest cost over non-SBAS satellites.
+                if (!isTrackingSbasSatelliteInLos) {
+                    let highestSbasCost = -Infinity;
+                    let highestSbasCostIndex = -1;
+                    for (let i = 0; i < this.satelliteCosts.length; i++) {
+                        const sbasGroup = losSatellites[i].sbasGroup;
+                        if (sbasGroup !== undefined && this.currentAvailableSbasGroups.has(sbasGroup)) {
+                            const cost = this.satelliteCosts[i];
+                            if (cost > highestSbasCost) {
+                                highestSbasCost = cost;
+                                highestSbasCostIndex = i;
+                            }
+                        }
+                    }
+                    if (highestSbasCostIndex >= 0) {
+                        this.satelliteCosts[highestSbasCostIndex] = Infinity;
+                    }
+                }
+                const satelliteIndexes = ArrayUtils.range(losSatellites.length);
+                satelliteIndexes.sort(this.satelliteCostCompare);
+                for (let i = satelliteIndexes.length - 1; i >= 0; i--) {
+                    if (losSatellitesNotTrackedIndexes.includes(i)) {
+                        const sat = losSatellites[i];
+                        const channelIndex = openChannelIndexes.pop();
+                        this.assignSatelliteToChannel(channelIndex, sat);
+                        if (openChannelIndexes.length === 0) {
+                            break;
+                        }
+                    }
+                }
+            }
+            else {
+                // We have enough open channels to begin tracking all satellites currently within LOS.
+                for (let i = 0; i < losSatellitesNotTrackedIndexes.length; i++) {
+                    const channelIndex = openChannelIndexes.pop();
+                    this.assignSatelliteToChannel(channelIndex, losSatellites[i]);
+                }
+            }
+            // If we still have open channels available, fill them with random satellites that have not been marked as
+            // unreachable.
+            if (openChannelIndexes.length > 0) {
+                const untrackedSatellites = this.satellites.filter(this.untrackedSatelliteFilter);
+                let untrackedIndex = 0;
+                while (openChannelIndexes.length > 0 && untrackedIndex < untrackedSatellites.length) {
+                    const channelIndex = openChannelIndexes.pop();
+                    this.assignSatelliteToChannel(channelIndex, untrackedSatellites[untrackedIndex++]);
+                }
+            }
+        }
     }
     /**
-     * Calculates dilution of precision values (PDOP, HDOP, VDOP) for the current satellite constellation.
+     * Assigns a satellite to a receiver channel.
+     * @param channelIndex The index of the receiver channel.
+     * @param sat The satellite to assign, or `null` if the channel is to be assigned no satellite.
+     */
+    assignSatelliteToChannel(channelIndex, sat) {
+        const oldSat = this.channels[channelIndex];
+        if (oldSat === sat) {
+            return;
+        }
+        if (oldSat && oldSat.state.get() !== GPSSatelliteState.Unreachable) {
+            oldSat.setTracked(false);
+        }
+        this.channels[channelIndex] = sat;
+        if (sat !== null) {
+            sat.setTracked(true);
+        }
+        if (this.syncRole === 'primary') {
+            this.syncPublisher.pub(this.channelStateSyncTopic, { index: channelIndex, prn: sat === null ? null : sat.prn }, true, false);
+        }
+    }
+    /**
+     * Calculates dilution of precision values (PDOP, HDOP, VDOP) for the satellite constellation consisting of all
+     * satellites that are currently in-use.
      * @param out The vector to which to write the results.
-     * @returns Dilution of precision values for the current satellite constellation, as `[PDOP, HDOP, VDOP]`.
+     * @returns Dilution of precision values for the current in-use satellite constellation, as `[PDOP, HDOP, VDOP]`. If
+     * the constellation is insufficient to provide a 3D position solution, then `[-1, -1, -1]` will be returned.
      */
     calculateDop(out) {
         Vec3Math.set(-1, -1, -1, out);
-        const satsInUse = this.satellites.filter(sat => {
-            const state = sat.state.get();
-            return state === GPSSatelliteState.InUse || state === GPSSatelliteState.InUseDiffApplied;
-        });
+        const satsInUse = this.satellites.filter(GPSSatComputer.inUseSatelliteFilter);
         if (satsInUse.length < 4) {
             return out;
         }
+const losMatrix = GPSSatComputer.getLosMatrix(satsInUse);
+        const covarMatrix = GPSSatComputer.calculateCovarMatrix(losMatrix, this.covarMatrix);
+        // Grab the variance terms var(x), var(y), var(z) along the diagonal of the covariance matrix
+        const varX = covarMatrix[0][0];
+        const varY = covarMatrix[1][1];
+        const varZ = covarMatrix[2][2];
+        if (!isFinite(varX) || !isFinite(varY) || !isFinite(varZ)) {
+            return out;
+        }
+        const horizSumVar = varX + varY;
+        const pdop = Math.sqrt(horizSumVar + varZ);
+        const hdop = Math.sqrt(horizSumVar);
+        const vdop = Math.sqrt(varZ);
+        return Vec3Math.set(pdop, hdop, vdop, out);
+    }
+    /**
+     * Selects satellites to use for calculating position solutions and returns the dilution of precision values for
+     * the selected constellation.
+     * @param out The vector to which to write the dilution of precision values.
+     * @returns Dilution of precision values for the selected satellite constellation, as `[PDOP, HDOP, VDOP]`. If the
+     * constellation is insufficient to provide a 3D position solution, then `[-1, -1, -1]` will be returned.
+     */
+    selectSatellites(out) {
+        Vec3Math.set(-1, -1, -1, out);
+        const satellitesToUse = this.satellites.filter(GPSSatComputer.readySatelliteFilter);
+        if (satellitesToUse.length < 4) {
+            this.updateSatelliteInUseStates(satellitesToUse, []);
+            return out;
+        }
+        const losMatrix = GPSSatComputer.getLosMatrix(satellitesToUse);
+        const covarMatrix = GPSSatComputer.calculateCovarMatrix(losMatrix, this.covarMatrix);
+        const maxCount = MathUtils.clamp(this.satInUseMaxCount.get(), 4, this.channelCount);
+        if (!VecNMath.isFinite(covarMatrix[0])
+            || !VecNMath.isFinite(covarMatrix[1])
+            || !VecNMath.isFinite(covarMatrix[2])
+            || !VecNMath.isFinite(covarMatrix[3])) {
+            const satellitesToDiscard = satellitesToUse.splice(maxCount);
+            this.updateSatelliteInUseStates(satellitesToUse, satellitesToDiscard);
+            return out;
+        }
+        const satellitesToDiscard = [];
+        const pdopTarget = this.satInUsePdopTarget.get();
+        const optimumCount = Math.max(this.satInUseOptimumCount.get(), 4);
+        const pdopTargetSq = pdopTarget < 0 ? -1 : pdopTarget * pdopTarget;
+        let pdopSq = covarMatrix[0][0] + covarMatrix[1][1] + covarMatrix[2][2];
+        if (satellitesToUse.length > maxCount || (satellitesToUse.length > optimumCount && pdopSq < pdopTargetSq)) {
+            // There are more in-sight satellites than we can select. Therefore we will attempt to discard excess satellites
+            // in manner that minimizes the increase to PDOP relative to selecting all in-sight satellites.
+            // We will use the "downdate" selection algorithm presented in Walter, T, Blanch, J and Kropp, V, 2016.
+            // Define Sᵀ = LC and P = I - LCLᵀ, where L is the line-of-sight matrix and C is the covariance matrix.
+            // Then Ci = C + (Si)(Si)ᵀ / P(i, i), where Ci is the covariance matrix after removing the ith satellite and
+            // Si is the ith column of S.
+            // If PDOP = sqrt(C(1, 1) + C(2, 2) + C(3, 3)), then from the above it can be seen that removing the ith
+            // satellite increases PDOP² by (S(1, i)² + S(2, i)² + S(3, i)²) / P(i, i). Defining this to be the cost of
+            // removing satellite i, we are then guaranteed that removing the satellite with the lowest cost will result
+            // in the smallest increase to PDOP.
+            const sTranspose = satellitesToUse.map(GPSSatComputer.createVec4);
+            GPSSatComputer.calculateDowndateSTranspose(losMatrix, covarMatrix, sTranspose);
+            const pDiag = GPSSatComputer.calculateDowndatePDiag(losMatrix, sTranspose, new Float64Array(losMatrix.length));
+            GPSSatComputer.calculateSatelliteCosts(sTranspose, pDiag, this.satelliteCosts);
+            const satelliteIndexes = ArrayUtils.range(satellitesToUse.length);
+            satelliteIndexes.sort(this.satelliteCostCompare);
+            pdopSq = covarMatrix[0][0] + covarMatrix[1][1] + covarMatrix[2][2];
+            let indexToRemove = satelliteIndexes[0];
+            while (satellitesToUse.length > maxCount
+                || (satellitesToUse.length > optimumCount
+                    && pdopSq + this.satelliteCosts[indexToRemove] <= pdopTargetSq)) {
+                satellitesToDiscard.push(satellitesToUse[indexToRemove]);
+                satellitesToUse.splice(indexToRemove, 1);
+                losMatrix.splice(indexToRemove, 1);
+                // Reset satellite index array.
+                satelliteIndexes.length--;
+                for (let i = 0; i < satelliteIndexes.length; i++) {
+                    satelliteIndexes[i] = i;
+                }
+                // Update covariance matrix after removing a satellite.
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        covarMatrix[i][j] += sTranspose[indexToRemove][i] * sTranspose[indexToRemove][j] / pDiag[indexToRemove];
+                    }
+                }
+                // Recompute satellite costs.
+                sTranspose.length--;
+                GPSSatComputer.calculateDowndateSTranspose(losMatrix, covarMatrix, sTranspose);
+                GPSSatComputer.calculateDowndatePDiag(losMatrix, sTranspose, pDiag);
+                GPSSatComputer.calculateSatelliteCosts(sTranspose, pDiag, this.satelliteCosts);
+                satelliteIndexes.sort(this.satelliteCostCompare);
+                pdopSq = covarMatrix[0][0] + covarMatrix[1][1] + covarMatrix[2][2];
+                indexToRemove = satelliteIndexes[0];
+            }
+        }
+        this.updateSatelliteInUseStates(satellitesToUse, satellitesToDiscard);
+        // Grab the variance terms var(x), var(y), var(z) along the diagonal of the covariance matrix
+        const varX = covarMatrix[0][0];
+        const varY = covarMatrix[1][1];
+        const varZ = covarMatrix[2][2];
+        if (!isFinite(varX) || !isFinite(varY) || !isFinite(varZ)) {
+            return out;
+        }
+        const horizSumVar = varX + varY;
+        const pdop = Math.sqrt(horizSumVar + varZ);
+        const hdop = Math.sqrt(horizSumVar);
+        const vdop = Math.sqrt(varZ);
+        return Vec3Math.set(pdop, hdop, vdop, out);
+    }
+    /**
+     * Updates the in-use state of satellites.
+     * @param satellitesToUse The satellites to use for position solution calculations.
+     * @param satellitesToNotUse The satellites to not use for position solution calculations.
+     */
+    updateSatelliteInUseStates(satellitesToUse, satellitesToNotUse) {
+        for (let i = 0; i < satellitesToUse.length; i++) {
+            satellitesToUse[i].updateInUse(true);
+        }
+        for (let i = 0; i < satellitesToNotUse.length; i++) {
+            satellitesToNotUse[i].updateInUse(false);
+        }
+    }
+    /**
+     * Updates the almanac download state.
+     * @param simTime The current simulation time, as a Javascript timestamp.
+     * @param deltaTime The time elapsed, in milliseconds, since the last update.
+     * @param forceDownload Whether to force the entire almanac to be instantly downloaded.
+     */
+    updateAlmanacState(simTime, deltaTime, forceDownload) {
+        if (forceDownload) {
+            this.lastAlamanacTime = simTime;
+            this.almanacProgress = 0;
+        }
+        else {
+            const isCollectingData = this.channels.some(this.collectingDataSatelliteFilter);
+            if (isCollectingData) {
+                this.almanacProgress += deltaTime / this.satelliteTimingOptions.almanacDownloadTime;
+                if (this.almanacProgress >= 1) {
+                    this.lastAlamanacTime = simTime;
+                    this.almanacProgress -= 1;
+                }
+            }
+            else {
+                this.almanacProgress = 0;
+            }
+        }
+    }
+    /**
+     * For each satellite, checks if its state is different from the most recently published state, and if so publishes
+     * the new state. If this computer's sync role is `primary`, then a satellite state sync event will be published
+     * alongside any regular state events.
+     */
+    diffAndPublishSatelliteStates() {
+        for (let i = 0; i < this.satellites.length; i++) {
+            const sat = this.satellites[i];
+            const state = sat.state.get();
+            if (this.publishedSatStates[i] !== state) {
+                this.publishedSatStates[i] = state;
+                this.publisher.pub(this.satStateChangedTopic, sat, false, false);
+                if (this.syncRole === 'primary') {
+                    this.syncPublisher.pub(this.satStateSyncTopic, { prn: sat.prn, state }, true, false);
+                }
+            }
+        }
+    }
+    /**
+     * Sets this system's dilution of precision values, and if they are different from the current values, publishes the
+     * new values to the event bus.
+     * @param pdop The position DOP value to set.
+     * @param hdop The horizontal DOP value to set.
+     * @param vdop The vertical DOP value to set.
+     */
+    setDop(pdop, hdop, vdop) {
+        if (this._pdop !== pdop) {
+            this._pdop = pdop;
+            this.publisher.pub(this.pdopTopic, pdop, false, true);
+        }
+        if (this._hdop !== hdop) {
+            this._hdop = hdop;
+            this.publisher.pub(this.hdopTopic, hdop, false, true);
+        }
+        if (this._vdop !== vdop) {
+            this._vdop = vdop;
+            this.publisher.pub(this.vdopTopic, vdop, false, true);
+        }
+    }
+    /**
+     * Creates a line-of-sight position matrix for a satellite constellation. Each row in the matrix is a 4-vector of
+     * a satellite's position relative to the airplane, as `[x, y, z, 1]`. The index of the matrix row containing a
+     * satellite's position vector matches the index of the satellite in the provided array.
+     * @param satellites The satellites in the constellation.
+     * @returns The line-of-sight position matrix for the specified satellite constellation.
+     */
+    static getLosMatrix(satellites) {
+        const los = [];
         // Get unit line-of-sight vectors for each satellite
-        for (let i = 0; i < satsInUse.length; i++) {
-            const [zenith, hour] = satsInUse[i].position.get();
-            satsInUse[i] = Vec3Math.setFromSpherical(1, zenith, hour, this.vecHeap.allocate());
+        for (let i = 0; i < satellites.length; i++) {
+            const [zenith, hour] = satellites[i].position.get();
+            los[i] = Vec3Math.setFromSpherical(1, zenith, hour, new Float64Array(4));
+            los[i][3] = 1;
         }
-        const satVecs = satsInUse;
-        // First define line-of-sight matrix L composed of row vectors Si = [xi, yi, zi, 1], where xi, yi, zi are the
-        // components of the unit line-of-sight vector for satellite i. Then compute the covariance matrix as C = (LᵀL)⁻¹.
+        return los;
+    }
+    /**
+     * Calculates a position-covariance matrix for a satellite constellation.
+     * @param los The line-of-sight position matrix for the satellite constellation.
+     * @param out The matrix to which to write the result.
+     * @returns The position-covariance matrix for the specified satellite constellation.
+     */
+    static calculateCovarMatrix(los, out) {
+        if (los.length < 4) {
+            for (let i = 0; i < 4; i++) {
+                out[i].fill(NaN, 0, 4);
+            }
+            return out;
+        }
+        // The covariance matrix is defined as C = (LᵀL)⁻¹, where L is the satellite line-of-sight matrix.
         // P = LᵀL is guaranteed to be symmetric, so we need only compute the upper triangular part of the product.
-        const P11 = satVecs.reduce((sum, vec) => sum + vec[0] * vec[0], 0);
-        const P12 = satVecs.reduce((sum, vec) => sum + vec[0] * vec[1], 0);
-        const P13 = satVecs.reduce((sum, vec) => sum + vec[0] * vec[2], 0);
-        const P14 = satVecs.reduce((sum, vec) => sum + vec[0], 0);
-        const P22 = satVecs.reduce((sum, vec) => sum + vec[1] * vec[1], 0);
-        const P23 = satVecs.reduce((sum, vec) => sum + vec[1] * vec[2], 0);
-        const P24 = satVecs.reduce((sum, vec) => sum + vec[1], 0);
-        const P33 = satVecs.reduce((sum, vec) => sum + vec[2] * vec[2], 0);
-        const P34 = satVecs.reduce((sum, vec) => sum + vec[2], 0);
-        const P44 = satVecs.length;
-        for (let i = 0; i < satVecs.length; i++) {
-            this.vecHeap.free(satVecs[i]);
-        }
+        const P11 = los.reduce(GPSSatComputer.covarMultiplyFuncs[0][0], 0);
+        const P12 = los.reduce(GPSSatComputer.covarMultiplyFuncs[0][1], 0);
+        const P13 = los.reduce(GPSSatComputer.covarMultiplyFuncs[0][2], 0);
+        const P14 = los.reduce(GPSSatComputer.covarMultiplyFuncs[0][3], 0);
+        const P22 = los.reduce(GPSSatComputer.covarMultiplyFuncs[1][0], 0);
+        const P23 = los.reduce(GPSSatComputer.covarMultiplyFuncs[1][1], 0);
+        const P24 = los.reduce(GPSSatComputer.covarMultiplyFuncs[1][2], 0);
+        const P33 = los.reduce(GPSSatComputer.covarMultiplyFuncs[2][0], 0);
+        const P34 = los.reduce(GPSSatComputer.covarMultiplyFuncs[2][1], 0);
+        const P44 = los.length;
         // Perform block-wise inversion of LᵀL (which is 4x4, so neatly decomposes into four 2x2 matrices) with optimizations
         // presented in Ingemarsson, C and Gustafsson O, 2015.
         // P = [A  B]
         //     [Bᵀ D]
         // C = P⁻¹ = [E  F]
         //           [Fᵀ H]
-        // Since we only care about the variance terms along the diagonal of C, we can skip calculating F.
         // V = A⁻¹ (A is symmetric, therefore V is also symmetric, so we only need to compute the upper triangular part)
         const detA = 1 / (P11 * P22 - P12 * P12);
         const V11 = P22 * detA;
@@ -22293,49 +23239,114 @@ class GPSSatComputer {
         const H11 = Hi22 * detHi;
         const H12 = -Hi12 * detHi;
         const H22 = Hi11 * detHi;
-        // Z = XH
+        // Z = XH, F = -Z
         const Z11 = X11 * H11 + X12 * H12;
         const Z12 = X11 * H12 + X12 * H22;
         const Z21 = X21 * H11 + X22 * H12;
         const Z22 = X21 * H12 + X22 * H22;
-        // E = V + ZXᵀ (We can skip calculating E12 and E21 since we only care about the diagonal)
+        // E = V + ZXᵀ (E is symmetric, so we only need to compute the upper triangular part)
         const E11 = V11 + Z11 * X11 + Z12 * X12;
+        const E12 = V12 + Z11 * X21 + Z12 * X22;
         const E22 = V22 + Z21 * X21 + Z22 * X22;
-        // Grab the variance terms var(x), var(y), var(z) along the diagonal of C
-        const varX = E11;
-        const varY = E22;
-        const varZ = H11;
-        if (!isFinite(varX) || !isFinite(varY) || !isFinite(varZ)) {
+        out[0][0] = E11;
+        out[0][1] = E12;
+        out[0][2] = -Z11;
+        out[0][3] = -Z12;
+        out[1][0] = E12; // E is symmetric, so E21 = E12
+        out[1][1] = E22;
+        out[1][2] = -Z21;
+        out[1][3] = -Z22;
+        out[2][0] = -Z11;
+        out[2][1] = -Z21;
+        out[2][2] = H11;
+        out[2][3] = H12;
+        out[3][0] = -Z12;
+        out[3][1] = -Z22;
+        out[3][2] = H12; // H is symmetric, so H21 = H12
+        out[3][3] = H22;
             return out;
         }
-        const horizSumVar = varX + varY;
-        const pdop = Math.sqrt(horizSumVar + varZ);
-        const hdop = Math.sqrt(horizSumVar);
-        const vdop = Math.sqrt(varZ);
-        return Vec3Math.set(pdop, hdop, vdop, out);
+        /**
+     * Calculates the transpose of the `S` matrix in the downdate satellite selection algorithm for a satellite
+     * constellation. The index of a satellite's corresponding row in the `Sᵀ` matrix matches the index of its position
+     * vector in the provided line-of-sight position matrix.
+     * @param los The line-of-sight position matrix for the satellite constellation.
+     * @param covar The position-covariance matrix for the satellite constellation.
+     * @param out The matrix to which to write the result.
+     * @returns The transpose of the `S` matrix in the downdate satellite selection algorithm for the specified satellite
+     * constellation.
+     */
+    static calculateDowndateSTranspose(los, covar, out) {
+        for (let i = 0; i < los.length; i++) {
+            for (let j = 0; j < 4; j++) {
+                out[i][j] = 0;
+                for (let k = 0; k < 4; k++) {
+                    out[i][j] += los[i][k] * covar[k][j];
+                }
+            }
+        }
+        return out;
     }
     /**
-     * Sets this system's dilution of precision values, and if they are different from the current values, publishes the
-     * new values to the event bus.
-     * @param pdop The position DOP value to set.
-     * @param hdop The horizontal DOP value to set.
-     * @param vdop The vertical DOP valu to set.
+     * Calculates the diagonal of the `P` matrix in the downdate satellite selection algorithm for a satellite
+     * constellation.
+     * @param los The line-of-sight position matrix for the satellite constellation.
+     * @param sTranspose The transpose of the `S` matrix in the downdate satellite selection algorithm for the satellite
+     * constellation.
+     * @param out The vector to which to write the result.
+     * @returns The diagonal of the `P` matrix in the downdate satellite selection algorithm for the specified satellite
+     * constellation.
      */
-    setDop(pdop, hdop, vdop) {
-        if (this._pdop !== pdop) {
-            this._pdop = pdop;
-            this.publisher.pub(this.pdopTopic, pdop, false, true);
+    static calculateDowndatePDiag(los, sTranspose, out) {
+        out.fill(1);
+        for (let i = 0; i < los.length; i++) {
+            for (let j = 0; j < 4; j++) {
+                out[i] -= sTranspose[i][j] * los[i][j];
+            }
         }
-        if (this._hdop !== hdop) {
-            this._hdop = hdop;
-            this.publisher.pub(this.hdopTopic, hdop, false, true);
-        }
-        if (this._vdop !== vdop) {
-            this._vdop = vdop;
-            this.publisher.pub(this.vdopTopic, vdop, false, true);
-        }
+        return out;
     }
-}
+    /**
+     * Calculates the costs of removing each satellite from a constellation. The cost of removing a satellite is defined
+     * as the amount by which `PDOP²` will increase when the satellite is removed relative to the full constellation. The
+     * index of a satellite's cost in the returned array matches the index of the satellite's corresponding row in the
+     * provided `Sᵀ` matrix.
+     * @param sTranspose The transpose of the `S` matrix in the downdate satellite selection algorithm for the satellite
+     * constellation.
+     * @param pDiag The diagonal of the `P` matrix in the downdate satellite selection algorithm for the satellite
+     * constellation.
+     * @param out The array to which to write the results.
+     * @returns The costs of removing each satellite from a constellation.
+     */
+    static calculateSatelliteCosts(sTranspose, pDiag, out) {
+        out.length = sTranspose.length;
+        for (let i = 0; i < sTranspose.length; i++) {
+            out[i] = (sTranspose[i][0] * sTranspose[i][0] + sTranspose[i][1] * sTranspose[i][1] + sTranspose[i][2] * sTranspose[i][2]) / pDiag[i];
+        }
+        return out;
+    }
+        }
+GPSSatComputer.EPHEMERIS_COLLECTED_SATELLITE_STATES = new Set([GPSSatelliteState.DataCollected, GPSSatelliteState.InUse, GPSSatelliteState.InUseDiffApplied]);
+GPSSatComputer.inUseSatelliteFilter = (sat) => {
+    const state = sat.state.get();
+    return state === GPSSatelliteState.InUse || state === GPSSatelliteState.InUseDiffApplied;
+};
+GPSSatComputer.readySatelliteFilter = (sat) => {
+    const state = sat.state.get();
+    return state === GPSSatelliteState.DataCollected || state === GPSSatelliteState.InUse || state === GPSSatelliteState.InUseDiffApplied;
+};
+GPSSatComputer.createVec4 = () => new Float64Array(4);
+GPSSatComputer.COLLECTING_DATA_SATELLITE_STATES = new Set([
+    GPSSatelliteState.Acquired,
+    GPSSatelliteState.DataCollected,
+    GPSSatelliteState.InUse,
+    GPSSatelliteState.InUseDiffApplied
+]);
+GPSSatComputer.covarMultiplyFuncs = [
+    [0, 1, 2, 3].map(col => (sum, vec) => sum + vec[0] * vec[col]),
+    [1, 2, 3].map(col => (sum, vec) => sum + vec[1] * vec[col]),
+    [2, 3].map(col => (sum, vec) => sum + vec[2] * vec[col])
+];
 /**
  * A tracked GPS satellite.
  */
@@ -22345,13 +23356,13 @@ class GPSSatellite {
      * @param prn The GPS PRN number for this satellite.
      * @param sbasGroup Whether or not this satellite is a SBAS satellite.
      * @param ephemeris The ephemeris data to use for position calculation.
+     * @param timingOptions Options with which to configure the timing of this satellite's state changes.
      */
-    constructor(prn, sbasGroup, ephemeris) {
+    constructor(prn, sbasGroup, ephemeris, timingOptions) {
         this.prn = prn;
         this.sbasGroup = sbasGroup;
         this.ephemeris = ephemeris;
-        this.stateChangeTime = (5 + (10 * Math.random())) * 1000;
-        this.stateChangeTimeRemaining = 0;
+        this.timingOptions = timingOptions;
         this.vec3Cache = [new Float64Array(3), new Float64Array(3), new Float64Array(3), new Float64Array(3), new Float64Array(3)];
         /** The current satellite state. */
         this.state = Subject.create(GPSSatelliteState.None);
@@ -22361,8 +23372,36 @@ class GPSSatellite {
         this.positionCartesian = Vec3Subject.create(new Float64Array(3));
         /** The current satellite signal strength. */
         this.signalStrength = Subject.create(0);
-        this.isApplyingDiffCorrections = false;
+        this.isTracked = false;
         this.hasComputedPosition = false;
+        this._lastEphemerisTime = undefined;
+        this._lastUnreachableTime = undefined;
+        this._areDiffCorrectionsDownloaded = false;
+        this.timeSpentAcquiring = undefined;
+        this.timeToAcquire = undefined;
+        this.timeToDownloadEphemeris = undefined;
+        this.timeToDownloadCorrections = undefined;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * The most recent simulation time at which this satellite's ephemeris was downloaded, as a Javascript timestamp, or
+     * `undefined` if this satellite's ephemeris has not yet been downloaded.
+     */
+    get lastEphemerisTime() {
+        return this._lastEphemerisTime;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * The most recent simulation time at which this satellite was confirmed to be unreachable, as a Javascript
+     * timestamp, or `undefined` if this satellite has not been confirmed to be unreachable.
+     */
+    get lastUnreachableTime() {
+        return this._lastUnreachableTime;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /** Whether SBAS differential correction data have been downloaded from this satellite. */
+    get areDiffCorrectionsDownloaded() {
+        return this._areDiffCorrectionsDownloaded;
     }
     /**
      * Computes the current satellite positions given the loaded ephemeris data.
@@ -22487,33 +23526,99 @@ class GPSSatellite {
         return Math.acos(6378100 / (6378100 + Math.max(altitude, 0)));
     }
     /**
-     * Updates the state of the satellite.
-     * @param deltaTime The amount of sim time that has passed, in milliseconds.
-     * @param applyDiffCorrections Whether or not to apply differential corrections to this GPS satellite.
-     * @param forceAcquireAndUse Whether to force this satellite to the highest possible use state
-     * ({@link GPSSatelliteState.Acquired} if this is an SBAS satellite or {@link GPSSatelliteState.InUse}/
-     * {@link GPSSatelliteState.InUseDiffApplied} if this is a GPS satellite) if signal strength is sufficient.
-     * @returns True if the satellite state changed, false otherwise.
+     * Checks whether this satellite's cached ephemeris data is valid at a given simulation time.
+     * @param simTime The simulation time at which to check for ephemeris validity, as a Javascript timestamp.
+     * @returns Whether this satellite's cached ephemeris data is valid at the specified simulation time.
      */
-    updateState(deltaTime, applyDiffCorrections, forceAcquireAndUse) {
-        const reachable = this.signalStrength.get() > 0.05;
-        if (this.stateChangeTimeRemaining >= 0) {
-            this.stateChangeTimeRemaining -= deltaTime;
+    isCachedEphemerisValid(simTime) {
+        return this._lastEphemerisTime !== undefined && Math.abs(simTime - this._lastEphemerisTime) < this.timingOptions.ephemerisExpireTime;
+    }
+    /**
+     * Erases this satellite's cached ephemeris data.
+     */
+    eraseCachedEphemeris() {
+        this._lastEphemerisTime = undefined;
+    }
+    /**
+     * Sets whether this satellite is being tracked by a receiver channel.
+     * @param tracked Whether this satellite is being tracked by a receiver channel.
+     */
+    setTracked(tracked) {
+        if (this.isTracked === tracked) {
+            return;
         }
-        if (forceAcquireAndUse) {
-            this.isApplyingDiffCorrections = applyDiffCorrections;
-            const state = this.state.get();
+        this.isTracked = tracked;
+        this.timeSpentAcquiring = undefined;
+        this.timeToAcquire = undefined;
+        this.timeToDownloadEphemeris = undefined;
+        this._areDiffCorrectionsDownloaded = false;
+        this.timeToDownloadCorrections = undefined;
+        if (tracked || this.state.get() !== GPSSatelliteState.Unreachable) {
+            this.state.set(GPSSatelliteState.None);
+        }
+    }
+    /**
+     * Updates the state of the satellite.
+     * @param simTime The current simulation time, as a Javascript timestamp.
+     * @param deltaTime The amount of sim time that has elapsed since the last update, in milliseconds.
+     * @param distanceFromLastKnownPos The distance, in great-arc radians, from the airplane's current actual position to
+     * its last known position.
+     * @param forceAcquireAndUse Whether to force this satellite to the highest possible use state
+     * ({@link GPSSatelliteState.DataCollected}) if signal strength is sufficient.
+     * @returns Whether this satellite's state changed as a result of the update.
+     */
+    updateState(simTime, deltaTime, distanceFromLastKnownPos, forceAcquireAndUse) {
+        const stateChanged = this.isTracked
+            ? this.updateStateTracked(simTime, deltaTime, distanceFromLastKnownPos, forceAcquireAndUse)
+            : this.updateStateUntracked(simTime);
+        switch (this.state.get()) {
+            case GPSSatelliteState.Unreachable:
+                if (this.isTracked) {
+                    this._lastUnreachableTime = simTime;
+                }
+                break;
+            case GPSSatelliteState.DataCollected:
+            case GPSSatelliteState.InUse:
+            case GPSSatelliteState.InUseDiffApplied:
+                this._lastEphemerisTime = simTime;
+                break;
+        }
+        return stateChanged;
+    }
+    /**
+     * Updates the state of the satellite while it is being tracked.
+     * @param simTime The current simulation time, as a Javascript timestamp.
+     * @param deltaTime The amount of sim time that has elapsed since the last update, in milliseconds.
+     * @param distanceFromLastKnownPos The distance, in great-arc radians, from the airplane's current actual position to
+     * its last known position.
+     * @param forceAcquireAndUse Whether to force this satellite to the highest possible use state
+     * ({@link GPSSatelliteState.DataCollected}) if signal strength is sufficient.
+     * @returns Whether this satellite's state changed as a result of the update.
+     */
+    updateStateTracked(simTime, deltaTime, distanceFromLastKnownPos, forceAcquireAndUse) {
+        const reachable = this.signalStrength.get() > 0.05;
+                if (forceAcquireAndUse) {
+                        const state = this.state.get();
             if (reachable) {
-                const targetState = this.sbasGroup === undefined
-                    ? applyDiffCorrections ? GPSSatelliteState.InUseDiffApplied : GPSSatelliteState.InUse
-                    : GPSSatelliteState.Acquired;
-                if (state !== targetState) {
-                    this.state.set(targetState);
+                if (this.sbasGroup !== undefined) {
+                    this._areDiffCorrectionsDownloaded = true;
+                    this.timeToDownloadCorrections = undefined;
+                }
+                if (state !== GPSSatelliteState.DataCollected) {
+                    this.timeSpentAcquiring = undefined;
+                    this.timeToAcquire = undefined;
+                    this.timeToDownloadEphemeris = undefined;
+                    this.state.set(GPSSatelliteState.DataCollected);
                     return true;
                 }
             }
             else {
                 if (state !== GPSSatelliteState.Unreachable) {
+                    this.timeSpentAcquiring = undefined;
+                    this.timeToAcquire = undefined;
+                    this.timeToDownloadEphemeris = undefined;
+                    this._areDiffCorrectionsDownloaded = false;
+                    this.timeToDownloadCorrections = undefined;
                     this.state.set(GPSSatelliteState.Unreachable);
                     return true;
                 }
@@ -22522,70 +23627,104 @@ class GPSSatellite {
         else {
             switch (this.state.get()) {
                 case GPSSatelliteState.None:
+                    if (this.timeSpentAcquiring === undefined) {
+                        this.timeSpentAcquiring = 0;
+                    }
+                    this.timeSpentAcquiring += deltaTime;
                     if (reachable) {
+                        if (this.timeToAcquire === undefined) {
+                            this.timeToAcquire = distanceFromLastKnownPos < 5.80734e-4 /* 2 nautical miles */ && this.isCachedEphemerisValid(simTime)
+                                ? this.timingOptions.acquisitionTimeWithEphemeris + (Math.random() - 0.5) * this.timingOptions.acquisitionTimeRangeWithEphemeris
+                                : this.timingOptions.acquisitionTime + (Math.random() - 0.5) * this.timingOptions.acquisitionTimeRange;
+                        }
+                        this.timeToAcquire -= deltaTime;
+                        if (this.timeToAcquire <= 0) {
+                            this.timeSpentAcquiring = undefined;
+                            this.timeToAcquire = undefined;
+                            // If we have valid cached ephemeris data for this satellite, then we can use the cached data for
+                            // calculating position solutions immediately instead of having to wait to download new ephemeris data.
+                            if (this.isCachedEphemerisValid(simTime)) {
+                                this.state.set(GPSSatelliteState.DataCollected);
+                            }
+                            else {
                         this.state.set(GPSSatelliteState.Acquired);
-                        this.stateChangeTimeRemaining = this.stateChangeTime;
+                        }
                         return true;
                     }
+                }
                     else {
-                        this.state.set(GPSSatelliteState.Unreachable);
-                        this.stateChangeTimeRemaining = this.stateChangeTime;
-                        return true;
+                        this.timeToAcquire = undefined;
+                        if (this.timeSpentAcquiring >= this.timingOptions.acquisitionTimeout) {
+                            this.timeSpentAcquiring = undefined;
+                            this.state.set(GPSSatelliteState.Unreachable);
+                            return true;
+                        }
                     }
+                    break;
                 case GPSSatelliteState.Unreachable:
-                    if (reachable) {
-                        this.state.set(GPSSatelliteState.Acquired);
-                        this.stateChangeTimeRemaining = this.stateChangeTime;
-                        return true;
+                    if (this._lastUnreachableTime === undefined) {
+                        this._lastUnreachableTime = simTime;
+                    }
+                    else if (Math.abs(simTime - this._lastUnreachableTime) >= this.timingOptions.unreachableExpireTime) {
+                        this._lastUnreachableTime = undefined;
+                        this.state.set(GPSSatelliteState.None);
+                                                return true;
                     }
                     break;
                 case GPSSatelliteState.Acquired:
                     if (!reachable) {
-                        this.state.set(GPSSatelliteState.Unreachable);
+                        this.timeToDownloadEphemeris = undefined;
+                        this._areDiffCorrectionsDownloaded = false;
+                        this.timeToDownloadCorrections = undefined;
+                        this.state.set(GPSSatelliteState.None);
                         return true;
                     }
-                    else if (this.stateChangeTimeRemaining <= 0 && this.sbasGroup === undefined) {
-                        this.state.set(GPSSatelliteState.DataCollected);
-                        this.stateChangeTimeRemaining = this.stateChangeTime;
-                        return true;
+                    else {
+                        if (this.timeToDownloadEphemeris === undefined) {
+                            this.timeToDownloadEphemeris = this.sbasGroup === undefined
+                                ? this.timingOptions.ephemerisDownloadTime
+                                : this.timingOptions.sbasEphemerisDownloadTime + (Math.random() - 0.5) * this.timingOptions.sbasEphemerisDownloadTimeRange;
+                        }
+                        this.timeToDownloadEphemeris -= deltaTime;
+                        this.updateSbasCorrectionsDownload(deltaTime);
+                        if (this.timeToDownloadEphemeris <= 0) {
+                            this.timeToDownloadEphemeris = undefined;
+                            this.state.set(GPSSatelliteState.DataCollected);
+                            return true;
+                        }
                     }
                     break;
                 case GPSSatelliteState.DataCollected:
-                    if (!reachable) {
-                        this.state.set(GPSSatelliteState.Unreachable);
+                    if (!reachable) {                   
+                    this._areDiffCorrectionsDownloaded = false;
+                        this.timeToDownloadCorrections = undefined;
+                        this.state.set(GPSSatelliteState.None);
                         return true;
                     }
-                    else if (this.stateChangeTimeRemaining <= 0) {
-                        this.state.set(GPSSatelliteState.InUse);
-                        this.stateChangeTimeRemaining = this.stateChangeTime;
-                        return true;
+                    else {
+                        this.updateSbasCorrectionsDownload(deltaTime);
                     }
                     break;
                 case GPSSatelliteState.InUse:
                     if (!reachable) {
-                        this.state.set(GPSSatelliteState.Unreachable);
+                        this._areDiffCorrectionsDownloaded = false;
+                        this.timeToDownloadCorrections = undefined;
+                        this.state.set(GPSSatelliteState.None);
                         return true;
                     }
-                    else if (applyDiffCorrections) {
-                        if (this.isApplyingDiffCorrections && this.stateChangeTimeRemaining <= 0) {
-                            this.state.set(GPSSatelliteState.InUseDiffApplied);
-                            return true;
-                        }
-                        else if (!this.isApplyingDiffCorrections) {
-                            this.isApplyingDiffCorrections = true;
-                            this.stateChangeTimeRemaining = this.stateChangeTime;
-                        }
+                    else {
+                        this.updateSbasCorrectionsDownload(deltaTime);
                     }
                     break;
                 case GPSSatelliteState.InUseDiffApplied:
                     if (!reachable) {
-                        this.state.set(GPSSatelliteState.Unreachable);
+                        this._areDiffCorrectionsDownloaded = false;
+                        this.timeToDownloadCorrections = undefined;
+                        this.state.set(GPSSatelliteState.None);
                         return true;
                     }
-                    else if (!applyDiffCorrections) {
-                        this.isApplyingDiffCorrections = false;
-                        this.state.set(GPSSatelliteState.InUse);
-                        return true;
+                    else {
+                        this.updateSbasCorrectionsDownload(deltaTime);
                     }
                     break;
             }
@@ -22593,13 +23732,67 @@ class GPSSatellite {
         return false;
     }
     /**
-     * Forces an update of this satellite's state to a specific value.
-     * @param state The state to which to update this satellite.
-     * @returns Whether the satellite's state was changed as a result of the forced update.
+* Updates the download state of SBAS differential corrections from this satellite.
+     * @param deltaTime The amount of sim time that has elapsed since the last update, in milliseconds.
      */
-    forceUpdateState(state) {
-        this.stateChangeTimeRemaining = 0;
-        this.isApplyingDiffCorrections = state === GPSSatelliteState.InUseDiffApplied;
+    updateSbasCorrectionsDownload(deltaTime) {
+        if (this.sbasGroup === undefined || this._areDiffCorrectionsDownloaded) {
+            return;
+        }
+        if (this.timeToDownloadCorrections === undefined) {
+            this.timeToDownloadCorrections = this.timingOptions.sbasCorrectionDownloadTime + (Math.random() - 0.5) * this.timingOptions.sbasCorrectionDownloadTimeRange;
+        }
+        this.timeToDownloadCorrections -= deltaTime;
+        if (this.timeToDownloadCorrections <= 0) {
+            this._areDiffCorrectionsDownloaded = true;
+            this.timeToDownloadCorrections = undefined;
+        }
+    }
+    /**
+     * Updates the state of the satellite while it is not being tracked.
+     * @param simTime The current simulation time, as a Javascript timestamp.
+     * @returns Whether this satellite's state changed as a result of the update.
+     */
+    updateStateUntracked(simTime) {
+        if (this.state.get() === GPSSatelliteState.Unreachable) {
+            if (this._lastUnreachableTime === undefined) {
+                this._lastUnreachableTime = simTime;
+            }
+            else if (Math.abs(simTime - this._lastUnreachableTime) >= this.timingOptions.unreachableExpireTime) {
+                this._lastUnreachableTime = undefined;
+                this.state.set(GPSSatelliteState.None);
+                return true;
+            }
+        }
+        return false;
+    }
+    /**
+     * Forces an update of this satellite's state to a specific value.
+     * @param simTime The current simulation time, as a Javascript timestamp.
+     * @param state The state to which to update this satellite.
+     * @returns Whether this satellite's state changed as a result of the update.
+     */
+    forceUpdateState(simTime, state) {
+        switch (state) {
+            case GPSSatelliteState.Unreachable:
+                this.timeSpentAcquiring = undefined;
+                this.timeToAcquire = undefined;
+                if (this.isTracked) {
+                    this._lastUnreachableTime = simTime;
+                }
+            // fallthrough
+            case GPSSatelliteState.None:
+                this.timeToDownloadEphemeris = undefined;
+                this._areDiffCorrectionsDownloaded = false;
+                this.timeToDownloadCorrections = undefined;
+                break;
+            case GPSSatelliteState.DataCollected:
+            case GPSSatelliteState.InUse:
+            case GPSSatelliteState.InUseDiffApplied:
+                this.timeToDownloadEphemeris = undefined;
+                this._lastEphemerisTime = simTime;
+                break;
+        }
         if (this.state.get() !== state) {
             this.state.set(state);
             return true;
@@ -22608,53 +23801,52 @@ class GPSSatellite {
             return false;
         }
     }
+    /**
+     * Updates whether this satellite is being used to calculate a position solution.
+     * @param inUse Whether the satellite is being used to calculate a position solution.
+     * @returns Whether this satellite's state changed as a result of the update.
+     */
+    updateInUse(inUse) {
+        if (inUse) {
+            if (this.state.get() === GPSSatelliteState.DataCollected) {
+                this.state.set(GPSSatelliteState.InUse);
+                return true;
+            }
+        }
+        else {
+            switch (this.state.get()) {
+                case GPSSatelliteState.InUse:
+                case GPSSatelliteState.InUseDiffApplied:
+                    this.state.set(GPSSatelliteState.DataCollected);
+                    return true;
+            }
+        }
+        return false;
+    }
+    /**
+     * Updates whether differential corrections are applied to this satellite's ranging data when they are used to
+     * calculate a position solution.
+     * @param apply Whether differential corrections are applied.
+     * @returns Whether this satellite's state changed as a result of the update.
+     */
+    updateDiffCorrectionsApplied(apply) {
+        switch (this.state.get()) {
+            case GPSSatelliteState.InUse:
+                if (apply) {
+                    this.state.set(GPSSatelliteState.InUseDiffApplied);
+                    return true;
+                }
+                break;
+            case GPSSatelliteState.InUseDiffApplied:
+                if (!apply) {
+                    this.state.set(GPSSatelliteState.InUse);
+                    return true;
+                }
+                break;
+        }
+        return false;
+    }
 }
-/**
- * Possible state on GPS satellites.
- */
-var GPSSatelliteState;
-(function (GPSSatelliteState) {
-    /** There is no current valid state. */
-    GPSSatelliteState["None"] = "None";
-    /** The satellite is out of view and cannot be reached. */
-    GPSSatelliteState["Unreachable"] = "Unreachable";
-    /** The satellite has been found and data is being downloaded. */
-    GPSSatelliteState["Acquired"] = "Acquired";
-    /** The satellite is faulty. */
-    GPSSatelliteState["Faulty"] = "Faulty";
-    /** The satellite has been found, data is downloaded, but is not presently used in the GPS solution. */
-    GPSSatelliteState["DataCollected"] = "DataCollected";
-    /** The satellite is being active used in the GPS solution. */
-    GPSSatelliteState["InUse"] = "InUse";
-    /** The satellite is being active used in the GPS solution and SBAS differential corrections are being applied. */
-    GPSSatelliteState["InUseDiffApplied"] = "InUseDiffApplied";
-})(GPSSatelliteState || (GPSSatelliteState = {}));
-/**
- * Possible {@link GPSSatComputer} states.
- */
-var GPSSystemState;
-(function (GPSSystemState) {
-    /** The GPS receiver is trying to locate satellites. */
-    GPSSystemState["Searching"] = "Searching";
-    /** The GPS receiver has found satellites and is acquiring a solution. */
-    GPSSystemState["Acquiring"] = "Acquiring";
-    /** A 3D solution has been acquired. */
-    GPSSystemState["SolutionAcquired"] = "SolutionAcquired";
-    /** A 3D solution using differential computations has been acquired. */
-    GPSSystemState["DiffSolutionAcquired"] = "DiffSolutionAcquired";
-})(GPSSystemState || (GPSSystemState = {}));
-/**
- * Possible SBAS connection states.
- */
-var GPSSystemSBASState;
-(function (GPSSystemSBASState) {
-    /** SBAS is disabled. */
-    GPSSystemSBASState["Disabled"] = "Disabled";
-    /** SBAS is enabled but not receiving differential corrections. */
-    GPSSystemSBASState["Inactive"] = "Inactive";
-    /** SBAS is enabled and is receiving differential corrections. */
-    GPSSystemSBASState["Active"] = "Active";
-})(GPSSystemSBASState || (GPSSystemSBASState = {}));
 
 /// <reference types="@microsoft/msfs-types/pages/vcockpit/instruments/shared/baseinstrument" />
 /**
@@ -23909,7 +25101,8 @@ var FSComponent;
         'rect': true,
         'stop': true,
         'svg': true,
-        'text': true
+        'text': true,
+        'tspan': true,
     };
     /**
      * A fragment of existing elements with no specific root.
@@ -24709,7 +25902,7 @@ class BingComponent extends DisplayComponent {
         this.positionRadiusInhibitTimer = new DebounceTimer();
         this.processPendingPositionRadius = () => {
             if (this.isPositionRadiusPending) {
-                Coherent.call('SET_MAP_PARAMS', this.uid, this.pos, this.radius, 1);
+                Coherent.call('SET_MAP_PARAMS', this.uid, this.pos, this.radius);
             }
             if (--this.positionRadiusInhibitFramesRemaining > 0) {
                 this.positionRadiusInhibitTimer.schedule(this.processPendingPositionRadius, 0);
@@ -24751,7 +25944,7 @@ class BingComponent extends DisplayComponent {
                 // Only when not SVT, send in initial map params (even if we are asleep), because a bing instance that doesn't
                 // have params initialized causes GPU perf issues.
                 if (this.modeFlags !== 4) {
-                    Coherent.call('SET_MAP_PARAMS', this.uid, this.pos, this.radius, 1);
+                    Coherent.call('SET_MAP_PARAMS', this.uid, this.pos, this.radius);
                 }
                 this.props.onBoundCallback && this.props.onBoundCallback(this);
             }
@@ -24903,7 +26096,7 @@ class BingComponent extends DisplayComponent {
                 this.isPositionRadiusPending = true;
             }
             else {
-                Coherent.call('SET_MAP_PARAMS', this.uid, this.pos, this.radius, 1);
+                Coherent.call('SET_MAP_PARAMS', this.uid, this.pos, this.radius);
             }
         }
     }
@@ -26384,1782 +27577,814 @@ let LayerEntry$1 = class LayerEntry {
 };
 
 /**
- * A base component for map layers.
+ * Parts of a flight plan leg path to render.
  */
-class MapLayer extends DisplayComponent {
+var FlightPathLegRenderPart;
+(function (FlightPathLegRenderPart) {
+    /** None. */
+    FlightPathLegRenderPart[FlightPathLegRenderPart["None"] = 0] = "None";
+    /** The ingress transition. */
+    FlightPathLegRenderPart[FlightPathLegRenderPart["Ingress"] = 1] = "Ingress";
+    /** The base path. */
+    FlightPathLegRenderPart[FlightPathLegRenderPart["Base"] = 2] = "Base";
+    /** The egress transition. */
+    FlightPathLegRenderPart[FlightPathLegRenderPart["Egress"] = 4] = "Egress";
+    /** The entire leg path. */
+    FlightPathLegRenderPart[FlightPathLegRenderPart["All"] = 7] = "All";
+})(FlightPathLegRenderPart || (FlightPathLegRenderPart = {}));
+/**
+ * Renders flight plan leg paths one vector at a time, optionally excluding the ingress and/or egress transition
+ * vectors.
+ */
+class AbstractFlightPathLegRenderer {
     constructor() {
-        super(...arguments);
-        this._isVisible = true;
+        this.tempVector = FlightPathUtils.createEmptyCircleVector();
     }
     /**
-     * Checks whether this layer is visible.
-     * @returns whether this layer is visible.
+     * Renders a flight plan leg path to a canvas.
+     * @param leg The flight plan leg to render.
+     * @param context The canvas 2D rendering context to which to render.
+     * @param streamStack The path stream stack to which to render.
+     * @param partsToRender The parts of the leg to render, as a combination of {@link FlightPathLegRenderPart}
+     * values.
+     * @param args Additional arguments.
      */
-    isVisible() {
-        return this._isVisible;
-    }
-    /**
-     * Sets this layer's visibility.
-     * @param val Whether this layer should be visible.
-     */
-    setVisible(val) {
-        if (this._isVisible === val) {
+    render(leg, context, streamStack, partsToRender, ...args) {
+        const legCalc = leg.calculated;
+        if (!legCalc || !BitFlags.isAny(partsToRender, FlightPathLegRenderPart.Ingress | FlightPathLegRenderPart.Base | FlightPathLegRenderPart.Egress)) {
             return;
         }
-        this._isVisible = val;
-        this.onVisibilityChanged(val);
-    }
-    /**
-     * This method is called when this layer's visibility changes.
-     * @param isVisible Whether the layer is now visible.
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    onVisibilityChanged(isVisible) {
-        // noop
-    }
-    /**
-     * This method is called when this layer is attached to its parent map component.
-     */
-    onAttached() {
-        // noop
-    }
-    /**
-     * This method is called when this layer's parent map is woken.
-     */
-    onWake() {
-        // noop
-    }
-    /**
-     * This method is called when this layer's parent map is put to sleep.
-     */
-    onSleep() {
-        // noop
-    }
-    /**
-     * This method is called when the map projection changes.
-     * @param mapProjection - this layer's map projection.
-     * @param changeFlags The types of changes made to the projection.
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    onMapProjectionChanged(mapProjection, changeFlags) {
-        // noop
-    }
-    /**
-     * This method is called once every map update cycle.
-     * @param time The current time as a UNIX timestamp.
-     * @param elapsed The elapsed time, in milliseconds, since the last update.
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    onUpdated(time, elapsed) {
-        // noop
-    }
-    /**
-     * This method is called when this layer is detached from its parent map component.
-     */
-    onDetached() {
-        // noop
-    }
-}
-
-/**
- * The different types of map projection changes.
- */
-var MapProjectionChangeType;
-(function (MapProjectionChangeType) {
-    MapProjectionChangeType[MapProjectionChangeType["Target"] = 1] = "Target";
-    MapProjectionChangeType[MapProjectionChangeType["Center"] = 2] = "Center";
-    MapProjectionChangeType[MapProjectionChangeType["TargetProjected"] = 4] = "TargetProjected";
-    MapProjectionChangeType[MapProjectionChangeType["Range"] = 8] = "Range";
-    MapProjectionChangeType[MapProjectionChangeType["RangeEndpoints"] = 16] = "RangeEndpoints";
-    MapProjectionChangeType[MapProjectionChangeType["ScaleFactor"] = 32] = "ScaleFactor";
-    MapProjectionChangeType[MapProjectionChangeType["Rotation"] = 64] = "Rotation";
-    MapProjectionChangeType[MapProjectionChangeType["ProjectedSize"] = 128] = "ProjectedSize";
-    MapProjectionChangeType[MapProjectionChangeType["ProjectedResolution"] = 256] = "ProjectedResolution";
-})(MapProjectionChangeType || (MapProjectionChangeType = {}));
-/**
- * A geographic projection model for a map. MapProjection uses a mercator projection.
- */
-class MapProjection {
-    /**
-     * Creates a new map projection.
-     * @param projectedWidth The initial width of the projection window, in pixels.
-     * @param projectedHeight The initial height of the projection window, in pixels.
-     */
-    constructor(projectedWidth, projectedHeight) {
-        // settable parameters
-        this.target = new GeoPoint(0, 0);
-        this.targetProjectedOffset = new Float64Array(2);
-        this.targetProjected = new Float64Array(2);
-        this.range = 1; // great-arc radians
-        this.rangeEndpoints = new Float64Array([0.5, 0, 0.5, 1]); // [relX1, relY1, relX2, relY2]
-        this.projectedSize = new Float64Array(2);
-        // computed parameters
-        this.center = new GeoPoint(0, 0);
-        this.centerProjected = new Float64Array(2);
-        this.projectedRange = 0; // projected distance between the range endpoints in pixels
-        this.widthRange = 0; // great-arc radians
-        this.heightRange = 0; // great-arc radians
-        this.oldParameters = {
-            target: new GeoPoint(0, 0),
-            center: new GeoPoint(0, 0),
-            targetProjected: new Float64Array(2),
-            range: 1,
-            rangeEndpoints: new Float64Array(4),
-            scaleFactor: 1,
-            rotation: 0,
-            projectedSize: new Float64Array(2),
-            projectedResolution: 0
-        };
-        this.queuedParameters = Object.assign({}, this.oldParameters);
-        this.updateQueued = false;
-        this.changeListeners = [];
-        Vec2Math.set(projectedWidth, projectedHeight, this.projectedSize);
-        this.geoProjection = new MercatorProjection();
-        Vec2Math.set(projectedWidth / 2, projectedHeight / 2, this.centerProjected);
-        this.targetProjected.set(this.centerProjected);
-        this.geoProjection.setReflectY(true).setTranslation(this.centerProjected);
-        this.recompute();
-    }
-    /**
-     * Gets this map projection's GeoProjection instance.
-     * @returns This map projection's GeoProjection instance.
-     */
-    getGeoProjection() {
-        return this.geoProjection;
-    }
-    /**
-     * Gets the target geographic point of this projection. The target is guaranteed to be projected to a specific
-     * point in the projected window defined by the center of the window plus the target projected offset.
-     * @returns The target geographic point of this projection.
-     */
-    getTarget() {
-        return this.target.readonly;
-    }
-    /**
-     * Gets the projected offset from the center of the projected window of the target of this projection.
-     * @returns The projected offset from the center of the projected window of the target of this projection.
-     */
-    getTargetProjectedOffset() {
-        return this.targetProjectedOffset;
-    }
-    /**
-     * Gets the projected location of the target of this projection.
-     * @returns The projected location of the target of this projection.
-     */
-    getTargetProjected() {
-        return this.targetProjected;
-    }
-    /**
-     * Gets the range of this projection, in great-arc radians, as measured between the projection's two range endpoints.
-     * @returns The range of this projection, in great-arc radians.
-     */
-    getRange() {
-        return this.range;
-    }
-    /**
-     * Gets the endpoints used to measure the range of the projection, as a 4-tuple `[relX1, relY1, relX2, relY2]`. Each
-     * component is expressed in relative projected coordinates, where `0` is the left/top of the projected window, and
-     * `1` is the right/bottom of the projected window.
-     * @returns The endpoints used to measure the range of the projection, as a 4-tuple `[relX1, relY1, relX2, relY2]`.
-     */
-    getRangeEndpoints() {
-        return this.rangeEndpoints;
-    }
-    /**
-     * Gets the range of this projection, in great-arc radians, as measured from the center-left to the center-right of
-     * the projected window.
-     * @returns The range of this projection's projected window width, in great-arc radians.
-     */
-    getWidthRange() {
-        return this.widthRange;
-    }
-    /**
-     * Gets the range of this projection, in great-arc radians, as measured from the top-center to the bottom-center of
-     * the projected window.
-     * @returns The range of this projection's projected window height, in great-arc radians.
-     */
-    getHeightRange() {
-        return this.heightRange;
-    }
-    /**
-     * Gets the nominal scale factor of this projection. At a scale factor of 1, a distance of one great-arc radian will
-     * be projected to a distance of one pixel.
-     * @returns The nominal scale factor of this projection.
-     */
-    getScaleFactor() {
-        return this.geoProjection.getScaleFactor();
-    }
-    /**
-     * Gets the post-projected (planar) rotation angle of this projection in radians.
-     * @returns The post-projected rotation angle of this projection.
-     */
-    getRotation() {
-        return this.geoProjection.getPostRotation();
-    }
-    /**
-     * Gets the size of the projected window, in pixels.
-     * @returns The size of the projected window.
-     */
-    getProjectedSize() {
-        return this.projectedSize;
-    }
-    /**
-     * Gets the geographic point located at the center of this projection's projected window.
-     * @returns The geographic point located at the center of this projection's projected window.
-     */
-    getCenter() {
-        return this.center.readonly;
-    }
-    /**
-     * Gets the center of this projection's projected window.
-     * @returns The center of this projection's projected window.
-     */
-    getCenterProjected() {
-        return this.centerProjected;
-    }
-    /**
-     * Gets the average resolution, in great-arc radians per pixel, of the projected map along a line between the range
-     * endpoints.
-     * @returns The average resolution of the projected map along a line between the range endpoints.
-     */
-    getProjectedResolution() {
-        return this.range / this.projectedRange;
-    }
-    /**
-     * Calculates the true range of this projection, in great-arc radians, given a hypothetical projected center point.
-     * @param centerProjected The projected location of the hypothetical center point to use for the calculation.
-     * @returns The true range of this projection given the hypothetical projected center point.
-     */
-    calculateRangeAtCenter(centerProjected) {
-        const endpoints = this.rangeEndpoints;
-        const projectedWidth = this.projectedSize[0];
-        const projectedHeight = this.projectedSize[1];
-        const endpoint1 = MapProjection.tempVec2_3;
-        endpoint1[0] = centerProjected[0] + projectedWidth * (endpoints[0] - 0.5);
-        endpoint1[1] = centerProjected[1] + projectedHeight * (endpoints[1] - 0.5);
-        const endpoint2 = MapProjection.tempVec2_4;
-        endpoint2[0] = centerProjected[0] + projectedWidth * (endpoints[2] - 0.5);
-        endpoint2[1] = centerProjected[1] + projectedHeight * (endpoints[3] - 0.5);
-        const top = this.geoProjection.invert(endpoint1, MapProjection.tempGeoPoint_1);
-        const bottom = this.geoProjection.invert(endpoint2, MapProjection.tempGeoPoint_2);
-        return top.distance(bottom);
-    }
-    /**
-     * Recomputes this projection's computed parameters.
-     */
-    recompute() {
-        const currentTargetProjected = this.geoProjection.project(this.target, MapProjection.tempVec2_1);
-        if (!isFinite(currentTargetProjected[0] + currentTargetProjected[1])) {
-            // Check if we can potentially fix the geo projection by resetting its scale factor and center to defaults.
-            const translation = this.geoProjection.getTranslation();
-            if (isFinite(this.target.lat)
-                && isFinite(this.target.lon)
-                && isFinite(this.geoProjection.getPostRotation())
-                && isFinite(translation[0])
-                && isFinite(translation[1])) {
-                this.geoProjection.setScaleFactor(MapProjection.DEFAULT_SCALE_FACTOR);
-                this.geoProjection.setCenter(MapProjection.tempGeoPoint_1.set(0, 0));
-                this.geoProjection.setPreRotation(Vec3Math.set(0, 0, 0, MapProjection.vec3Cache[0]));
+        const excludeIngress = !BitFlags.isAll(partsToRender, FlightPathLegRenderPart.Ingress);
+        const excludeBase = !BitFlags.isAll(partsToRender, FlightPathLegRenderPart.Base);
+        const excludeEgress = !BitFlags.isAll(partsToRender, FlightPathLegRenderPart.Egress);
+        let mainVectors = legCalc.ingressToEgress;
+        let mainVectorStartIndex = 0;
+        let mainVectorEndIndex = legCalc.ingressToEgress.length;
+        if (excludeIngress || excludeEgress) {
+            mainVectors = legCalc.flightPath;
+            mainVectorEndIndex = excludeEgress || legCalc.egressJoinIndex < 0 || legCalc.egress.length === 0 ? legCalc.flightPath.length : legCalc.egressJoinIndex;
+        }
+        if (!excludeIngress) {
+            for (let i = 0; i < legCalc.ingress.length; i++) {
+                this.renderVector(legCalc.ingress[i], true, false, leg, context, streamStack, ...args);
             }
-            else {
-                return;
-            }
-        }
-        const currentCenterProjected = MapProjection.tempVec2_2;
-        currentCenterProjected.set(currentTargetProjected);
-        currentCenterProjected[0] -= this.targetProjectedOffset[0];
-        currentCenterProjected[1] -= this.targetProjectedOffset[1];
-        let currentRange = this.calculateRangeAtCenter(currentCenterProjected);
-        let ratio = currentRange / this.range;
-        if (!isFinite(ratio) || ratio === 0) {
-            return;
-        }
-        // iteratively find the appropriate scale factor (empiric testing shows this typically takes less than 4 iterations
-        // to converge)
-        let lastScaleFactor = this.geoProjection.getScaleFactor();
-        let iterCount = 0;
-        let ratioError = Math.abs(ratio - 1);
-        let deltaRatioError = MapProjection.SCALE_FACTOR_TOLERANCE + 1;
-        while (iterCount++ < MapProjection.SCALE_FACTOR_MAX_ITER
-            && ratioError > MapProjection.SCALE_FACTOR_TOLERANCE
-            && deltaRatioError > MapProjection.SCALE_FACTOR_TOLERANCE) {
-            this.geoProjection.setScaleFactor(ratio * lastScaleFactor);
-            this.geoProjection.project(this.target, currentTargetProjected);
-            currentCenterProjected.set(currentTargetProjected);
-            currentCenterProjected[0] -= this.targetProjectedOffset[0];
-            currentCenterProjected[1] -= this.targetProjectedOffset[1];
-            currentRange = this.calculateRangeAtCenter(currentCenterProjected);
-            const newRatio = currentRange / this.range;
-            const ratioDelta = newRatio - ratio;
-            // Check to see if the ratio between current range and target range is invalid, did not change, or changed in the
-            // direction opposite to what we were expecting. If so, this means that our range measurements are close to the
-            // poles and range no longer monotonically increases with decreasing scale factor and vice versa. If we continue
-            // iteration, we will likely push our scale factor to 0 or infinity. Therefore, we halt immediately and settle
-            // for using the scale factor before we applied the most recent correction.
-            if (!isFinite(ratio)
-                || ratio < 1 && ratioDelta <= 0
-                || ratio > 1 && ratioDelta >= 0) {
-                this.geoProjection.setScaleFactor(lastScaleFactor);
-            }
-            lastScaleFactor = this.geoProjection.getScaleFactor();
-            ratio = newRatio;
-            const newRatioError = Math.abs(ratio - 1);
-            deltaRatioError = Math.abs(newRatioError - ratioError);
-            ratioError = newRatioError;
-        }
-        // calculate the center point of the projection
-        this.invert(currentCenterProjected, this.center);
-        this.geoProjection.setCenter(this.center);
-        // set the projection's pre-rotation to avoid anti-meridian wrapping issues
-        const preRotation = Vec3Math.set(-this.center.lon * Avionics.Utils.DEG2RAD, 0, 0, MapProjection.vec3Cache[0]);
-        this.geoProjection.setPreRotation(preRotation);
-        const width = this.projectedSize[0];
-        const height = this.projectedSize[1];
-        this.projectedRange = Math.hypot((this.rangeEndpoints[2] - this.rangeEndpoints[0]) * width, (this.rangeEndpoints[3] - this.rangeEndpoints[1]) * height);
-        const left = Vec2Math.set(0, height / 2, MapProjection.tempVec2_1);
-        const right = Vec2Math.set(width, height / 2, MapProjection.tempVec2_2);
-        this.widthRange = this.geoDistance(left, right);
-        const top = Vec2Math.set(width / 2, 0, MapProjection.tempVec2_1);
-        const bottom = Vec2Math.set(width / 2, height, MapProjection.tempVec2_2);
-        this.heightRange = this.geoDistance(top, bottom);
-    }
-    /**
-     * Sets this projection's parameters. Parameters not explicitly defined in the parameters argument will be left
-     * unchanged.
-     * @param parameters The new parameters.
-     */
-    set(parameters) {
-        // save old values
-        this.storeParameters(this.oldParameters);
-        parameters.projectedSize && this.setProjectedSize(parameters.projectedSize);
-        parameters.target && this.target.set(parameters.target);
-        parameters.targetProjectedOffset && this.setTargetProjectedOffset(parameters.targetProjectedOffset);
-        parameters.range !== undefined && (this.range = parameters.range);
-        parameters.rangeEndpoints && this.rangeEndpoints.set(parameters.rangeEndpoints);
-        parameters.rotation !== undefined && this.geoProjection.setPostRotation(parameters.rotation);
-        let changeFlags = this.computeChangeFlags(this.oldParameters);
-        if (changeFlags !== 0) {
-            this.recompute();
-            changeFlags |= this.computeDerivedChangeFlags(this.oldParameters);
-            if (changeFlags !== 0) {
-                this.notifyChangeListeners(changeFlags);
-            }
-        }
-    }
-    /**
-     * Sets the projection parameters to be applied when applyQueued() is called.
-     * @param parameters The parameter changes to queue.
-     */
-    setQueued(parameters) {
-        Object.assign(this.queuedParameters, parameters);
-        this.updateQueued = true;
-    }
-    /**
-     * Applies the set of queued projection changes, if any are queued.
-     */
-    applyQueued() {
-        if (this.updateQueued) {
-            this.updateQueued = false;
-            this.set(this.queuedParameters);
-            for (const key in this.queuedParameters) {
-                delete this.queuedParameters[key];
-            }
-        }
-    }
-    /**
-     * Sets the size of the projected window.
-     * @param size The new size, in pixels.
-     */
-    setProjectedSize(size) {
-        this.projectedSize.set(size);
-        Vec2Math.set(size[0] / 2, size[1] / 2, this.centerProjected);
-        this.geoProjection.setTranslation(this.centerProjected);
-        Vec2Math.add(this.centerProjected, this.targetProjectedOffset, this.targetProjected);
-    }
-    /**
-     * Sets the projected offset from the center of the projected window of the target of this projection.
-     * @param offset The new offset, in pixels.
-     */
-    setTargetProjectedOffset(offset) {
-        this.targetProjectedOffset.set(offset);
-        Vec2Math.add(this.centerProjected, this.targetProjectedOffset, this.targetProjected);
-    }
-    /**
-     * Stores this projection's current parameters into a record.
-     * @param record The record in which to store the parameters.
-     */
-    storeParameters(record) {
-        record.target.set(this.target);
-        record.center.set(this.center);
-        record.targetProjected.set(this.targetProjected);
-        record.range = this.range;
-        record.rangeEndpoints.set(this.rangeEndpoints);
-        record.scaleFactor = this.geoProjection.getScaleFactor();
-        record.rotation = this.getRotation();
-        record.projectedSize.set(this.projectedSize);
-        record.projectedResolution = this.getProjectedResolution();
-    }
-    /**
-     * Computes change flags given a set of old parameters.
-     * @param oldParameters The old parameters.
-     * @returns Change flags based on the specified old parameters.
-     */
-    computeChangeFlags(oldParameters) {
-        return (oldParameters.target.equals(this.target) ? 0 : MapProjectionChangeType.Target)
-            | (Vec2Math.equals(oldParameters.targetProjected, this.targetProjected) ? 0 : MapProjectionChangeType.TargetProjected)
-            | (oldParameters.range === this.range ? 0 : MapProjectionChangeType.Range)
-            | (VecNMath.equals(oldParameters.rangeEndpoints, this.rangeEndpoints) ? 0 : MapProjectionChangeType.RangeEndpoints)
-            | (oldParameters.rotation === this.getRotation() ? 0 : MapProjectionChangeType.Rotation)
-            | (Vec2Math.equals(oldParameters.projectedSize, this.projectedSize) ? 0 : MapProjectionChangeType.ProjectedSize);
-    }
-    /**
-     * Computes change flags for derived parameters given a set of old parameters.
-     * @param oldParameters The old parameters.
-     * @returns Change flags for derived parameters based on the specified old parameters.
-     */
-    computeDerivedChangeFlags(oldParameters) {
-        return (oldParameters.center.equals(this.center) ? 0 : MapProjectionChangeType.Center)
-            | (oldParameters.scaleFactor === this.geoProjection.getScaleFactor() ? 0 : MapProjectionChangeType.ScaleFactor)
-            | (oldParameters.projectedResolution === this.getProjectedResolution() ? 0 : MapProjectionChangeType.ProjectedResolution);
-    }
-    /**
-     * Projects a set of lat/lon coordinates.
-     * @param point The point to project.
-     * @param out The vector to which to write the result.
-     * @returns The projected point, as a vector.
-     */
-    project(point, out) {
-        return this.geoProjection.project(point, out);
-    }
-    /**
-     * Inverts a set of projected coordinates. This method will determine the geographic point whose projected location
-     * is the equal to that described by a 2D position vector.
-     * @param vec The 2D position vector describing the location of the projected coordinates.
-     * @param out The point to which to write the result.
-     * @returns The inverted point.
-     */
-    invert(vec, out) {
-        return this.geoProjection.invert(vec, out);
-    }
-    /**
-     * Checks whether a point falls within certain projected bounds. The point can be specified as either a GeoPoint
-     * object or a 2D vector. If a GeoPoint object is supplied, it will be projected before the bounds check takes
-     * place.
-     * @param point The point to check.
-     * @param bounds The bounds to check against, expressed as a vector ([left, top, right, bottom]). Defaults to the
-     * bounds of the projected window.
-     * @returns Whether the point falls within the projected bounds.
-     */
-    isInProjectedBounds(point, bounds) {
-        let left;
-        let top;
-        let right;
-        let bottom;
-        if (bounds) {
-            left = bounds[0];
-            top = bounds[1];
-            right = bounds[2];
-            bottom = bounds[3];
-        }
-        else {
-            left = 0;
-            top = 0;
-            right = this.projectedSize[0];
-            bottom = this.projectedSize[1];
-        }
-        if (!(point instanceof Float64Array)) {
-            point = this.project(point, MapProjection.tempVec2_2);
-        }
-        const x = point[0];
-        const y = point[1];
-        return x >= left && x <= right && y >= top && y <= bottom;
-    }
-    /**
-     * Gets the geographic great-circle distance between two points in great-arc radians. The points can be specified as
-     * either GeoPoint objects or 2D vectors. If 2D vectors are supplied, they are interpreted as projected points and
-     * inverse projection will be used to convert them to geographic points.
-     * @param point1 The first point.
-     * @param point2 The second point.
-     * @returns The geographic great-circle distance between the points.
-     */
-    geoDistance(point1, point2) {
-        if (point1 instanceof Float64Array) {
-            point1 = this.invert(point1, MapProjection.tempGeoPoint_1);
-        }
-        if (point2 instanceof Float64Array) {
-            point2 = this.invert(point2, MapProjection.tempGeoPoint_2);
-        }
-        return point1.distance(point2);
-    }
-    /**
-     * Gets the projected Euclidean distance between two points in pixels. The points can be specified as either GeoPoint
-     * objects or 2D vectors. If GeoPoint objects are supplied, they will be projected to convert them to projected
-     * points.
-     * @param point1 The first point.
-     * @param point2 The second point.
-     * @returns The projected Euclidean distance between two points.
-     */
-    projectedDistance(point1, point2) {
-        if (!(point1 instanceof Float64Array)) {
-            point1 = this.project(point1, MapProjection.tempVec2_1);
-        }
-        if (!(point2 instanceof Float64Array)) {
-            point2 = this.project(point2, MapProjection.tempVec2_2);
-        }
-        return Vec2Math.distance(point1, point2);
-    }
-    /**
-     * Notifies all registered change listeners that this projection has been changed.
-     * @param changeFlags The types of changes that were made.
-     */
-    notifyChangeListeners(changeFlags) {
-        for (let i = 0; i < this.changeListeners.length; i++) {
-            this.changeListeners[i](this, changeFlags);
-        }
-    }
-    /**
-     * Registers a change listener with this projection. The listener will be called every time this projection changes.
-     * A listener can be registered multiple times; it will be called once for every time it is registered.
-     * @param listener The change listener to register.
-     */
-    addChangeListener(listener) {
-        this.changeListeners.push(listener);
-    }
-    /**
-     * Removes a change listener from this projection. If the specified listener was registered multiple times, this
-     * method will only remove one instance of the listener.
-     * @param listener The listener to remove.
-     * @returns Whether the listener was successfully removed.
-     */
-    removeChangeListener(listener) {
-        const index = this.changeListeners.lastIndexOf(listener);
-        if (index >= 0) {
-            this.changeListeners.splice(index, 1);
-            return true;
-        }
-        else {
-            return false;
-        }
-    }
-}
-MapProjection.DEFAULT_SCALE_FACTOR = UnitType.GA_RADIAN.convertTo(1, UnitType.NMILE);
-MapProjection.SCALE_FACTOR_MAX_ITER = 20;
-MapProjection.SCALE_FACTOR_TOLERANCE = 1e-6;
-MapProjection.tempVec2_1 = new Float64Array(2);
-MapProjection.tempVec2_2 = new Float64Array(2);
-MapProjection.tempVec2_3 = new Float64Array(2);
-MapProjection.tempVec2_4 = new Float64Array(2);
-MapProjection.tempGeoPoint_1 = new GeoPoint(0, 0);
-MapProjection.tempGeoPoint_2 = new GeoPoint(0, 0);
-MapProjection.vec3Cache = [Vec3Math.create()];
-
-/**
- * A component which displays a map. A map projects geographic coordinates onto a planar pixel grid. Each map component
- * maintains a MapProjection instance which handles the details of the projection. MapLayer objects added to the map
- * as children determine what is drawn on the map.
- */
-class MapComponent extends DisplayComponent {
-    /** @inheritdoc */
-    constructor(props) {
-        var _a;
-        super(props);
-        this.layerEntries = [];
-        this.lastUpdateTime = 0;
-        this._isAwake = true;
-        this.updateCycleHandler = this.update.bind(this);
-        this.projectedSize = 'isSubscribable' in this.props.projectedSize ? this.props.projectedSize : Subject.create(this.props.projectedSize);
-        const initialSize = this.projectedSize.get();
-        if (this.props.projection !== undefined) {
-            this.props.projection.set({ projectedSize: new Float64Array(initialSize) });
-        }
-        this.mapProjection = (_a = this.props.projection) !== null && _a !== void 0 ? _a : new MapProjection(initialSize[0], initialSize[1]);
-    }
-    /**
-     * Gets the size of this map's projected window, in pixels.
-     * @returns The size of this map's projected window.
-     */
-    getProjectedSize() {
-        return this.mapProjection.getProjectedSize();
-    }
-    // eslint-disable-next-line jsdoc/require-returns
-    /**
-     * Whether this map is awake.
-     */
-    get isAwake() {
-        return this._isAwake;
-    }
-    /**
-     * Puts this map to sleep. While asleep, this map will not be updated.
-     */
-    sleep() {
-        this.setAwakeState(false);
-    }
-    /**
-     * Wakes this map, allowing it to be updated.
-     */
-    wake() {
-        this.setAwakeState(true);
-    }
-    /**
-     * Sets this map's awake state. If the new awake state is the same as the current state, nothing will happen.
-     * Otherwise, this map's layers will be notified that the map has either been woken or put to sleep.
-     * @param isAwake The new awake state.
-     */
-    setAwakeState(isAwake) {
-        if (this._isAwake === isAwake) {
-            return;
-        }
-        this._isAwake = isAwake;
-        this._isAwake ? this.onWake() : this.onSleep();
-    }
-    /** @inheritdoc */
-    onAfterRender(thisNode) {
-        var _a;
-        this.mapProjection.addChangeListener(this.onMapProjectionChanged.bind(this));
-        this.projectedSizeSub = this.projectedSize.sub(size => {
-            this.mapProjection.set({ projectedSize: size });
-        });
-        (_a = this.props.updateFreq) === null || _a === void 0 ? void 0 : _a.sub(freq => {
-            var _a;
-            (_a = this.updateCycleSub) === null || _a === void 0 ? void 0 : _a.destroy();
-            this.updateCycleSub = this.props.bus.getSubscriber()
-                .on('realTime')
-                .whenChanged()
-                .atFrequency(freq)
-                .handle(this.updateCycleHandler);
-        }, true);
-        this.attachLayers(thisNode);
-    }
-    /**
-     * Scans this component's VNode sub-tree for MapLayer components and attaches them when found. Only the top-most
-     * level of MapLayer components are attached; layers that are themselves children of other layers are not attached.
-     * @param thisNode This component's VNode.
-     */
-    attachLayers(thisNode) {
-        FSComponent.visitNodes(thisNode, node => {
-            if (node.instance instanceof MapLayer) {
-                this.attachLayer(node.instance);
-                return true;
-            }
-            return false;
-        });
-    }
-    /**
-     * This method is called when the map is awakened.
-     */
-    onWake() {
-        this.wakeLayers();
-    }
-    /**
-     * Calls the onWake() method of this map's layers.
-     */
-    wakeLayers() {
-        const len = this.layerEntries.length;
-        for (let i = 0; i < len; i++) {
-            this.layerEntries[i].layer.onWake();
-        }
-    }
-    /**
-     * This method is called when the map is put to sleep.
-     */
-    onSleep() {
-        this.sleepLayers();
-    }
-    /**
-     * Calls the onSleep() method of this map's layers.
-     */
-    sleepLayers() {
-        const len = this.layerEntries.length;
-        for (let i = 0; i < len; i++) {
-            this.layerEntries[i].layer.onSleep();
-        }
-    }
-    /**
-     * This method is called when the map projection changes.
-     * @param mapProjection This layer's map projection.
-     * @param changeFlags The types of changes made to the projection.
-     */
-    onMapProjectionChanged(mapProjection, changeFlags) {
-        if (BitFlags.isAll(changeFlags, MapProjectionChangeType.ProjectedSize)) {
-            this.onProjectedSizeChanged();
-        }
-        const len = this.layerEntries.length;
-        for (let i = 0; i < len; i++) {
-            this.layerEntries[i].layer.onMapProjectionChanged(mapProjection, changeFlags);
-        }
-    }
-    /**
-     * Attaches a layer to this map component. If the layer is already attached, then this method has no effect.
-     * @param layer The layer to attach.
-     */
-    attachLayer(layer) {
-        if (this.layerEntries.findIndex(entry => entry.layer === layer) >= 0) {
-            return;
-        }
-        const entry = new LayerEntry(layer);
-        this.layerEntries.push(entry);
-        entry.attach();
-    }
-    /**
-     * Detaches a layer from this map component.
-     * @param layer The layer to detach.
-     * @returns Whether the layer was succesfully detached.
-     */
-    detachLayer(layer) {
-        const index = this.layerEntries.findIndex(entry => entry.layer === layer);
-        if (index >= 0) {
-            const entry = this.layerEntries[index];
-            entry.detach();
-            this.layerEntries.splice(index, 1);
-            return true;
-        }
-        else {
-            return false;
-        }
-    }
-    /**
-     * Updates this map.
-     * @param time The current real time as a UNIX timestamp in milliseconds.
-     */
-    update(time) {
-        if (!this._isAwake) {
-            return;
-        }
-        this.onUpdated(time, time - this.lastUpdateTime);
-        this.lastUpdateTime = time;
-    }
-    /**
-     * This method is called once every update cycle.
-     * @param time The current real time as a UNIX timestamp in milliseconds.
-     * @param elapsed The elapsed time, in milliseconds, since the last update.
-     */
-    onUpdated(time, elapsed) {
-        this.updateLayers(time, elapsed);
-    }
-    /**
-     * Updates this map's attached layers.
-     * @param time The current real time as a UNIX timestamp in milliseconds.
-     * @param elapsed The elapsed time, in milliseconds, since the last update.
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    updateLayers(time, elapsed) {
-        const len = this.layerEntries.length;
-        for (let i = 0; i < len; i++) {
-            this.layerEntries[i].update(time);
-        }
-    }
-    /** @inheritdoc */
-    destroy() {
-        var _a, _b;
-        super.destroy();
-        (_a = this.updateCycleSub) === null || _a === void 0 ? void 0 : _a.destroy();
-        (_b = this.projectedSizeSub) === null || _b === void 0 ? void 0 : _b.destroy();
-        const len = this.layerEntries.length;
-        for (let i = 0; i < len; i++) {
-            this.layerEntries[i].destroy();
-        }
-    }
-}
-/**
- * An entry for a map layer.
- */
-class LayerEntry {
-    /**
-     * Constructor.
-     * @param layer This entry's map layer.
-     */
-    constructor(layer) {
-        this.layer = layer;
-        this.updatePeriod = 0;
-        this.lastUpdated = 0;
-    }
-    /**
-     * Attaches this layer entry.
-     */
-    attach() {
-        var _a, _b;
-        (_a = this.updateFreqSub) === null || _a === void 0 ? void 0 : _a.destroy();
-        this.updateFreqSub = (_b = this.layer.props.updateFreq) === null || _b === void 0 ? void 0 : _b.sub((freq) => {
-            const clamped = Math.max(0, freq);
-            this.updatePeriod = clamped === 0 ? 0 : 1000 / clamped;
-        }, true);
-        this.layer.onAttached();
-    }
-    /**
-     * Updates this layer entry.
-     * @param currentTime The current time as a UNIX timestamp.
-     */
-    update(currentTime) {
-        if (currentTime - this.lastUpdated >= this.updatePeriod) {
-            this.layer.onUpdated(currentTime, currentTime - this.lastUpdated);
-            this.lastUpdated = currentTime;
-        }
-    }
-    /**
-     * Detaches this layer entry.
-     */
-    detach() {
-        var _a;
-        (_a = this.updateFreqSub) === null || _a === void 0 ? void 0 : _a.destroy();
-        this.layer.onDetached();
-    }
-    /**
-     * Destroys this layer entry. This will detach this entry's layer and destroy it.
-     */
-    destroy() {
-        this.detach();
-        this.layer.destroy();
-    }
-}
-
-/**
- * A model for maps. Specific functionality is added by adding one or more modules to the model. Each module added to
- * the model is assigned a name which is used to retrieve it from the model.
- */
-class MapModel {
-    constructor() {
-        this.modules = new Map();
-    }
-    /**
-     * Gets a module instance from the model and assigns it
-     * to the provided type.
-     * @param nameOrModule The module to get or the name of the module.
-     * @returns The requested map data module.
-     * @throws An error if
-     */
-    getModule(nameOrModule) {
-        if (typeof nameOrModule === 'string') {
-            return this.modules.get(nameOrModule);
-        }
-        else if (typeof nameOrModule === 'function') {
-            return this.modules.get(nameOrModule.name);
-        }
-        throw new Error('Invalid type supplied: must be a string key or a module constructor.');
-    }
-    /**
-     * Adds a module to this model.
-     * @param name The name of the module to add.
-     * @param module The module to add.
-     */
-    addModule(name, module) {
-        if (this.modules.has(name)) {
-            return;
-        }
-        this.modules.set(name, module);
-    }
-}
-
-/**
- * An abstract implementation of a map text label.
- */
-class AbstractMapTextLabel {
-    /**
-     * Constructor.
-     * @param text The text of this label, or a subscribable which provides it.
-     * @param priority The render priority of this label, or a subscribable which provides it.
-     * @param options Options with which to initialize this label.
-     */
-    constructor(text, priority, options) {
-        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
-        this.text = SubscribableUtils.toSubscribable(text, true);
-        this.priority = SubscribableUtils.toSubscribable(priority, true);
-        this.anchor = SubscribableUtils.toSubscribable((_a = options === null || options === void 0 ? void 0 : options.anchor) !== null && _a !== void 0 ? _a : Vec2Math.create(), true);
-        this.font = SubscribableUtils.toSubscribable((_b = options === null || options === void 0 ? void 0 : options.font) !== null && _b !== void 0 ? _b : '', true);
-        this.fontSize = SubscribableUtils.toSubscribable((_c = options === null || options === void 0 ? void 0 : options.fontSize) !== null && _c !== void 0 ? _c : 10, true);
-        this.fontStr = MappedSubject.create(([s, f]) => {
-            return `${s}px ${f}`;
-        }, this.fontSize, this.font);
-        this.fontColor = SubscribableUtils.toSubscribable((_d = options === null || options === void 0 ? void 0 : options.fontColor) !== null && _d !== void 0 ? _d : 'white', true);
-        this.fontOutlineWidth = SubscribableUtils.toSubscribable((_e = options === null || options === void 0 ? void 0 : options.fontOutlineWidth) !== null && _e !== void 0 ? _e : 0, true);
-        this.fontOutlineColor = SubscribableUtils.toSubscribable((_f = options === null || options === void 0 ? void 0 : options.fontOutlineColor) !== null && _f !== void 0 ? _f : 'black', true);
-        this.showBg = SubscribableUtils.toSubscribable((_g = options === null || options === void 0 ? void 0 : options.showBg) !== null && _g !== void 0 ? _g : false, true);
-        this.bgColor = SubscribableUtils.toSubscribable((_h = options === null || options === void 0 ? void 0 : options.bgColor) !== null && _h !== void 0 ? _h : 'black', true);
-        this.bgPadding = SubscribableUtils.toSubscribable((_j = options === null || options === void 0 ? void 0 : options.bgPadding) !== null && _j !== void 0 ? _j : VecNMath.create(4), true);
-        this.bgBorderRadius = SubscribableUtils.toSubscribable((_k = options === null || options === void 0 ? void 0 : options.bgBorderRadius) !== null && _k !== void 0 ? _k : 0, true);
-        this.bgOutlineWidth = SubscribableUtils.toSubscribable((_l = options === null || options === void 0 ? void 0 : options.bgOutlineWidth) !== null && _l !== void 0 ? _l : 0, true);
-        this.bgOutlineColor = SubscribableUtils.toSubscribable((_m = options === null || options === void 0 ? void 0 : options.bgOutlineColor) !== null && _m !== void 0 ? _m : 'white', true);
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    draw(context, mapProjection) {
-        if (this.fontSize.get() !== 0) {
-            this.setTextStyle(context);
-            const width = context.measureText(this.text.get()).width;
-            const height = this.fontSize.get();
-            const showBg = this.showBg.get();
-            const bgPadding = this.bgPadding.get();
-            const bgOutlineWidth = this.bgOutlineWidth.get();
-            const bgExtraWidth = showBg ? bgPadding[1] + bgPadding[3] + bgOutlineWidth * 2 : 0;
-            const bgExtraHeight = showBg ? bgPadding[0] + bgPadding[2] + bgOutlineWidth * 2 : 0;
-            const anchor = this.anchor.get();
-            const pos = this.getPosition(mapProjection, AbstractMapTextLabel.tempVec2);
-            const centerX = pos[0] - (anchor[0] - 0.5) * (width + bgExtraWidth);
-            const centerY = pos[1] - (anchor[1] - 0.5) * (height + bgExtraHeight);
-            if (showBg) {
-                this.drawBackground(context, centerX, centerY, width, height);
-            }
-            this.drawText(context, centerX, centerY);
-        }
-    }
-    /**
-     * Loads this label's text style to a canvas rendering context.
-     * @param context The canvas rendering context to use.
-     */
-    setTextStyle(context) {
-        context.font = this.fontStr.get();
-        context.textBaseline = 'middle';
-        context.textAlign = 'center';
-    }
-    /**
-     * Draws this label's text to a canvas.
-     * @param context The canvas rendering context.
-     * @param centerX The x-coordinate of the center of the label, in pixels.
-     * @param centerY the y-coordinate of the center of the label, in pixels.
-     */
-    drawText(context, centerX, centerY) {
-        const text = this.text.get();
-        const fontOutlineWidth = this.fontOutlineWidth.get();
-        if (fontOutlineWidth > 0) {
-            context.lineWidth = fontOutlineWidth * 2;
-            context.strokeStyle = this.fontOutlineColor.get();
-            context.strokeText(text, centerX, centerY);
-        }
-        context.fillStyle = this.fontColor.get();
-        context.fillText(text, centerX, centerY);
-    }
-    /**
-     * Draws this label's background to a canvas.
-     * @param context The canvas rendering context.
-     * @param centerX The x-coordinate of the center of the label, in pixels.
-     * @param centerY the y-coordinate of the center of the label, in pixels.
-     * @param width The width of the background, in pixels.
-     * @param height The height of the background, in pixels.
-     */
-    drawBackground(context, centerX, centerY, width, height) {
-        const bgPadding = this.bgPadding.get();
-        const bgOutlineWidth = this.bgOutlineWidth.get();
-        const bgBorderRadius = this.bgBorderRadius.get();
-        const backgroundLeft = centerX - width / 2 - (bgPadding[3] + bgOutlineWidth);
-        const backgroundTop = centerY - height / 2 - (bgPadding[0] + bgOutlineWidth);
-        const backgroundWidth = width + (bgPadding[1] + bgPadding[3] + 2 * bgOutlineWidth);
-        const backgroundHeight = height + (bgPadding[0] + bgPadding[2] + 2 * bgOutlineWidth);
-        let isRounded = false;
-        if (bgBorderRadius > 0) {
-            isRounded = true;
-            this.loadBackgroundPath(context, backgroundLeft, backgroundTop, backgroundWidth, backgroundHeight, bgBorderRadius);
-        }
-        if (bgOutlineWidth > 0) {
-            context.lineWidth = bgOutlineWidth * 2;
-            context.strokeStyle = this.bgOutlineColor.get();
-            if (isRounded) {
-                context.stroke();
-            }
-            else {
-                context.strokeRect(backgroundLeft, backgroundTop, backgroundWidth, backgroundHeight);
-            }
-        }
-        context.fillStyle = this.bgColor.get();
-        if (isRounded) {
-            context.fill();
-        }
-        else {
-            context.fillRect(backgroundLeft, backgroundTop, backgroundWidth, backgroundHeight);
-        }
-    }
-    /**
-     * Loads the path of this label's background to a canvas rendering context.
-     * @param context The canvas rendering context to use.
-     * @param left The x-coordinate of the left edge of the background, in pixels.
-     * @param top The y-coordinate of the top edge of the background, in pixels.
-     * @param width The width of the background, in pixels.
-     * @param height The height of the background, in pixels.
-     * @param radius The border radius of the background, in pixels.
-     */
-    loadBackgroundPath(context, left, top, width, height, radius) {
-        const right = left + width;
-        const bottom = top + height;
-        context.beginPath();
-        context.moveTo(left + radius, top);
-        context.lineTo(right - radius, top);
-        context.arcTo(right, top, right, top + radius, radius);
-        context.lineTo(right, bottom - radius);
-        context.arcTo(right, bottom, right - radius, bottom, radius);
-        context.lineTo(left + radius, bottom);
-        context.arcTo(left, bottom, left, bottom - radius, radius);
-        context.lineTo(left, top + radius);
-        context.arcTo(left, top, left + radius, top, radius);
-    }
-}
-AbstractMapTextLabel.tempVec2 = new Float64Array(2);
-/**
- * A text label associated with a specific geographic location.
- */
-class MapLocationTextLabel extends AbstractMapTextLabel {
-    /**
-     * Constructor.
-     * @param text The text of this label, or a subscribable which provides it.
-     * @param priority The render priority of this label, or a subscribable which provides it.
-     * @param location The geographic location of this label, or a subscribable which provides it.
-     * @param options Options with which to initialize this label.
-     */
-    constructor(text, priority, location, options) {
-        var _a;
-        super(text, priority, options);
-        this.location = SubscribableUtils.toSubscribable(location, true);
-        this.offset = SubscribableUtils.toSubscribable((_a = options === null || options === void 0 ? void 0 : options.offset) !== null && _a !== void 0 ? _a : Vec2Math.create(), true);
-    }
-    /** @inheritdoc */
-    getPosition(mapProjection, out) {
-        mapProjection.project(this.location.get(), out);
-        Vec2Math.add(out, this.offset.get(), out);
-        return out;
-    }
-}
-
-/**
- * A cullable (hides labels that collide with other labels) text label associated with a specific geographic location.
- */
-class MapCullableLocationTextLabel extends MapLocationTextLabel {
-    /**
-     * Constructor.
-     * @param text The text of this label, or a subscribable which provides it.
-     * @param priority The priority of this label, or a subscribable which provides it.
-     * @param location The geographic location of this label, or a subscribable which provides it.
-     * @param alwaysShow Whether this label is immune to culling, or a subscribable which provides it.
-     * @param options Options with which to initialize this label.
-     */
-    constructor(text, priority, location, alwaysShow, options) {
-        super(text, priority, location, options);
-        /** @inheritdoc */
-        this.bounds = new Float64Array(4);
-        /** @inheritdoc */
-        this.invalidation = new SubEvent();
-        this.subs = [];
-        this.alwaysShow = SubscribableUtils.toSubscribable(alwaysShow, true);
-        this.subs.push(this.priority.sub(() => { this.invalidation.notify(this); }));
-        this.subs.push(this.alwaysShow.sub(() => { this.invalidation.notify(this); }));
-        this.subs.push(this.location.sub(() => { this.invalidation.notify(this); }));
-        this.subs.push(this.text.sub(() => { this.invalidation.notify(this); }));
-        this.subs.push(this.fontSize.sub(() => { this.invalidation.notify(this); }));
-        this.subs.push(this.anchor.sub(() => { this.invalidation.notify(this); }));
-        this.subs.push(this.offset.sub(() => { this.invalidation.notify(this); }));
-        this.subs.push(this.bgPadding.sub(() => { this.invalidation.notify(this); }));
-        this.subs.push(this.bgOutlineWidth.sub(() => { this.invalidation.notify(this); }));
-    }
-    /** @inheritdoc */
-    updateBounds(mapProjection) {
-        const fontSize = this.fontSize.get();
-        const anchor = this.anchor.get();
-        const width = 0.6 * fontSize * this.text.get().length;
-        const height = fontSize;
-        const pos = this.getPosition(mapProjection, MapCullableLocationTextLabel.tempVec2);
-        let left = pos[0] - anchor[0] * width;
-        let right = left + width;
-        let top = pos[1] - anchor[1] * height;
-        let bottom = top + height;
-        if (this.showBg.get()) {
-            const bgPadding = this.bgPadding.get();
-            const bgOutlineWidth = this.bgOutlineWidth.get();
-            left -= (bgPadding[3] + bgOutlineWidth);
-            right += (bgPadding[1] + bgOutlineWidth);
-            top -= (bgPadding[0] + bgOutlineWidth);
-            bottom += (bgPadding[2] + bgOutlineWidth);
-        }
-        this.bounds[0] = left;
-        this.bounds[1] = top;
-        this.bounds[2] = right;
-        this.bounds[3] = bottom;
-    }
-    /**
-     * Destroys this label.
-     */
-    destroy() {
-        for (const sub of this.subs) {
-            sub.destroy();
-        }
-    }
-}
-/**
- * Manages a set of MapCullableTextLabels. Colliding labels will be culled based on their render priority. Labels with
- * lower priorities will be culled before labels with higher priorities.
- */
-class MapCullableTextLabelManager {
-    /**
-     * Creates an instance of the MapCullableTextLabelManager.
-     * @param cullingEnabled Whether or not culling of labels is enabled.
-     */
-    constructor(cullingEnabled = true) {
-        this.cullingEnabled = cullingEnabled;
-        this.registered = new Map();
-        this._visibleLabels = [];
-        this.needUpdate = false;
-        this.lastScaleFactor = 1;
-        this.lastRotation = 0;
-        this.invalidationHandler = () => { this.needUpdate = true; };
-    }
-    // eslint-disable-next-line jsdoc/require-returns
-    /** An array of labels registered with this manager that are visible. */
-    get visibleLabels() {
-        return this._visibleLabels;
-    }
-    /**
-     * Registers a label with this manager. Newly registered labels will be processed with the next manager update.
-     * @param label The label to register.
-     */
-    register(label) {
-        if (this.registered.has(label)) {
-            return;
-        }
-        this.registered.set(label, label.invalidation.on(this.invalidationHandler));
-        this.needUpdate = true;
-    }
-    /**
-     * Deregisters a label with this manager. Newly deregistered labels will be processed with the next manager update.
-     * @param label The label to deregister.
-     */
-    deregister(label) {
-        const sub = this.registered.get(label);
-        if (sub === undefined) {
-            return;
-        }
-        sub.destroy();
-        this.registered.delete(label);
-        this.needUpdate = true;
-    }
-    /**
-     * Sets whether or not text label culling is enabled.
-     * @param enabled Whether or not culling is enabled.
-     */
-    setCullingEnabled(enabled) {
-        this.cullingEnabled = enabled;
-        this.needUpdate = true;
-    }
-    /**
-     * Updates this manager.
-     * @param mapProjection The projection of the map to which this manager's labels are to be drawn.
-     */
-    update(mapProjection) {
-        if (!this.needUpdate) {
-            const scaleFactorRatio = mapProjection.getScaleFactor() / this.lastScaleFactor;
-            if (scaleFactorRatio < MapCullableTextLabelManager.SCALE_UPDATE_THRESHOLD && scaleFactorRatio > 1 / MapCullableTextLabelManager.SCALE_UPDATE_THRESHOLD) {
-                const rotationDelta = Math.abs(mapProjection.getRotation() - this.lastRotation);
-                if (Math.min(rotationDelta, 2 * Math.PI - rotationDelta) < MapCullableTextLabelManager.ROTATION_UPDATE_THRESHOLD) {
-                    return;
+            if (excludeEgress && !excludeBase) {
+                mainVectorStartIndex = Math.max(0, legCalc.ingressJoinIndex);
+                const lastIngressVector = legCalc.ingress[legCalc.ingress.length - 1];
+                const ingressJoinVector = legCalc.flightPath[legCalc.ingressJoinIndex];
+                if (lastIngressVector && ingressJoinVector) {
+                    const ingressEnd = AbstractFlightPathLegRenderer.geoPointCache[0].set(lastIngressVector.endLat, lastIngressVector.endLon);
+                    const vectorEnd = AbstractFlightPathLegRenderer.geoPointCache[1].set(ingressJoinVector.endLat, ingressJoinVector.endLon);
+                    if (!ingressEnd.equals(vectorEnd)) {
+                        const ingressJoinVectorCircle = FlightPathUtils.setGeoCircleFromVector(ingressJoinVector, AbstractFlightPathLegRenderer.geoCircleCache[0]);
+                        FlightPathUtils.setCircleVector(this.tempVector, ingressJoinVectorCircle, ingressEnd, vectorEnd, ingressJoinVector.flags);
+                        this.renderVector(this.tempVector, false, false, leg, context, streamStack, ...args);
+                    }
+                    mainVectorStartIndex++;
                 }
             }
         }
-        const labelArray = Array.from(this.registered.keys())
-            .sort(MapCullableTextLabelManager.SORT_FUNC);
-        if (this.cullingEnabled) {
-            this._visibleLabels = [];
-            const len = labelArray.length;
-            for (let i = 0; i < len; i++) {
-                labelArray[i].updateBounds(mapProjection);
+        if (!excludeBase) {
+            const len = Math.min(mainVectorEndIndex, mainVectors.length);
+            for (let i = mainVectorStartIndex; i < len; i++) {
+                this.renderVector(mainVectors[i], false, false, leg, context, streamStack, ...args);
             }
-            const collisionArray = [];
-            for (let i = 0; i < len; i++) {
-                const label = labelArray[i];
-                let show = true;
-                if (!label.alwaysShow.get()) {
-                    const len2 = collisionArray.length;
-                    for (let j = 0; j < len2; j++) {
-                        const other = collisionArray[j];
-                        if (MapCullableTextLabelManager.doesCollide(label.bounds, other)) {
-                            show = false;
-                            break;
-                        }
+        }
+        if (!excludeEgress) {
+            if (excludeIngress && !excludeBase) {
+                const firstEgressVector = legCalc.egress[0];
+                const egressJoinVector = legCalc.flightPath[legCalc.egressJoinIndex];
+                if (firstEgressVector && egressJoinVector) {
+                    const egressStart = AbstractFlightPathLegRenderer.geoPointCache[0].set(firstEgressVector.startLat, firstEgressVector.startLon);
+                    const egressJoinVectorStart = AbstractFlightPathLegRenderer.geoPointCache[1].set(egressJoinVector.startLat, egressJoinVector.startLon);
+                    if (!egressStart.equals(egressJoinVectorStart)) {
+                        const egressJoinVectorCircle = FlightPathUtils.setGeoCircleFromVector(egressJoinVector, AbstractFlightPathLegRenderer.geoCircleCache[0]);
+                        FlightPathUtils.setCircleVector(this.tempVector, egressJoinVectorCircle, egressJoinVectorStart, egressStart, egressJoinVector.flags);
+                        this.renderVector(this.tempVector, false, false, leg, context, streamStack, ...args);
                     }
                 }
-                if (show) {
-                    collisionArray.push(label.bounds);
-                    this._visibleLabels.push(label);
-                }
+            }
+            for (let i = 0; i < legCalc.egress.length; i++) {
+                this.renderVector(legCalc.egress[i], false, true, leg, context, streamStack, ...args);
             }
         }
-        else {
-            this._visibleLabels = labelArray;
-        }
-        this.lastScaleFactor = mapProjection.getScaleFactor();
-        this.lastRotation = mapProjection.getRotation();
-        this.needUpdate = false;
-    }
-    /**
-     * Checks if two bounding boxes collide.
-     * @param a The first bounding box, as a 4-tuple [left, top, right, bottom].
-     * @param b The second bounding box, as a 4-tuple [left, top, right, bottom].
-     * @returns whether the bounding boxes collide.
-     */
-    static doesCollide(a, b) {
-        return a[0] < b[2]
-            && a[2] > b[0]
-            && a[1] < b[3]
-            && a[3] > b[1];
     }
 }
-MapCullableTextLabelManager.SCALE_UPDATE_THRESHOLD = 1.2;
-MapCullableTextLabelManager.ROTATION_UPDATE_THRESHOLD = Math.PI / 6;
-MapCullableTextLabelManager.SORT_FUNC = (a, b) => {
-    const alwaysShowA = a.alwaysShow.get();
-    const alwaysShowB = b.alwaysShow.get();
-    if (alwaysShowA && !alwaysShowB) {
-        return -1;
-    }
-    else if (alwaysShowB && !alwaysShowA) {
-        return 1;
-    }
-    else {
-        return b.priority.get() - a.priority.get();
-    }
-};
+AbstractFlightPathLegRenderer.geoPointCache = [new GeoPoint(0, 0), new GeoPoint(0, 0)];
+AbstractFlightPathLegRenderer.geoCircleCache = [new GeoCircle(new Float64Array(3), 0)];
 
 /**
- * An abstract implementation of MapWaypointIcon which supports an arbitrary anchor point and offset.
+ * Renders flight plan paths one leg at a time in either forward or reverse order. Optionally forces the rendering of
+ * the active flight plan leg to be last.
  */
-class AbstractMapWaypointIcon {
+class AbstractFlightPathPlanRenderer {
     /**
      * Constructor.
-     * @param waypoint The waypoint associated with this icon.
-     * @param priority The render priority of this icon, or a subscribable which provides it. Icons with higher
-     * priorities should be rendered above those with lower priorities.
-     * @param size The size of this icon, as `[width, height]` in pixels, or a subscribable which provides it.
-     * @param options Options with which to initialize this icon.
+     * @param renderOrder The order which this renderer renders the flight plan legs. Forward order renders the legs in
+     * a first-to-last fashion. Reverse order renders the legs in a last-to-first fashion. Defaults to forward.
+     * @param renderActiveLegLast Whether to render the active leg last. Defaults to true.
      */
-    constructor(waypoint, priority, size, options) {
-        var _a, _b;
-        this.waypoint = waypoint;
-        this.priority = SubscribableUtils.toSubscribable(priority, true);
-        this.size = SubscribableUtils.toSubscribable(size, true);
-        this.anchor = SubscribableUtils.toSubscribable((_a = options === null || options === void 0 ? void 0 : options.anchor) !== null && _a !== void 0 ? _a : Vec2Math.create(0.5, 0.5), true);
-        this.offset = SubscribableUtils.toSubscribable((_b = options === null || options === void 0 ? void 0 : options.offset) !== null && _b !== void 0 ? _b : Vec2Math.create(), true);
+    constructor(renderOrder = 'forward', renderActiveLegLast = true) {
+        this.renderOrder = renderOrder;
+        this.renderActiveLegLast = renderActiveLegLast;
     }
-    /** @inheritdoc */
-    draw(context, mapProjection) {
-        const size = this.size.get();
-        const offset = this.offset.get();
-        const anchor = this.anchor.get();
-        const projected = mapProjection.project(this.waypoint.location.get(), MapWaypointImageIcon.tempVec2);
-        const left = projected[0] + offset[0] - anchor[0] * size[0];
-        const top = projected[1] + offset[1] - anchor[1] * size[1];
-        this.drawIconAt(context, mapProjection, left, top);
-    }
-}
-AbstractMapWaypointIcon.tempVec2 = new Float64Array(2);
-/**
- * A waypoint icon with an image as the icon's graphic source.
- */
-class MapWaypointImageIcon extends AbstractMapWaypointIcon {
     /**
-     * Constructor.
-     * @param waypoint The waypoint associated with this icon.
-     * @param priority The render priority of this icon. Icons with higher priorities should be rendered above those
-     * with lower priorities.
-     * @param img This icon's image.
-     * @param size The size of this icon, as `[width, height]` in pixels, or a subscribable which provides it.
-     * @param options Options with which to initialize this icon.
+     * Renders a flight plan path to a canvas.
+     * @param plan The flight plan to render.
+     * @param startIndex The global index of the first flight plan leg to render, inclusive. Defaults to `0`.
+     * @param endIndex The global index of the last flight plan leg to render, inclusive. Defaults to `plan.length - 1`.
+     * @param context The canvas 2D rendering context to which to render.
+     * @param streamStack The path stream stack to which to render.
+     * @param args Additional arguments.
      */
-    constructor(waypoint, priority, img, size, options) {
-        super(waypoint, priority, size, options);
-        this.img = img;
-    }
-    /** @inheritdoc */
-    drawIconAt(context, mapProjection, left, top) {
-        const size = this.size.get();
-        context.drawImage(this.img, left, top, size[0], size[1]);
+    render(plan, startIndex, endIndex, context, streamStack, ...args) {
+        startIndex !== null && startIndex !== void 0 ? startIndex : (startIndex = 0);
+        endIndex !== null && endIndex !== void 0 ? endIndex : (endIndex = plan.length - 1);
+        const activeLegIndex = plan.activeLateralLeg < plan.length ? plan.activeLateralLeg : -1;
+        const activeLeg = plan.activeLateralLeg < plan.length ? plan.getLeg(plan.activeLateralLeg) : undefined;
+        const isReverse = this.renderOrder === 'reverse';
+        if (isReverse) {
+            const oldEndIndex = endIndex;
+            endIndex = startIndex;
+            startIndex = oldEndIndex;
+        }
+        let index = startIndex;
+        const delta = isReverse ? -1 : 1;
+        for (const leg of plan.legs(isReverse, startIndex)) {
+            if ((index - endIndex) * delta > 0) {
+                break;
+            }
+            if (this.renderActiveLegLast && index === activeLegIndex) {
+                index += delta;
+                continue;
+            }
+            this.renderLeg(leg, plan, activeLeg, index, activeLegIndex, context, streamStack, ...args);
+            index += delta;
+        }
+        if (this.renderActiveLegLast && activeLeg) {
+            this.renderLeg(activeLeg, plan, activeLeg, activeLegIndex, activeLegIndex, context, streamStack, ...args);
+        }
     }
 }
 
 /**
- * A renderer that draws waypoints to a map. For the renderer to draw a waypoint, the waypoint must first be registered
- * with the renderer. Waypoints may be registered under multiple render roles. Each render role is represented as a bit
- * flag. During each render cycle, a specific role is chosen for each waypoint by a selector function. Once the role is
- * chosen, the waypoint will be rendered in that role.
+ * An abstract implementation of {@link CssTransform}
  */
-class MapWaypointRenderer {
+class AbstractCssTransform {
     /**
      * Constructor.
-     * @param textManager The text manager to use for waypoint labels.
-     * @param selectRoleToRender A function which selects roles under which to render waypoints. Defaults to
-     * {@link MapWaypointRenderer.DEFAULT_RENDER_ROLE_SELECTOR}.
+     * @param initialParams The transform's initial parameters.
      */
-    constructor(textManager, selectRoleToRender = MapWaypointRenderer.DEFAULT_RENDER_ROLE_SELECTOR) {
-        this.textManager = textManager;
-        this.selectRoleToRender = selectRoleToRender;
-        this.registered = new Map();
-        this.toCleanUp = new Set();
-        /**
-         * This renderer's render role definitions. Waypoints assigned to be rendered under a role or combination of roles
-         * with no definition will not be rendered.
-         */
-        this.roleDefinitions = new Map();
-        /**
-         * An event to subscribe to, fired when waypoints are added to the renderer.
-         */
-        this.onWaypointAdded = new SubEvent();
-        /**
-         * An event to subscribe to, fired when waypoints are removed from the render.
-         */
-        this.onWaypointRemoved = new SubEvent();
+    constructor(initialParams) {
+        this.params = new Float64Array(initialParams);
+        this.cachedParams = new Float64Array(initialParams);
     }
-    /**
-     * Checks whether a render role has been added to this renderer.
-     * @param role The render role to check.
-     * @returns Whether the render role has been added to this renderer.
-     */
-    hasRenderRole(role) {
-        return this.roleDefinitions.has(role);
-    }
-    /**
-     * Adds a render role to this renderer. If the role has already been added to this renderer, this method does
-     * nothing.
-     * @param role The render role to add.
-     * @param def The render role's definition. If undefined, the new role will be assigned a default definition with
-     * no defined rendering context, icon, or label factories, and a visibility handler which always returns true.
-     * @returns Whether the render role was successfully added.
-     */
-    addRenderRole(role, def) {
-        if (this.roleDefinitions.has(role)) {
-            return false;
+    /** @inheritdoc */
+    resolve() {
+        if (this.stringValue !== undefined && VecNMath.equals(this.params, this.cachedParams)) {
+            return this.stringValue;
         }
-        this.roleDefinitions.set(role, Object.assign({}, def !== null && def !== void 0 ? def : MapWaypointRenderer.NULL_ROLE_DEF));
-        return true;
-    }
-    /**
-     * Removes a render role from this renderer.
-     * @param role The render role to remove.
-     * @returns Whether the render role was successfully removed.
-     */
-    removeRenderRole(role) {
-        return this.roleDefinitions.delete(role);
-    }
-    /**
-     * Gets the definition for a render role.
-     * @param role A render role.
-     * @returns The definition for the specified render role, or undefined if no such role has been added to this
-     * renderer.
-     */
-    getRenderRoleDefinition(role) {
-        return this.roleDefinitions.get(role);
-    }
-    /**
-     * Gets an iterable of render roles added to this renderer. The iterable will return the roles in the order in which
-     * they were added.
-     * @returns An iterable of render roles added to this renderer.
-     */
-    renderRoles() {
-        return this.roleDefinitions.keys();
-    }
-    /**
-     * Removes all render roles from this renderer.
-     */
-    clearRenderRoles() {
-        this.roleDefinitions.clear();
-    }
-    /**
-     * Sets the factory to use to create waypoint icons for a render role. If the render role has not been added to this
-     * renderer, this method does nothing.
-     * @param role A render role.
-     * @param factory A waypoint icon factory.
-     * @returns Whether the factory was set.
-     */
-    setIconFactory(role, factory) {
-        const roleDef = this.roleDefinitions.get(role);
-        if (!roleDef) {
-            return false;
-        }
-        roleDef.iconFactory = factory;
-        return true;
-    }
-    /**
-     * Sets the factory to use to create waypoint labels for a render role. If the render role has not been added to this
-     * renderer, this method does nothing.
-     * @param role A render role.
-     * @param factory A waypoint label factory.
-     * @returns Whether the factory was set.
-     */
-    setLabelFactory(role, factory) {
-        const roleDef = this.roleDefinitions.get(role);
-        if (!roleDef) {
-            return false;
-        }
-        roleDef.labelFactory = factory;
-        return true;
-    }
-    /**
-     * Sets the canvas rendering context for a render role. If the render role has not been added to this renderer, this
-     * method does nothing.
-     * @param role A render role.
-     * @param context A canvas 2D rendering context.
-     * @returns Whether the context was set.
-     */
-    setCanvasContext(role, context) {
-        const roleDef = this.roleDefinitions.get(role);
-        if (!roleDef) {
-            return false;
-        }
-        roleDef.canvasContext = context;
-        return true;
-    }
-    /**
-     * Sets the handler that determines if a waypoint should visible for a render role. If the render role has not been
-     * added to this renderer, this method does nothing.
-     * @param role A render role.
-     * @param handler A function that determines if a waypoint should be visible.
-     * @returns Whether the handler was set.
-     */
-    setVisibilityHandler(role, handler) {
-        const roleDef = this.roleDefinitions.get(role);
-        if (!roleDef) {
-            return false;
-        }
-        roleDef.visibilityHandler = handler;
-        return true;
-    }
-    /**
-     * Checks if a waypoint is registered with this renderer. A role or roles can be optionally specified such that the
-     * method will only return true if the waypoint is registered under those specific roles.
-     * @param waypoint A waypoint.
-     * @param role The specific role(s) to check.
-     * @returns whether the waypoint is registered with this renderer.
-     */
-    isRegistered(waypoint, role) {
-        if (!waypoint) {
-            return false;
-        }
-        const entry = this.registered.get(waypoint.uid);
-        if (!entry) {
-            return false;
-        }
-        if (role === undefined) {
-            return true;
-        }
-        return entry.isAllRoles(role);
-    }
-    /**
-     * Registers a waypoint with this renderer under a specific role or roles. Registered waypoints will be drawn as
-     * appropriate the next time this renderer's update() method is called. Registering a waypoint under a role under
-     * which it is already registered has no effect unless the source of the registration is different.
-     * @param waypoint The waypoint to register.
-     * @param role The role(s) under which the waypoint should be registered.
-     * @param sourceId A unique string ID for the source of the registration.
-     */
-    register(waypoint, role, sourceId) {
-        if (role === 0 || sourceId === '') {
-            return;
-        }
-        let entry = this.registered.get(waypoint.uid);
-        if (!entry) {
-            entry = new MapWaypointRendererEntry(waypoint, this.textManager, this.roleDefinitions, this.selectRoleToRender);
-            this.registered.set(waypoint.uid, entry);
-            this.onWaypointAdded.notify(this, waypoint);
-        }
-        entry.addRole(role, sourceId);
-    }
-    /**
-     * Removes a registration for a waypoint for a specific role or roles. Once all of a waypoint's registrations for a
-     * role are removed, it will no longer be rendered in that role the next this renderer's update() method is called.
-     * @param waypoint The waypoint to deregister.
-     * @param role The role(s) from which the waypoint should be deregistered.
-     * @param sourceId The unique string ID for the source of the registration to remove.
-     */
-    deregister(waypoint, role, sourceId) {
-        if (role === 0 || sourceId === '') {
-            return;
-        }
-        const entry = this.registered.get(waypoint.uid);
-        if (!entry) {
-            return;
-        }
-        entry.removeRole(role, sourceId);
-        if (entry.roles === 0) {
-            this.deleteEntry(entry);
-            this.onWaypointRemoved.notify(this, waypoint);
-        }
-    }
-    /**
-     * Deletes and cleans up a registered waypoint entry.
-     * @param entry The entry to delete.
-     */
-    deleteEntry(entry) {
-        this.registered.delete(entry.waypoint.uid);
-        this.toCleanUp.add(entry);
-    }
-    /**
-     * Redraws waypoints registered with this renderer.
-     * @param mapProjection The map projection to use.
-     */
-    update(mapProjection) {
-        var _a;
-        this.toCleanUp.forEach(entry => {
-            entry.destroy();
-        });
-        this.toCleanUp.clear();
-        const entriesToDrawIcon = [];
-        this.registered.forEach(entry => {
-            entry.update();
-            if (entry.icon) {
-                entriesToDrawIcon.push(entry);
-            }
-        });
-        const projectedSize = mapProjection.getProjectedSize();
-        for (const roleDef of this.roleDefinitions.values()) {
-            const context = roleDef.canvasContext;
-            if (context) {
-                context.clearRect(0, 0, projectedSize[0], projectedSize[1]);
-            }
-        }
-        entriesToDrawIcon.sort(MapWaypointRenderer.ENTRY_SORT_FUNC);
-        const len2 = entriesToDrawIcon.length;
-        for (let i = 0; i < len2; i++) {
-            const entry = entriesToDrawIcon[i];
-            const icon = entry.icon;
-            const context = (_a = this.roleDefinitions.get(entry.lastRenderedRole)) === null || _a === void 0 ? void 0 : _a.canvasContext;
-            if (context) {
-                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                icon.draw(context, mapProjection);
-            }
-        }
-    }
-    /**
-     * Gets the nearest waypoint currently registered in the renderer.
-     * @param pos The position to get the closest waypoint to.
-     * @param first A predicate that will search the list of closest waypoints for a match, and return the first one found.
-     * @returns The nearest waypoint, or undefined if none found.
-     */
-    getNearestWaypoint(pos, first) {
-        var _a, _b;
-        const ordered = [...this.registered.values()].sort((a, b) => this.orderByDistance(a.waypoint, b.waypoint, pos))
-            .filter(w => {
-            const roleDef = this.getRenderRoleDefinition(w.lastRenderedRole);
-            if (roleDef !== undefined) {
-                return roleDef.visibilityHandler(w.waypoint);
-            }
-            return false;
-        });
-        if (first !== undefined) {
-            return (_a = ordered.find(entry => first(entry.waypoint))) === null || _a === void 0 ? void 0 : _a.waypoint;
-        }
-        return (_b = ordered[0]) === null || _b === void 0 ? void 0 : _b.waypoint;
-    }
-    /**
-     * Orders waypoints by their distance to the plane PPOS.
-     * @param a The first waypoint.
-     * @param b The second waypoint.
-     * @param pos The position to compare against.
-     * @returns The comparison order number.
-     */
-    orderByDistance(a, b, pos) {
-        const aDist = a.location.get().distance(pos);
-        const bDist = b.location.get().distance(pos);
-        return aDist - bDist;
+        VecNMath.copy(this.params, this.cachedParams);
+        this.stringValue = this.buildString(this.params);
+        return this.stringValue;
     }
 }
-/** A null render role definition. Icons rendered under this role are never visible. */
-MapWaypointRenderer.NULL_ROLE_DEF = {
-    iconFactory: null,
-    labelFactory: null,
-    canvasContext: null,
-    visibilityHandler: () => true
-};
 /**
- * Sorts waypoint entries such that those with icons of higher priority are sorted after those with icons of lower
- * priority.
- * @param a The first waypoint entry to sort.
- * @param b The second waypoint entry to sort.
- * @returns A negative number if the first entry is to be sorted before the second, a positive number if the second
- * entry is to be sorted before the first, and zero if the entries' relative sorting order does not matter.
+ * A CSS `matrix` transform.
  */
-MapWaypointRenderer.ENTRY_SORT_FUNC = (a, b) => {
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    return a.icon.priority.get() - b.icon.priority.get();
-};
-/**
- * The default render role selector. For each waypoint entry, iterates through all possible render roles in the order
- * they were originally added to the renderer and selects the first role under which the entry is registered and is
- * visible.
- * @param entry A waypoint entry.
- * @param roleDefinitions A map from all possible render roles to their definitions.
- * @returns The role under which the waypoint entry should be rendered, or 0 if the entry should not be rendered
- * under any role.
- */
-MapWaypointRenderer.DEFAULT_RENDER_ROLE_SELECTOR = (entry, roleDefinitions) => {
-    for (const role of roleDefinitions.keys()) {
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        if (entry.isAllRoles(role) && roleDefinitions.get(role).visibilityHandler(entry.waypoint)) {
-            return role;
-        }
+class CssMatrixTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `matrix` transform, initialized to the identity transformation.
+     */
+    constructor() {
+        super(CssMatrixTransform.DEFAULT_PARAMS);
     }
-    return 0;
-};
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    set(arg1, skewY, skewX, scaleY, translateX, translateY) {
+        let scaleX;
+        if (typeof arg1 === 'number') {
+            scaleX = arg1;
+        }
+        else {
+            [scaleX, skewX, skewY, scaleY, translateX, translateY] = arg1.getParameters();
+        }
+        this.params[0] = scaleX;
+        this.params[1] = skewY;
+        this.params[2] = skewX;
+        this.params[3] = scaleY;
+        this.params[4] = translateX;
+        this.params[5] = translateY;
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `matrix(${params.join(', ')})`;
+    }
+}
+CssMatrixTransform.DEFAULT_PARAMS = [1, 0, 0, 1, 0, 0];
 /**
- * An entry for a waypoint registered with {@link MapWaypointRenderer}.
+ * A CSS `rotate` transform.
  */
-class MapWaypointRendererEntry {
+class CssRotateTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `rotate` transform, initialized to zero rotation.
+     * @param unit The angle unit to use for this transform.
+     */
+    constructor(unit) {
+        super(CssRotateTransform.DEFAULT_PARAMS);
+        this.unit = unit;
+    }
+    /**
+     * Sets this transform's rotation angle.
+     * @param angle The angle to set.
+     * @param precision The precision with which to set the angle. A value of `0` denotes infinite precision. Defaults
+     * to `0`.
+     */
+    set(angle, precision = 0) {
+        this.params[0] = precision === 0 ? angle : MathUtils.round(angle, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `rotate(${params[0]}${this.unit})`;
+    }
+}
+CssRotateTransform.DEFAULT_PARAMS = [0];
+/**
+ * A CSS `rotate3d` transform.
+ */
+class CssRotate3dTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
+     * @param unit The angle unit to use for this transform.
+     */
+    constructor(unit) {
+        super(CssRotate3dTransform.DEFAULT_PARAMS);
+        this.unit = unit;
+    }
+    /**
+     * Sets this transform's rotation.
+     * @param x The x component of the rotation axis vector.
+     * @param y The y component of the rotation axis vector.
+     * @param z The z component of the rotation axis vector.
+     * @param angle The rotation angle to set.
+     * @param precision The precision with which to set the angle. A value of `0` denotes infinite precision. Defaults
+     * to `0`.
+     */
+    set(x, y, z, angle, precision = 0) {
+        this.params[0] = x;
+        this.params[1] = y;
+        this.params[2] = z;
+        this.params[3] = precision === 0 ? angle : MathUtils.round(angle, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `rotate3d(${params[0]}, ${params[1]}, ${params[2]}, ${params[3]}${this.unit})`;
+    }
+}
+CssRotate3dTransform.DEFAULT_PARAMS = [0, 0, 1, 0];
+/**
+ * A CSS `translateX` transform.
+ */
+class CssTranslateXTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `translateX` transform, initialized to zero translation.
+     * @param unit The unit to use for this transform.
+     */
+    constructor(unit) {
+        super(CssTranslateXTransform.DEFAULT_PARAMS);
+        this.unit = unit;
+    }
+    /**
+     * Sets this transform's translation.
+     * @param x The translation to set.
+     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     */
+    set(x, precision = 0) {
+        this.params[0] = precision === 0 ? x : MathUtils.round(x, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `translateX(${params[0]}${this.unit})`;
+    }
+}
+CssTranslateXTransform.DEFAULT_PARAMS = [0];
+/**
+ * A CSS `translateY` transform.
+ */
+class CssTranslateYTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `translateY` transform, initialized to zero translation.
+     * @param unit The unit to use for this transform.
+     */
+    constructor(unit) {
+        super(CssTranslateYTransform.DEFAULT_PARAMS);
+        this.unit = unit;
+    }
+    /**
+     * Sets this transform's translation.
+     * @param y The translation to set.
+     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     */
+    set(y, precision = 0) {
+        this.params[0] = precision === 0 ? y : MathUtils.round(y, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `translateY(${params[0]}${this.unit})`;
+    }
+}
+CssTranslateYTransform.DEFAULT_PARAMS = [0];
+/**
+ * A CSS `translateZ` transform.
+ */
+class CssTranslateZTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `translateZ` transform, initialized to zero translation.
+     * @param unit The unit to use for this transform.
+     */
+    constructor(unit) {
+        super(CssTranslateZTransform.DEFAULT_PARAMS);
+        this.unit = unit;
+    }
+    /**
+     * Sets this transform's translation.
+     * @param z The translation to set.
+     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     */
+    set(z, precision = 0) {
+        this.params[0] = precision === 0 ? z : MathUtils.round(z, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `translateZ(${params[0]}${this.unit})`;
+    }
+}
+CssTranslateZTransform.DEFAULT_PARAMS = [0];
+/**
+ * A CSS `translate` transform.
+ */
+class CssTranslateTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `translate` transform, initialized to zero translation.
+     * @param unitX The unit to use for this transform's x translation.
+     * @param unitY The unit to use for this transform's y translation. Defaults to the same unit as the x translation.
+     */
+    constructor(unitX, unitY = unitX) {
+        super(CssTranslateTransform.DEFAULT_PARAMS);
+        this.unitX = unitX;
+        this.unitY = unitY;
+    }
+    /**
+     * Sets this transform's translation.
+     * @param x The x translation to set.
+     * @param y The y translation to set.
+     * @param precisionX The precision with which to set the x translation. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     * @param precisionY The precision with which to set the y translation. A value of `0` denotes infinite precision.
+     * Defaults to the x translation precision value.
+     */
+    set(x, y, precisionX = 0, precisionY = precisionX) {
+        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
+        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `translate(${params[0]}${this.unitX}, ${params[1]}${this.unitY})`;
+    }
+}
+CssTranslateTransform.DEFAULT_PARAMS = [0, 0];
+/**
+ * A CSS `translate3d` transform.
+ */
+class CssTranslate3dTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `translate3d` transform, initialized to zero translation.
+     * @param unitX The unit to use for this transform's x translation.
+     * @param unitY The unit to use for this transform's y translation. Defaults to the same unit as the x translation.
+     * @param unitZ The unit to use for this transform's z translation. Defaults to the same unit as the x translation.
+     */
+    constructor(unitX, unitY = unitX, unitZ = unitX) {
+        super(CssTranslate3dTransform.DEFAULT_PARAMS);
+        this.unitX = unitX;
+        this.unitY = unitY;
+        this.unitZ = unitZ;
+    }
+    /**
+     * Sets this transform's translation.
+     * @param x The x translation to set.
+     * @param y The y translation to set.
+     * @param z The z translation to set.
+     * @param precisionX The precision with which to set the x translation. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     * @param precisionY The precision with which to set the y translation. A value of `0` denotes infinite precision.
+     * Defaults to the x translation precision value.
+     * @param precisionZ The precision with which to set the z translation. A value of `0` denotes infinite precision.
+     * Defaults to the x translation precision value.
+     */
+    set(x, y, z, precisionX = 0, precisionY = precisionX, precisionZ = precisionX) {
+        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
+        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
+        this.params[2] = precisionZ === 0 ? z : MathUtils.round(z, precisionZ);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `translate3d(${params[0]}${this.unitX}, ${params[1]}${this.unitY}, ${params[2]}${this.unitZ})`;
+    }
+}
+CssTranslate3dTransform.DEFAULT_PARAMS = [0, 0, 0];
+/**
+ * A CSS `scaleX` transform.
+ */
+class CssScaleXTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `scaleX` transform, initialized to the identity scaling.
+     */
+    constructor() {
+        super(CssScaleXTransform.DEFAULT_PARAMS);
+    }
+    /**
+     * Sets this transform's scaling.
+     * @param x The scaling to set.
+     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
+     * to `0`.
+     */
+    set(x, precision = 0) {
+        this.params[0] = precision === 0 ? x : MathUtils.round(x, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `scaleX(${params[0]})`;
+    }
+}
+CssScaleXTransform.DEFAULT_PARAMS = [1];
+/**
+ * A CSS `scaleY` transform.
+ */
+class CssScaleYTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `scaleY` transform, initialized to the identity scaling.
+     */
+    constructor() {
+        super(CssScaleYTransform.DEFAULT_PARAMS);
+    }
+    /**
+     * Sets this transform's scaling.
+     * @param y The scaling to set.
+     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
+     * to `0`.
+     */
+    set(y, precision = 0) {
+        this.params[0] = precision === 0 ? y : MathUtils.round(y, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `scaleY(${params[0]})`;
+    }
+}
+CssScaleYTransform.DEFAULT_PARAMS = [1];
+/**
+ * A CSS `scaleZ` transform.
+ */
+class CssScaleZTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
+     */
+    constructor() {
+        super(CssScaleZTransform.DEFAULT_PARAMS);
+    }
+    /**
+     * Sets this transform's scaling.
+     * @param z The scaling to set.
+     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
+     * to `0`.
+     */
+    set(z, precision = 0) {
+        this.params[0] = precision === 0 ? z : MathUtils.round(z, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `scaleZ(${params[0]})`;
+    }
+}
+CssScaleZTransform.DEFAULT_PARAMS = [1];
+/**
+ * A CSS `scale` transform.
+ */
+class CssScaleTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `scale` transform, initialized to the identity scaling.
+     */
+    constructor() {
+        super(CssScaleTransform.DEFAULT_PARAMS);
+    }
+    /**
+     * Sets this transform's scaling.
+     * @param x The x scaling to set.
+     * @param y The y scaling to set.
+     * @param precisionX The precision with which to set the x scaling. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     * @param precisionY The precision with which to set the y scaling. A value of `0` denotes infinite precision.
+     * Defaults to the x scaling precision value.
+     */
+    set(x, y, precisionX = 0, precisionY = precisionX) {
+        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
+        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `scale(${params[0]}, ${params[1]})`;
+    }
+}
+CssScaleTransform.DEFAULT_PARAMS = [1, 1];
+/**
+ * A CSS `scale3d` transform.
+ */
+class CssScale3dTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `scale3d` transform, initialized to the identity scaling.
+     */
+    constructor() {
+        super(CssScale3dTransform.DEFAULT_PARAMS);
+    }
+    /**
+     * Sets this transform's scaling.
+     * @param x The x scaling to set.
+     * @param y The y scaling to set.
+     * @param z The z scaling to set.
+     * @param precisionX The precision with which to set the x scaling. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     * @param precisionY The precision with which to set the y scaling. A value of `0` denotes infinite precision.
+     * Defaults to the x scaling precision value.
+     * @param precisionZ The precision with which to set the z scaling. A value of `0` denotes infinite precision.
+     * Defaults to the x scaling precision value.
+     */
+    set(x, y, z, precisionX = 0, precisionY = precisionX, precisionZ = precisionX) {
+        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
+        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
+        this.params[2] = precisionZ === 0 ? z : MathUtils.round(y, precisionZ);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `scale3d(${params[0]}, ${params[1]}, ${params[2]})`;
+    }
+}
+CssScale3dTransform.DEFAULT_PARAMS = [1, 1, 1];
+/**
+ * A concatenated chain of CSS transforms.
+ */
+class CssTransformChain {
+    /**
+     * Creates a new chain of CSS transforms.
+     * @param transforms The individual child transforms that will constitute the new transform chain. The order of
+     * the children passed to the constructor determines the order of concatenation. Concatenation follows the standard
+     * CSS transform convention: for a concatenation of transforms `[A, B, C]`, the resulting transformation is
+     * equivalent to the one produced by multiplying the transformation matrices in the order `(A * B) * C`.
+     */
+    constructor(...transforms) {
+        this.stringValues = [];
+        this.transforms = transforms;
+    }
+    /**
+     * Gets one of this chain's child transforms.
+     * @param index The index of the child to get.
+     * @returns The child transform at the specified index in this chain.
+     * @throws RangeError if `index` is out of bounds.
+     */
+    getChild(index) {
+        if (index < 0 || index >= this.transforms.length) {
+            throw new RangeError();
+        }
+        return this.transforms[index];
+    }
+    /** @inheritdoc */
+    resolve() {
+        let needRebuildString = false;
+        for (let i = 0; i < this.transforms.length; i++) {
+            const stringValue = this.transforms[i].resolve();
+            if (this.stringValues[i] !== stringValue) {
+                this.stringValues[i] = stringValue;
+                needRebuildString = true;
+            }
+        }
+        if (needRebuildString || this.chainedStringValue === undefined) {
+            this.chainedStringValue = this.stringValues.join(' ');
+        }
+        return this.chainedStringValue;
+    }
+}
+/**
+ * A subscribable subject whose value is a CSS transform string resolved from a {@link CssTransform}.
+ */
+class CssTransformSubject extends AbstractSubscribable {
     /**
      * Constructor.
-     * @param waypoint The waypoint associated with this entry.
-     * @param textManager The text manager to which to register this entry's labels.
-     * @param roleDefinitions A map of all valid render roles to their definitions.
-     * @param selectRoleToRender A function to use to select roles under which to render this entry.
+     * @param transform The new subject's CSS transform.
      */
-    constructor(waypoint, textManager, roleDefinitions, selectRoleToRender) {
-        this.waypoint = waypoint;
-        this.textManager = textManager;
-        this.roleDefinitions = roleDefinitions;
-        this.selectRoleToRender = selectRoleToRender;
-        this.registrations = {};
-        this._roles = 0;
-        this._icon = null;
-        this._label = null;
-        this._lastRenderedRole = 0;
+    constructor(transform) {
+        super();
+        this._transform = transform;
+        this.stringValue = transform.resolve();
+        this.transform = transform;
     }
-    // eslint-disable-next-line jsdoc/require-returns
-    /** The render role(s) assigned to this entry. */
-    get roles() {
-        return this._roles;
-    }
-    // eslint-disable-next-line jsdoc/require-returns
-    /** The role under which this entry was last rendered, or 0 if this entry has not yet been rendered. */
-    get lastRenderedRole() {
-        return this._lastRenderedRole;
-    }
-    // eslint-disable-next-line jsdoc/require-returns
-    /** This entry's waypoint icon. */
-    get icon() {
-        return this._icon;
-    }
-    // eslint-disable-next-line jsdoc/require-returns
-    /** This entry's waypoint label. */
-    get label() {
-        return this._label;
+    /** @inheritdoc */
+    get() {
+        return this.stringValue;
     }
     /**
-     * Checks whether this entry is assigned any of the specified render roles. Optionally, this method can also check
-     * if this entry was last rendered in any of the specified roles instead.
-     * @param roles The render roles against which to check.
-     * @param useLastRendered Whether to check the role(s) in which this entry was last rendered instead of the current
-     * roles assigned to this entry. False by default.
-     * @returns whether the check passed.
+     * Resolves this subject's CSS transform to a CSS transform string, and sets this subject's value to the resolved
+     * string. If this changes this subject's value, subscribers will be notified.
      */
-    isAnyRole(roles, useLastRendered = false) {
-        let toCompare;
-        if (useLastRendered) {
-            toCompare = this.lastRenderedRole;
+    resolve() {
+        const stringValue = this._transform.resolve();
+        if (stringValue !== this.stringValue) {
+            this.stringValue = stringValue;
+            this.notify();
         }
-        else {
-            toCompare = this.roles;
-        }
-        return BitFlags.isAny(toCompare, roles);
     }
     /**
-     * Checks whether this entry is assigned only the specified render role(s). Optionally, this method can also check
-     * if this entry was last rendered in only the specified role(s) instead.
-     * @param roles The render roles against which to check.
-     * @param useLastRendered Whether to check the role(s) in which this entry was last rendered instead of the current
-     * roles assigned to this entry. False by default.
-     * @returns whether the check passed.
+     * Creates a new instance of {@link CssTransformSubject} whose value is resolved from a CSS transform.
+     * @param transform A CSS transform.
+     * @returns A new instance of {@link CssTransformSubject} whose value is resolved from the specified CSS transform.
      */
-    isOnlyRole(roles, useLastRendered = false) {
-        let toCompare;
-        if (useLastRendered) {
-            toCompare = this.lastRenderedRole;
-        }
-        else {
-            toCompare = this.roles;
-        }
-        return toCompare === roles;
+    static create(transform) {
+        return new CssTransformSubject(transform);
+    }
+}
+/**
+ * A utility class for building CSS transforms.
+ */
+class CssTransformBuilder {
+    /**
+     * Creates a new instance of a CSS `matrix` transform, initialized to the identity transformation.
+     * @returns A new instance of a CSS `matrix` transform, initialized to the identity transformation.
+     */
+    static matrix() {
+        return new CssMatrixTransform();
     }
     /**
-     * Checks whether this entry is assigned all the specified render role(s). Optionally, this method can also check
-     * if this entry was last rendered in all the specified role(s) instead.
-     * @param roles - the render role(s) against which to check.
-     * @param useLastRendered Whether to check the role(s) in which this entry was last rendered instead of the current
-     * roles assigned to this entry. False by default.
-     * @returns whether the check passed.
+     * Creates a new instance of a CSS `rotate` transform, initialized to zero rotation.
+     * @param unit The angle unit to use for the new transform.
+     * @returns A new instance of a CSS `rotate` transform, initialized to zero rotation.
      */
-    isAllRoles(roles, useLastRendered = false) {
-        let toCompare;
-        if (useLastRendered) {
-            toCompare = this.lastRenderedRole;
-        }
-        else {
-            toCompare = this.roles;
-        }
-        return BitFlags.isAll(toCompare, roles);
+    static rotate(unit) {
+        return new CssRotateTransform(unit);
     }
     /**
-     * Assigns one or more render roles to this entry.
-     * @param roles The render role(s) to assign.
-     * @param sourceId The unique string ID of the source of the assignment.
+     * Creates a new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
+     * @param unit The angle unit to use for the new transform.
+     * @returns A new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
      */
-    addRole(roles, sourceId) {
-        BitFlags.forEach(roles, (value, index) => {
-            var _a;
-            var _b, _c;
-            ((_a = (_b = this.registrations)[_c = 1 << index]) !== null && _a !== void 0 ? _a : (_b[_c] = new Set())).add(sourceId);
-        }, true);
-        this._roles = this._roles | roles;
+    static rotate3d(unit) {
+        return new CssRotate3dTransform(unit);
     }
     /**
-     * Removes one or more render roles from this entry.
-     * @param roles The render role(s) to remove.
-     * @param sourceId The unique string ID of the soruce of the de-assignment.
+     * Creates a new instance of a CSS `translateX` transform, initialized to zero translation.
+     * @param unit The unit to use for the new transform.
+     * @returns A new instance of a CSS `translateX` transform, initialized to zero translation.
      */
-    removeRole(roles, sourceId) {
-        BitFlags.forEach(roles, (value, index) => {
-            const role = 1 << index;
-            const registrations = this.registrations[role];
-            if (registrations) {
-                registrations.delete(sourceId);
-                if (registrations.size === 0) {
-                    this._roles = this._roles & ~role;
-                }
+    static translateX(unit) {
+        return new CssTranslateXTransform(unit);
+    }
+    /**
+     * Creates a new instance of a CSS `translateY` transform, initialized to zero translation.
+     * @param unit The unit to use for the new transform.
+     * @returns A new instance of a CSS `translateY` transform, initialized to zero translation.
+     */
+    static translateY(unit) {
+        return new CssTranslateYTransform(unit);
+    }
+    /**
+     * Creates a new instance of a CSS `translateZ` transform, initialized to zero translation.
+     * @param unit The unit to use for the new transform.
+     * @returns A new instance of a CSS `translateZ` transform, initialized to zero translation.
+     */
+    static translateZ(unit) {
+        return new CssTranslateZTransform(unit);
+    }
+    /**
+     * Creates a new instance of a CSS `translate` transform, initialized to zero translation.
+     * @param unitX The unit to use for the new transform's x translation.
+     * @param unitY The unit to use for the new transform's y translation.
+     * @returns A new instance of a CSS `translate` transform, initialized to zero translation.
+     */
+    static translate(unitX, unitY) {
+        return new CssTranslateTransform(unitX, unitY);
+    }
+    /**
+     * Creates a new instance of a CSS `translate3d` transform, initialized to zero translation.
+     * @param unitX The unit to use for the new transform's x translation.
+     * @param unitY The unit to use for the new transform's y translation.
+     * @param unitZ The unit to use for the new transform's z translation.
+     * @returns A new instance of a CSS `translate3d` transform, initialized to zero translation.
+     */
+    static translate3d(unitX, unitY, unitZ) {
+        return new CssTranslate3dTransform(unitX, unitY, unitZ);
+    }
+    /**
+     * Creates a new instance of a CSS `scaleX` transform, initialized to the identity scaling.
+     * @returns A new instance of a CSS `scaleX` transform, initialized to the identity scaling.
+     */
+    static scaleX() {
+        return new CssScaleXTransform();
+    }
+    /**
+     * Creates a new instance of a CSS `scaleY` transform, initialized to the identity scaling.
+     * @returns A new instance of a CSS `scaleY` transform, initialized to the identity scaling.
+     */
+    static scaleY() {
+        return new CssScaleYTransform();
+    }
+    /**
+     * Creates a new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
+     * @returns A new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
+     */
+    static scaleZ() {
+        return new CssScaleZTransform();
+    }
+    /**
+     * Creates a new instance of a CSS `scale` transform, initialized to the identity scaling.
+     * @returns A new instance of a CSS `scale` transform, initialized to the identity scaling.
+     */
+    static scale() {
+        return new CssScaleTransform();
+    }
+    /**
+     * Creates a new instance of a CSS `scale3d` transform, initialized to the identity scaling.
+     * @returns A new instance of a CSS `scale3d` transform, initialized to the identity scaling.
+     */
+    static scale3d() {
+        return new CssScale3dTransform();
+    }
+    /**
+     * Concatenates zero or more CSS transformations.
+     * @param transforms The individual transforms to concatentate. The order of the transforms passed to the function
+     * determines the order of concatenation. Concatenation follows the standard CSS transform convention: for a
+     * concatenation of transforms `[A, B, C]`, the resulting transformation is equivalent to the one produced by
+     * multiplying the transformation matrices in the order `(A * B) * C`.
+     * @returns A new {@link CssTransformChain} object representing the concatenation of the specified transforms.
+     */
+    static concat(...transforms) {
+        return new CssTransformChain(...transforms);
+    }
+}
+
+/**
+ * Renders arcs along geo circles to a path stream stack.
+ */
+class GeoCirclePathRenderer {
+    /**
+     * Renders an arc along a geo circle to a path stream stack.
+     * @param circle The geo circle containing the arc to render.
+     * @param startLat The latitude of the start of the arc, in degrees.
+     * @param startLon The longitude of the start of the arc, in degrees.
+     * @param endLat The latitude of the end of the arc, in degrees.
+     * @param endLon The longitude of the end of the arc, in degrees.
+     * @param streamStack The path stream stack to which to render.
+     * @param continuePath Whether to continue the previously rendered path. If true, a discontinuity in the rendered
+     * path will not be inserted before the arc is rendered. This may lead to undesired artifacts if the previously
+     * rendered path does not terminate at the point where the projected arc starts. Defaults to false.
+     */
+    render(circle, startLat, startLon, endLat, endLon, streamStack, continuePath = false) {
+        if (!continuePath) {
+            streamStack.beginPath();
+            streamStack.moveTo(startLon, startLat);
+        }
+        if (circle.isGreatCircle()) {
+            const startPoint = GeoPoint.sphericalToCartesian(startLat, startLon, GeoCirclePathRenderer.vec3Cache[0]);
+            const distance = circle.distanceAlong(startPoint, GeoCirclePathRenderer.geoPointCache[0].set(endLat, endLon), Math.PI);
+            if (distance >= Math.PI - GeoPoint.EQUALITY_TOLERANCE) {
+                const midPoint = circle.offsetDistanceAlong(startPoint, distance / 2, GeoCirclePathRenderer.geoPointCache[0], Math.PI);
+                const midLat = midPoint.lat;
+                const midLon = midPoint.lon;
+                streamStack.lineTo(midLon, midLat);
+                streamStack.lineTo(endLon, endLat);
             }
-        }, true);
-    }
-    /**
-     * Prepares this entry for rendering.
-     * @param showRole The role in which this entry should be rendered.
-     * @param iconFactory The factory to use to get a waypoint icon.
-     * @param labelFactory The factory to use to get a waypoint label.
-     */
-    prepareRender(showRole, iconFactory, labelFactory) {
-        var _a, _b;
-        if (showRole === this._lastRenderedRole) {
-            return;
+            else {
+                streamStack.lineTo(endLon, endLat);
+            }
         }
-        this._icon = (_a = iconFactory === null || iconFactory === void 0 ? void 0 : iconFactory.getIcon(showRole, this.waypoint)) !== null && _a !== void 0 ? _a : null;
-        const label = (_b = labelFactory === null || labelFactory === void 0 ? void 0 : labelFactory.getLabel(showRole, this.waypoint)) !== null && _b !== void 0 ? _b : null;
-        if (this._label && this._label !== label) {
-            this.textManager.deregister(this._label);
-        }
-        if (label && label !== this._label) {
-            this.textManager.register(label);
-        }
-        this._label = label;
-        this._lastRenderedRole = showRole;
-    }
-    /**
-     * Updates this entry. An appropriate render role is selected, then the icon and label are updated as appropriate
-     * for the chosen role. If the waypoint's label should be visible, it is added to the appropriate text manager.
-     * Of note, this method will not draw the waypoint icon to a canvas element; it will simply ensure the .showIcon
-     * property contains the correct value depending on whether the icon should be visible.
-     */
-    update() {
-        var _a, _b;
-        const showRole = this.selectRoleToRender(this, this.roleDefinitions);
-        const roleDef = this.roleDefinitions.get(showRole);
-        const iconFactory = (_a = roleDef === null || roleDef === void 0 ? void 0 : roleDef.iconFactory) !== null && _a !== void 0 ? _a : null;
-        const labelFactory = (_b = roleDef === null || roleDef === void 0 ? void 0 : roleDef.labelFactory) !== null && _b !== void 0 ? _b : null;
-        this.prepareRender(showRole, iconFactory, labelFactory);
-    }
-    /**
-     * Destroys this entry. Any label from this entry currently registered with the text manager will be deregistered.
-     */
-    destroy() {
-        if (this._label) {
-            this.textManager.deregister(this._label);
+        else {
+            const turnCenter = FlightPathUtils.getTurnCenterFromCircle(circle, GeoCirclePathRenderer.geoPointCache[0]);
+            const turnDirection = FlightPathUtils.getTurnDirectionFromCircle(circle);
+            const isCenterPole = Math.abs(turnCenter.lat) >= 90 - GeoCircle.ANGULAR_TOLERANCE * Avionics.Utils.RAD2DEG;
+            let startAngle, endAngle;
+            if (isCenterPole) {
+                startAngle = startLon;
+                endAngle = endLon;
+            }
+            else {
+                startAngle = turnCenter.bearingTo(startLat, startLon);
+                endAngle = turnCenter.bearingTo(endLat, endLon);
+            }
+            streamStack.arc(turnCenter.lon, turnCenter.lat, FlightPathUtils.getTurnRadiusFromCircle(circle), startAngle, endAngle, turnDirection === 'left');
         }
     }
 }
+GeoCirclePathRenderer.NORTH_POLE_VEC = new Float64Array([0, 0, 1]);
+GeoCirclePathRenderer.geoPointCache = [new GeoPoint(0, 0), new GeoPoint(0, 0)];
+GeoCirclePathRenderer.vec3Cache = [new Float64Array(3)];
 
 /**
  * A path stream which does nothing on any input.
@@ -29095,6 +29320,73 @@ class TransformingPathStreamStack extends AbstractTransformingPathStream {
 }
 
 /**
+ * Renders arcs along geo circles as curved lines.
+ */
+class GeoCircleLineRenderer {
+    constructor() {
+        this.pathRenderer = new GeoCirclePathRenderer();
+    }
+    /**
+     * Renders an arc along a geo circle to a canvas.
+     * @param circle The geo circle containing the arc to render.
+     * @param startLat The latitude of the start of the arc, in degrees.
+     * @param startLon The longitude of the start of the arc, in degrees.
+     * @param endLat The latitude of the end of the arc, in degrees.
+     * @param endLon The longitude of the end of the arc, in degrees.
+     * @param context The canvas 2D rendering context to which to render.
+     * @param streamStack The path stream stack to which to render.
+     * @param width The width of the rendered line.
+     * @param style The style of the rendered line.
+     * @param dash The dash array of the rendered line. Defaults to no dash.
+     * @param outlineWidth The width of the outline, in pixels. Defaults to 0 pixels.
+     * @param outlineStyle The style of the outline. Defaults to `'black'`.
+     * @param lineCap The line cap style to use. Defaults to `'butt'`.
+     */
+    render(circle, startLat, startLon, endLat, endLon, context, streamStack, width, style, dash, outlineWidth = 0, outlineStyle = 'black', lineCap = 'butt') {
+        this.pathRenderer.render(circle, startLat, startLon, endLat, endLon, streamStack);
+        if (outlineWidth > 0) {
+            context.lineWidth = width + (outlineWidth * 2);
+            context.strokeStyle = outlineStyle;
+            context.lineCap = lineCap;
+            context.setLineDash(dash !== null && dash !== void 0 ? dash : GeoCircleLineRenderer.EMPTY_DASH);
+            context.stroke();
+        }
+        context.lineWidth = width;
+        context.strokeStyle = style;
+        context.lineCap = lineCap;
+        context.setLineDash(dash !== null && dash !== void 0 ? dash : GeoCircleLineRenderer.EMPTY_DASH);
+        context.stroke();
+    }
+}
+GeoCircleLineRenderer.EMPTY_DASH = [];
+
+/**
+ * Renders flight path vectors as a curved line.
+ */
+class FlightPathVectorLineRenderer {
+    constructor() {
+        this.renderer = new GeoCircleLineRenderer();
+    }
+    /**
+     * Renders a flight path vector to a canvas.
+     * @param vector The flight path vector to render.
+     * @param context The canvas 2D rendering context to which to render.
+     * @param streamStack The path stream to which to render.
+     * @param width The width of the rendered line.
+     * @param style The style of the rendered line.
+     * @param dash The dash array of the rendered line. Defaults to no dash.
+     * @param outlineWidth The width of the outline, in pixels. Defaults to 0 pixels.
+     * @param outlineStyle The style of the outline. Defaults to `'black'`.
+     * @param lineCap The line cap style to use. Defaults to `'butt'`.
+     */
+    render(vector, context, streamStack, width, style, dash, outlineWidth, outlineStyle, lineCap = 'butt') {
+        const circle = FlightPathUtils.setGeoCircleFromVector(vector, FlightPathVectorLineRenderer.geoCircleCache[0]);
+        this.renderer.render(circle, vector.startLat, vector.startLon, vector.endLat, vector.endLon, context, streamStack, width, style, dash, outlineWidth, outlineStyle, lineCap);
+    }
+}
+FlightPathVectorLineRenderer.geoCircleCache = [new GeoCircle(new Float64Array(3), 0)];
+
+/**
  * A stack of {@link TransformingPathStream}s which transforms an input in spherical geographic coordinates to planar
  * projected coordinates. The stack contains two sub-stacks: a pre-projected stack which transforms the path before
  * it is projected, and a post-projected stack which transforms the projected path before it is sent to the consumer.
@@ -29225,283 +29517,1817 @@ class GeoProjectionPathStreamStack extends AbstractTransformingPathStream {
 }
 
 /**
- * Renders arcs along geo circles to a path stream stack.
+ * A base component for map layers.
  */
-class GeoCirclePathRenderer {
+class MapLayer extends DisplayComponent {
+    constructor() {
+        super(...arguments);
+        this._isVisible = true;
+    }
     /**
-     * Renders an arc along a geo circle to a path stream stack.
-     * @param circle The geo circle containing the arc to render.
-     * @param startLat The latitude of the start of the arc, in degrees.
-     * @param startLon The longitude of the start of the arc, in degrees.
-     * @param endLat The latitude of the end of the arc, in degrees.
-     * @param endLon The longitude of the end of the arc, in degrees.
-     * @param streamStack The path stream stack to which to render.
-     * @param continuePath Whether to continue the previously rendered path. If true, a discontinuity in the rendered
-     * path will not be inserted before the arc is rendered. This may lead to undesired artifacts if the previously
-     * rendered path does not terminate at the point where the projected arc starts. Defaults to false.
+     * Checks whether this layer is visible.
+     * @returns whether this layer is visible.
      */
-    render(circle, startLat, startLon, endLat, endLon, streamStack, continuePath = false) {
-        if (!continuePath) {
-            streamStack.beginPath();
-            streamStack.moveTo(startLon, startLat);
+    isVisible() {
+        return this._isVisible;
+    }
+    /**
+     * Sets this layer's visibility.
+     * @param val Whether this layer should be visible.
+     */
+    setVisible(val) {
+        if (this._isVisible === val) {
+            return;
         }
-        if (circle.isGreatCircle()) {
-            const startPoint = GeoPoint.sphericalToCartesian(startLat, startLon, GeoCirclePathRenderer.vec3Cache[0]);
-            const distance = circle.distanceAlong(startPoint, GeoCirclePathRenderer.geoPointCache[0].set(endLat, endLon), Math.PI);
-            if (distance >= Math.PI - GeoPoint.EQUALITY_TOLERANCE) {
-                const midPoint = circle.offsetDistanceAlong(startPoint, distance / 2, GeoCirclePathRenderer.geoPointCache[0], Math.PI);
-                const midLat = midPoint.lat;
-                const midLon = midPoint.lon;
-                streamStack.lineTo(midLon, midLat);
-                streamStack.lineTo(endLon, endLat);
+        this._isVisible = val;
+        this.onVisibilityChanged(val);
+    }
+    /**
+     * This method is called when this layer's visibility changes.
+     * @param isVisible Whether the layer is now visible.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    onVisibilityChanged(isVisible) {
+        // noop
+    }
+    /**
+     * This method is called when this layer is attached to its parent map component.
+     */
+    onAttached() {
+        // noop
+    }
+    /**
+     * This method is called when this layer's parent map is woken.
+     */
+    onWake() {
+        // noop
+    }
+    /**
+     * This method is called when this layer's parent map is put to sleep.
+     */
+    onSleep() {
+        // noop
+    }
+    /**
+     * This method is called when the map projection changes.
+     * @param mapProjection - this layer's map projection.
+     * @param changeFlags The types of changes made to the projection.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    onMapProjectionChanged(mapProjection, changeFlags) {
+        // noop
+    }
+    /**
+     * This method is called once every map update cycle.
+     * @param time The current time as a UNIX timestamp.
+     * @param elapsed The elapsed time, in milliseconds, since the last update.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    onUpdated(time, elapsed) {
+        // noop
+    }
+    /**
+     * This method is called when this layer is detached from its parent map component.
+     */
+    onDetached() {
+        // noop
+    }
+}
+
+/**
+ * The different types of map projection changes.
+ */
+var MapProjectionChangeType;
+(function (MapProjectionChangeType) {
+    MapProjectionChangeType[MapProjectionChangeType["Target"] = 1] = "Target";
+    MapProjectionChangeType[MapProjectionChangeType["Center"] = 2] = "Center";
+    MapProjectionChangeType[MapProjectionChangeType["TargetProjected"] = 4] = "TargetProjected";
+    MapProjectionChangeType[MapProjectionChangeType["Range"] = 8] = "Range";
+    MapProjectionChangeType[MapProjectionChangeType["RangeEndpoints"] = 16] = "RangeEndpoints";
+    MapProjectionChangeType[MapProjectionChangeType["ScaleFactor"] = 32] = "ScaleFactor";
+    MapProjectionChangeType[MapProjectionChangeType["Rotation"] = 64] = "Rotation";
+    MapProjectionChangeType[MapProjectionChangeType["ProjectedSize"] = 128] = "ProjectedSize";
+    MapProjectionChangeType[MapProjectionChangeType["ProjectedResolution"] = 256] = "ProjectedResolution";
+})(MapProjectionChangeType || (MapProjectionChangeType = {}));
+/**
+ * A geographic projection model for a map. MapProjection uses a mercator projection.
+ */
+class MapProjection {
+    /**
+     * Creates a new map projection.
+     * @param projectedWidth The initial width of the projection window, in pixels.
+     * @param projectedHeight The initial height of the projection window, in pixels.
+     */
+    constructor(projectedWidth, projectedHeight) {
+        // settable parameters
+        this.target = new GeoPoint(0, 0);
+        this.targetProjectedOffset = new Float64Array(2);
+        this.targetProjected = new Float64Array(2);
+        this.range = 1; // great-arc radians
+        this.rangeEndpoints = new Float64Array([0.5, 0, 0.5, 1]); // [relX1, relY1, relX2, relY2]
+        this.projectedSize = new Float64Array(2);
+        // computed parameters
+        this.center = new GeoPoint(0, 0);
+        this.centerProjected = new Float64Array(2);
+        this.projectedRange = 0; // projected distance between the range endpoints in pixels
+        this.widthRange = 0; // great-arc radians
+        this.heightRange = 0; // great-arc radians
+        this.oldParameters = {
+            target: new GeoPoint(0, 0),
+            center: new GeoPoint(0, 0),
+            targetProjected: new Float64Array(2),
+            range: 1,
+            rangeEndpoints: new Float64Array(4),
+            scaleFactor: 1,
+            rotation: 0,
+            projectedSize: new Float64Array(2),
+            projectedResolution: 0
+        };
+        this.queuedParameters = Object.assign({}, this.oldParameters);
+        this.updateQueued = false;
+        this.changeListeners = [];
+        Vec2Math.set(projectedWidth, projectedHeight, this.projectedSize);
+        this.geoProjection = new MercatorProjection();
+        Vec2Math.set(projectedWidth / 2, projectedHeight / 2, this.centerProjected);
+        this.targetProjected.set(this.centerProjected);
+        this.geoProjection.setReflectY(true).setTranslation(this.centerProjected);
+        this.recompute();
+    }
+    /**
+     * Gets this map projection's GeoProjection instance.
+     * @returns This map projection's GeoProjection instance.
+     */
+    getGeoProjection() {
+        return this.geoProjection;
+    }
+    /**
+     * Gets the target geographic point of this projection. The target is guaranteed to be projected to a specific
+     * point in the projected window defined by the center of the window plus the target projected offset.
+     * @returns The target geographic point of this projection.
+     */
+    getTarget() {
+        return this.target.readonly;
+    }
+    /**
+     * Gets the projected offset from the center of the projected window of the target of this projection.
+     * @returns The projected offset from the center of the projected window of the target of this projection.
+     */
+    getTargetProjectedOffset() {
+        return this.targetProjectedOffset;
+    }
+    /**
+     * Gets the projected location of the target of this projection.
+     * @returns The projected location of the target of this projection.
+     */
+    getTargetProjected() {
+        return this.targetProjected;
+    }
+    /**
+     * Gets the range of this projection, in great-arc radians, as measured between the projection's two range endpoints.
+     * @returns The range of this projection, in great-arc radians.
+     */
+    getRange() {
+        return this.range;
+    }
+    /**
+     * Gets the endpoints used to measure the range of the projection, as a 4-tuple `[relX1, relY1, relX2, relY2]`. Each
+     * component is expressed in relative projected coordinates, where `0` is the left/top of the projected window, and
+     * `1` is the right/bottom of the projected window.
+     * @returns The endpoints used to measure the range of the projection, as a 4-tuple `[relX1, relY1, relX2, relY2]`.
+     */
+    getRangeEndpoints() {
+        return this.rangeEndpoints;
+    }
+    /**
+     * Gets the range of this projection, in great-arc radians, as measured from the center-left to the center-right of
+     * the projected window.
+     * @returns The range of this projection's projected window width, in great-arc radians.
+     */
+    getWidthRange() {
+        return this.widthRange;
+    }
+    /**
+     * Gets the range of this projection, in great-arc radians, as measured from the top-center to the bottom-center of
+     * the projected window.
+     * @returns The range of this projection's projected window height, in great-arc radians.
+     */
+    getHeightRange() {
+        return this.heightRange;
+    }
+    /**
+     * Gets the nominal scale factor of this projection. At a scale factor of 1, a distance of one great-arc radian will
+     * be projected to a distance of one pixel.
+     * @returns The nominal scale factor of this projection.
+     */
+    getScaleFactor() {
+        return this.geoProjection.getScaleFactor();
+    }
+    /**
+     * Gets the post-projected (planar) rotation angle of this projection in radians.
+     * @returns The post-projected rotation angle of this projection.
+     */
+    getRotation() {
+        return this.geoProjection.getPostRotation();
+    }
+    /**
+     * Gets the size of the projected window, in pixels.
+     * @returns The size of the projected window.
+     */
+    getProjectedSize() {
+        return this.projectedSize;
+    }
+    /**
+     * Gets the geographic point located at the center of this projection's projected window.
+     * @returns The geographic point located at the center of this projection's projected window.
+     */
+    getCenter() {
+        return this.center.readonly;
+    }
+    /**
+     * Gets the center of this projection's projected window.
+     * @returns The center of this projection's projected window.
+     */
+    getCenterProjected() {
+        return this.centerProjected;
+    }
+    /**
+     * Gets the average resolution, in great-arc radians per pixel, of the projected map along a line between the range
+     * endpoints.
+     * @returns The average resolution of the projected map along a line between the range endpoints.
+     */
+    getProjectedResolution() {
+        return this.range / this.projectedRange;
+    }
+    /**
+     * Calculates the true range of this projection, in great-arc radians, given a hypothetical projected center point.
+     * @param centerProjected The projected location of the hypothetical center point to use for the calculation.
+     * @returns The true range of this projection given the hypothetical projected center point.
+     */
+    calculateRangeAtCenter(centerProjected) {
+        const endpoints = this.rangeEndpoints;
+        const projectedWidth = this.projectedSize[0];
+        const projectedHeight = this.projectedSize[1];
+        const endpoint1 = MapProjection.tempVec2_3;
+        endpoint1[0] = centerProjected[0] + projectedWidth * (endpoints[0] - 0.5);
+        endpoint1[1] = centerProjected[1] + projectedHeight * (endpoints[1] - 0.5);
+        const endpoint2 = MapProjection.tempVec2_4;
+        endpoint2[0] = centerProjected[0] + projectedWidth * (endpoints[2] - 0.5);
+        endpoint2[1] = centerProjected[1] + projectedHeight * (endpoints[3] - 0.5);
+        const top = this.geoProjection.invert(endpoint1, MapProjection.tempGeoPoint_1);
+        const bottom = this.geoProjection.invert(endpoint2, MapProjection.tempGeoPoint_2);
+        return top.distance(bottom);
+    }
+    /**
+     * Recomputes this projection's computed parameters.
+     */
+    recompute() {
+        const currentTargetProjected = this.geoProjection.project(this.target, MapProjection.tempVec2_1);
+        if (!isFinite(currentTargetProjected[0] + currentTargetProjected[1])) {
+            // Check if we can potentially fix the geo projection by resetting its scale factor and center to defaults.
+            const translation = this.geoProjection.getTranslation();
+            if (isFinite(this.target.lat)
+                && isFinite(this.target.lon)
+                && isFinite(this.geoProjection.getPostRotation())
+                && isFinite(translation[0])
+                && isFinite(translation[1])) {
+                this.geoProjection.setScaleFactor(MapProjection.DEFAULT_SCALE_FACTOR);
+                this.geoProjection.setCenter(MapProjection.tempGeoPoint_1.set(0, 0));
+                this.geoProjection.setPreRotation(Vec3Math.set(0, 0, 0, MapProjection.vec3Cache[0]));
             }
             else {
-                streamStack.lineTo(endLon, endLat);
+                return;
+            }
+        }
+        const currentCenterProjected = MapProjection.tempVec2_2;
+        currentCenterProjected.set(currentTargetProjected);
+        currentCenterProjected[0] -= this.targetProjectedOffset[0];
+        currentCenterProjected[1] -= this.targetProjectedOffset[1];
+        let currentRange = this.calculateRangeAtCenter(currentCenterProjected);
+        let ratio = currentRange / this.range;
+        if (!isFinite(ratio) || ratio === 0) {
+            return;
+        }
+        // iteratively find the appropriate scale factor (empiric testing shows this typically takes less than 4 iterations
+        // to converge)
+        let lastScaleFactor = this.geoProjection.getScaleFactor();
+        let iterCount = 0;
+        let ratioError = Math.abs(ratio - 1);
+        let deltaRatioError = MapProjection.SCALE_FACTOR_TOLERANCE + 1;
+        while (iterCount++ < MapProjection.SCALE_FACTOR_MAX_ITER
+            && ratioError > MapProjection.SCALE_FACTOR_TOLERANCE
+            && deltaRatioError > MapProjection.SCALE_FACTOR_TOLERANCE) {
+            this.geoProjection.setScaleFactor(ratio * lastScaleFactor);
+            this.geoProjection.project(this.target, currentTargetProjected);
+            currentCenterProjected.set(currentTargetProjected);
+            currentCenterProjected[0] -= this.targetProjectedOffset[0];
+            currentCenterProjected[1] -= this.targetProjectedOffset[1];
+            currentRange = this.calculateRangeAtCenter(currentCenterProjected);
+            const newRatio = currentRange / this.range;
+            const ratioDelta = newRatio - ratio;
+            // Check to see if the ratio between current range and target range is invalid, did not change, or changed in the
+            // direction opposite to what we were expecting. If so, this means that our range measurements are close to the
+            // poles and range no longer monotonically increases with decreasing scale factor and vice versa. If we continue
+            // iteration, we will likely push our scale factor to 0 or infinity. Therefore, we halt immediately and settle
+            // for using the scale factor before we applied the most recent correction.
+            if (!isFinite(ratio)
+                || ratio < 1 && ratioDelta <= 0
+                || ratio > 1 && ratioDelta >= 0) {
+                this.geoProjection.setScaleFactor(lastScaleFactor);
+            }
+            lastScaleFactor = this.geoProjection.getScaleFactor();
+            ratio = newRatio;
+            const newRatioError = Math.abs(ratio - 1);
+            deltaRatioError = Math.abs(newRatioError - ratioError);
+            ratioError = newRatioError;
+        }
+        // calculate the center point of the projection
+        this.invert(currentCenterProjected, this.center);
+        this.geoProjection.setCenter(this.center);
+        // set the projection's pre-rotation to avoid anti-meridian wrapping issues
+        const preRotation = Vec3Math.set(-this.center.lon * Avionics.Utils.DEG2RAD, 0, 0, MapProjection.vec3Cache[0]);
+        this.geoProjection.setPreRotation(preRotation);
+        const width = this.projectedSize[0];
+        const height = this.projectedSize[1];
+        this.projectedRange = Math.hypot((this.rangeEndpoints[2] - this.rangeEndpoints[0]) * width, (this.rangeEndpoints[3] - this.rangeEndpoints[1]) * height);
+        const left = Vec2Math.set(0, height / 2, MapProjection.tempVec2_1);
+        const right = Vec2Math.set(width, height / 2, MapProjection.tempVec2_2);
+        this.widthRange = this.geoDistance(left, right);
+        const top = Vec2Math.set(width / 2, 0, MapProjection.tempVec2_1);
+        const bottom = Vec2Math.set(width / 2, height, MapProjection.tempVec2_2);
+        this.heightRange = this.geoDistance(top, bottom);
+    }
+    /**
+     * Sets this projection's parameters. Parameters not explicitly defined in the parameters argument will be left
+     * unchanged.
+     * @param parameters The new parameters.
+     */
+    set(parameters) {
+        // save old values
+        this.storeParameters(this.oldParameters);
+        parameters.projectedSize && this.setProjectedSize(parameters.projectedSize);
+        parameters.target && this.target.set(parameters.target);
+        parameters.targetProjectedOffset && this.setTargetProjectedOffset(parameters.targetProjectedOffset);
+        parameters.range !== undefined && (this.range = parameters.range);
+        parameters.rangeEndpoints && this.rangeEndpoints.set(parameters.rangeEndpoints);
+        parameters.rotation !== undefined && this.geoProjection.setPostRotation(parameters.rotation);
+        let changeFlags = this.computeChangeFlags(this.oldParameters);
+        if (changeFlags !== 0) {
+            this.recompute();
+            changeFlags |= this.computeDerivedChangeFlags(this.oldParameters);
+            if (changeFlags !== 0) {
+                this.notifyChangeListeners(changeFlags);
+            }
+        }
+    }
+    /**
+     * Sets the projection parameters to be applied when applyQueued() is called.
+     * @param parameters The parameter changes to queue.
+     */
+    setQueued(parameters) {
+        Object.assign(this.queuedParameters, parameters);
+        this.updateQueued = true;
+    }
+    /**
+     * Applies the set of queued projection changes, if any are queued.
+     */
+    applyQueued() {
+        if (this.updateQueued) {
+            this.updateQueued = false;
+            this.set(this.queuedParameters);
+            for (const key in this.queuedParameters) {
+                delete this.queuedParameters[key];
+            }
+        }
+    }
+    /**
+     * Sets the size of the projected window.
+     * @param size The new size, in pixels.
+     */
+    setProjectedSize(size) {
+        this.projectedSize.set(size);
+        Vec2Math.set(size[0] / 2, size[1] / 2, this.centerProjected);
+        this.geoProjection.setTranslation(this.centerProjected);
+        Vec2Math.add(this.centerProjected, this.targetProjectedOffset, this.targetProjected);
+    }
+    /**
+     * Sets the projected offset from the center of the projected window of the target of this projection.
+     * @param offset The new offset, in pixels.
+     */
+    setTargetProjectedOffset(offset) {
+        this.targetProjectedOffset.set(offset);
+        Vec2Math.add(this.centerProjected, this.targetProjectedOffset, this.targetProjected);
+    }
+    /**
+     * Stores this projection's current parameters into a record.
+     * @param record The record in which to store the parameters.
+     */
+    storeParameters(record) {
+        record.target.set(this.target);
+        record.center.set(this.center);
+        record.targetProjected.set(this.targetProjected);
+        record.range = this.range;
+        record.rangeEndpoints.set(this.rangeEndpoints);
+        record.scaleFactor = this.geoProjection.getScaleFactor();
+        record.rotation = this.getRotation();
+        record.projectedSize.set(this.projectedSize);
+        record.projectedResolution = this.getProjectedResolution();
+    }
+    /**
+     * Computes change flags given a set of old parameters.
+     * @param oldParameters The old parameters.
+     * @returns Change flags based on the specified old parameters.
+     */
+    computeChangeFlags(oldParameters) {
+        return (oldParameters.target.equals(this.target) ? 0 : MapProjectionChangeType.Target)
+            | (Vec2Math.equals(oldParameters.targetProjected, this.targetProjected) ? 0 : MapProjectionChangeType.TargetProjected)
+            | (oldParameters.range === this.range ? 0 : MapProjectionChangeType.Range)
+            | (VecNMath.equals(oldParameters.rangeEndpoints, this.rangeEndpoints) ? 0 : MapProjectionChangeType.RangeEndpoints)
+            | (oldParameters.rotation === this.getRotation() ? 0 : MapProjectionChangeType.Rotation)
+            | (Vec2Math.equals(oldParameters.projectedSize, this.projectedSize) ? 0 : MapProjectionChangeType.ProjectedSize);
+    }
+    /**
+     * Computes change flags for derived parameters given a set of old parameters.
+     * @param oldParameters The old parameters.
+     * @returns Change flags for derived parameters based on the specified old parameters.
+     */
+    computeDerivedChangeFlags(oldParameters) {
+        return (oldParameters.center.equals(this.center) ? 0 : MapProjectionChangeType.Center)
+            | (oldParameters.scaleFactor === this.geoProjection.getScaleFactor() ? 0 : MapProjectionChangeType.ScaleFactor)
+            | (oldParameters.projectedResolution === this.getProjectedResolution() ? 0 : MapProjectionChangeType.ProjectedResolution);
+    }
+    /**
+     * Projects a set of lat/lon coordinates.
+     * @param point The point to project.
+     * @param out The vector to which to write the result.
+     * @returns The projected point, as a vector.
+     */
+    project(point, out) {
+        return this.geoProjection.project(point, out);
+    }
+    /**
+     * Inverts a set of projected coordinates. This method will determine the geographic point whose projected location
+     * is the equal to that described by a 2D position vector.
+     * @param vec The 2D position vector describing the location of the projected coordinates.
+     * @param out The point to which to write the result.
+     * @returns The inverted point.
+     */
+    invert(vec, out) {
+        return this.geoProjection.invert(vec, out);
+    }
+    /**
+     * Checks whether a point falls within certain projected bounds. The point can be specified as either a GeoPoint
+     * object or a 2D vector. If a GeoPoint object is supplied, it will be projected before the bounds check takes
+     * place.
+     * @param point The point to check.
+     * @param bounds The bounds to check against, expressed as a vector ([left, top, right, bottom]). Defaults to the
+     * bounds of the projected window.
+     * @returns Whether the point falls within the projected bounds.
+     */
+    isInProjectedBounds(point, bounds) {
+        let left;
+        let top;
+        let right;
+        let bottom;
+        if (bounds) {
+            left = bounds[0];
+            top = bounds[1];
+            right = bounds[2];
+            bottom = bounds[3];
+        }
+        else {
+            left = 0;
+            top = 0;
+            right = this.projectedSize[0];
+            bottom = this.projectedSize[1];
+        }
+        if (!(point instanceof Float64Array)) {
+            point = this.project(point, MapProjection.tempVec2_2);
+        }
+        const x = point[0];
+        const y = point[1];
+        return x >= left && x <= right && y >= top && y <= bottom;
+    }
+    /**
+     * Gets the geographic great-circle distance between two points in great-arc radians. The points can be specified as
+     * either GeoPoint objects or 2D vectors. If 2D vectors are supplied, they are interpreted as projected points and
+     * inverse projection will be used to convert them to geographic points.
+     * @param point1 The first point.
+     * @param point2 The second point.
+     * @returns The geographic great-circle distance between the points.
+     */
+    geoDistance(point1, point2) {
+        if (point1 instanceof Float64Array) {
+            point1 = this.invert(point1, MapProjection.tempGeoPoint_1);
+        }
+        if (point2 instanceof Float64Array) {
+            point2 = this.invert(point2, MapProjection.tempGeoPoint_2);
+        }
+        return point1.distance(point2);
+    }
+    /**
+     * Gets the projected Euclidean distance between two points in pixels. The points can be specified as either GeoPoint
+     * objects or 2D vectors. If GeoPoint objects are supplied, they will be projected to convert them to projected
+     * points.
+     * @param point1 The first point.
+     * @param point2 The second point.
+     * @returns The projected Euclidean distance between two points.
+     */
+    projectedDistance(point1, point2) {
+        if (!(point1 instanceof Float64Array)) {
+            point1 = this.project(point1, MapProjection.tempVec2_1);
+        }
+        if (!(point2 instanceof Float64Array)) {
+            point2 = this.project(point2, MapProjection.tempVec2_2);
+        }
+        return Vec2Math.distance(point1, point2);
+    }
+    /**
+     * Notifies all registered change listeners that this projection has been changed.
+     * @param changeFlags The types of changes that were made.
+     */
+    notifyChangeListeners(changeFlags) {
+        for (let i = 0; i < this.changeListeners.length; i++) {
+            this.changeListeners[i](this, changeFlags);
+        }
+    }
+    /**
+     * Registers a change listener with this projection. The listener will be called every time this projection changes.
+     * A listener can be registered multiple times; it will be called once for every time it is registered.
+     * @param listener The change listener to register.
+     */
+    addChangeListener(listener) {
+        this.changeListeners.push(listener);
+    }
+    /**
+     * Removes a change listener from this projection. If the specified listener was registered multiple times, this
+     * method will only remove one instance of the listener.
+     * @param listener The listener to remove.
+     * @returns Whether the listener was successfully removed.
+     */
+    removeChangeListener(listener) {
+        const index = this.changeListeners.lastIndexOf(listener);
+        if (index >= 0) {
+            this.changeListeners.splice(index, 1);
+            return true;
+        }
+        else {
+            return false;
+        }
+    }
+}
+MapProjection.DEFAULT_SCALE_FACTOR = UnitType.GA_RADIAN.convertTo(1, UnitType.NMILE);
+MapProjection.SCALE_FACTOR_MAX_ITER = 20;
+MapProjection.SCALE_FACTOR_TOLERANCE = 1e-6;
+MapProjection.tempVec2_1 = new Float64Array(2);
+MapProjection.tempVec2_2 = new Float64Array(2);
+MapProjection.tempVec2_3 = new Float64Array(2);
+MapProjection.tempVec2_4 = new Float64Array(2);
+MapProjection.tempGeoPoint_1 = new GeoPoint(0, 0);
+MapProjection.tempGeoPoint_2 = new GeoPoint(0, 0);
+MapProjection.vec3Cache = [Vec3Math.create()];
+
+/**
+ * A component which displays a map. A map projects geographic coordinates onto a planar pixel grid. Each map component
+ * maintains a MapProjection instance which handles the details of the projection. MapLayer objects added to the map
+ * as children determine what is drawn on the map.
+ */
+class MapComponent extends DisplayComponent {
+    /** @inheritdoc */
+    constructor(props) {
+        var _a;
+        super(props);
+        this.layerEntries = [];
+        this.lastUpdateTime = 0;
+        this._isAwake = true;
+        this.updateCycleHandler = this.update.bind(this);
+        this.projectedSize = 'isSubscribable' in this.props.projectedSize ? this.props.projectedSize : Subject.create(this.props.projectedSize);
+        const initialSize = this.projectedSize.get();
+        if (this.props.projection !== undefined) {
+            this.props.projection.set({ projectedSize: new Float64Array(initialSize) });
+        }
+        this.mapProjection = (_a = this.props.projection) !== null && _a !== void 0 ? _a : new MapProjection(initialSize[0], initialSize[1]);
+    }
+    /**
+     * Gets the size of this map's projected window, in pixels.
+     * @returns The size of this map's projected window.
+     */
+    getProjectedSize() {
+        return this.mapProjection.getProjectedSize();
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * Whether this map is awake.
+     */
+    get isAwake() {
+        return this._isAwake;
+    }
+    /**
+     * Puts this map to sleep. While asleep, this map will not be updated.
+     */
+    sleep() {
+        this.setAwakeState(false);
+    }
+    /**
+     * Wakes this map, allowing it to be updated.
+     */
+    wake() {
+        this.setAwakeState(true);
+    }
+    /**
+     * Sets this map's awake state. If the new awake state is the same as the current state, nothing will happen.
+     * Otherwise, this map's layers will be notified that the map has either been woken or put to sleep.
+     * @param isAwake The new awake state.
+     */
+    setAwakeState(isAwake) {
+        if (this._isAwake === isAwake) {
+            return;
+        }
+        this._isAwake = isAwake;
+        this._isAwake ? this.onWake() : this.onSleep();
+    }
+    /** @inheritdoc */
+    onAfterRender(thisNode) {
+        var _a;
+        this.mapProjection.addChangeListener(this.onMapProjectionChanged.bind(this));
+        this.projectedSizeSub = this.projectedSize.sub(size => {
+            this.mapProjection.set({ projectedSize: size });
+        });
+        (_a = this.props.updateFreq) === null || _a === void 0 ? void 0 : _a.sub(freq => {
+            var _a;
+            (_a = this.updateCycleSub) === null || _a === void 0 ? void 0 : _a.destroy();
+            this.updateCycleSub = this.props.bus.getSubscriber()
+                .on('realTime')
+                .whenChanged()
+                .atFrequency(freq)
+                .handle(this.updateCycleHandler);
+        }, true);
+        this.attachLayers(thisNode);
+    }
+    /**
+     * Scans this component's VNode sub-tree for MapLayer components and attaches them when found. Only the top-most
+     * level of MapLayer components are attached; layers that are themselves children of other layers are not attached.
+     * @param thisNode This component's VNode.
+     */
+    attachLayers(thisNode) {
+        FSComponent.visitNodes(thisNode, node => {
+            if (node.instance instanceof MapLayer) {
+                this.attachLayer(node.instance);
+                return true;
+            }
+            return false;
+        });
+    }
+    /**
+     * This method is called when the map is awakened.
+     */
+    onWake() {
+        this.wakeLayers();
+    }
+    /**
+     * Calls the onWake() method of this map's layers.
+     */
+    wakeLayers() {
+        const len = this.layerEntries.length;
+        for (let i = 0; i < len; i++) {
+            this.layerEntries[i].layer.onWake();
+        }
+    }
+    /**
+     * This method is called when the map is put to sleep.
+     */
+    onSleep() {
+        this.sleepLayers();
+    }
+    /**
+     * Calls the onSleep() method of this map's layers.
+     */
+    sleepLayers() {
+        const len = this.layerEntries.length;
+        for (let i = 0; i < len; i++) {
+            this.layerEntries[i].layer.onSleep();
+        }
+    }
+    /**
+     * This method is called when the map projection changes.
+     * @param mapProjection This layer's map projection.
+     * @param changeFlags The types of changes made to the projection.
+     */
+    onMapProjectionChanged(mapProjection, changeFlags) {
+        if (BitFlags.isAll(changeFlags, MapProjectionChangeType.ProjectedSize)) {
+            this.onProjectedSizeChanged();
+        }
+        const len = this.layerEntries.length;
+        for (let i = 0; i < len; i++) {
+            this.layerEntries[i].layer.onMapProjectionChanged(mapProjection, changeFlags);
+        }
+    }
+    /**
+     * Attaches a layer to this map component. If the layer is already attached, then this method has no effect.
+     * @param layer The layer to attach.
+     */
+    attachLayer(layer) {
+        if (this.layerEntries.findIndex(entry => entry.layer === layer) >= 0) {
+            return;
+        }
+        const entry = new LayerEntry(layer);
+        this.layerEntries.push(entry);
+        entry.attach();
+    }
+    /**
+     * Detaches a layer from this map component.
+     * @param layer The layer to detach.
+     * @returns Whether the layer was succesfully detached.
+     */
+    detachLayer(layer) {
+        const index = this.layerEntries.findIndex(entry => entry.layer === layer);
+        if (index >= 0) {
+            const entry = this.layerEntries[index];
+            entry.detach();
+            this.layerEntries.splice(index, 1);
+            return true;
+        }
+        else {
+            return false;
+        }
+    }
+    /**
+     * Updates this map.
+     * @param time The current real time as a UNIX timestamp in milliseconds.
+     */
+    update(time) {
+        if (!this._isAwake) {
+            return;
+        }
+        this.onUpdated(time, time - this.lastUpdateTime);
+        this.lastUpdateTime = time;
+    }
+    /**
+     * This method is called once every update cycle.
+     * @param time The current real time as a UNIX timestamp in milliseconds.
+     * @param elapsed The elapsed time, in milliseconds, since the last update.
+     */
+    onUpdated(time, elapsed) {
+        this.updateLayers(time, elapsed);
+    }
+    /**
+     * Updates this map's attached layers.
+     * @param time The current real time as a UNIX timestamp in milliseconds.
+     * @param elapsed The elapsed time, in milliseconds, since the last update.
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    updateLayers(time, elapsed) {
+        const len = this.layerEntries.length;
+        for (let i = 0; i < len; i++) {
+            this.layerEntries[i].update(time);
+        }
+    }
+    /** @inheritdoc */
+    destroy() {
+        var _a, _b;
+        super.destroy();
+        (_a = this.updateCycleSub) === null || _a === void 0 ? void 0 : _a.destroy();
+        (_b = this.projectedSizeSub) === null || _b === void 0 ? void 0 : _b.destroy();
+        const len = this.layerEntries.length;
+        for (let i = 0; i < len; i++) {
+            this.layerEntries[i].destroy();
+        }
+    }
+}
+/**
+ * An entry for a map layer.
+ */
+class LayerEntry {
+    /**
+     * Constructor.
+     * @param layer This entry's map layer.
+     */
+    constructor(layer) {
+        this.layer = layer;
+        this.updatePeriod = 0;
+        this.lastUpdated = 0;
+    }
+    /**
+     * Attaches this layer entry.
+     */
+    attach() {
+        var _a, _b;
+        (_a = this.updateFreqSub) === null || _a === void 0 ? void 0 : _a.destroy();
+        this.updateFreqSub = (_b = this.layer.props.updateFreq) === null || _b === void 0 ? void 0 : _b.sub((freq) => {
+            const clamped = Math.max(0, freq);
+            this.updatePeriod = clamped === 0 ? 0 : 1000 / clamped;
+        }, true);
+        this.layer.onAttached();
+    }
+    /**
+     * Updates this layer entry.
+     * @param currentTime The current time as a UNIX timestamp.
+     */
+    update(currentTime) {
+        if (currentTime - this.lastUpdated >= this.updatePeriod) {
+            this.layer.onUpdated(currentTime, currentTime - this.lastUpdated);
+            this.lastUpdated = currentTime;
+        }
+    }
+    /**
+     * Detaches this layer entry.
+     */
+    detach() {
+        var _a;
+        (_a = this.updateFreqSub) === null || _a === void 0 ? void 0 : _a.destroy();
+        this.layer.onDetached();
+    }
+    /**
+     * Destroys this layer entry. This will detach this entry's layer and destroy it.
+     */
+    destroy() {
+        this.detach();
+        this.layer.destroy();
+    }
+}
+
+/**
+ * An abstract implementation of a map text label.
+ */
+class AbstractMapTextLabel {
+    /**
+     * Constructor.
+     * @param text The text of this label, or a subscribable which provides it.
+     * @param priority The render priority of this label, or a subscribable which provides it.
+     * @param options Options with which to initialize this label.
+     */
+    constructor(text, priority, options) {
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m;
+        this.text = SubscribableUtils.toSubscribable(text, true);
+        this.priority = SubscribableUtils.toSubscribable(priority, true);
+        this.anchor = SubscribableUtils.toSubscribable((_a = options === null || options === void 0 ? void 0 : options.anchor) !== null && _a !== void 0 ? _a : Vec2Math.create(), true);
+        this.font = SubscribableUtils.toSubscribable((_b = options === null || options === void 0 ? void 0 : options.font) !== null && _b !== void 0 ? _b : '', true);
+        this.fontSize = SubscribableUtils.toSubscribable((_c = options === null || options === void 0 ? void 0 : options.fontSize) !== null && _c !== void 0 ? _c : 10, true);
+        this.fontStr = MappedSubject.create(([s, f]) => {
+            return `${s}px ${f}`;
+        }, this.fontSize, this.font);
+        this.fontColor = SubscribableUtils.toSubscribable((_d = options === null || options === void 0 ? void 0 : options.fontColor) !== null && _d !== void 0 ? _d : 'white', true);
+        this.fontOutlineWidth = SubscribableUtils.toSubscribable((_e = options === null || options === void 0 ? void 0 : options.fontOutlineWidth) !== null && _e !== void 0 ? _e : 0, true);
+        this.fontOutlineColor = SubscribableUtils.toSubscribable((_f = options === null || options === void 0 ? void 0 : options.fontOutlineColor) !== null && _f !== void 0 ? _f : 'black', true);
+        this.showBg = SubscribableUtils.toSubscribable((_g = options === null || options === void 0 ? void 0 : options.showBg) !== null && _g !== void 0 ? _g : false, true);
+        this.bgColor = SubscribableUtils.toSubscribable((_h = options === null || options === void 0 ? void 0 : options.bgColor) !== null && _h !== void 0 ? _h : 'black', true);
+        this.bgPadding = SubscribableUtils.toSubscribable((_j = options === null || options === void 0 ? void 0 : options.bgPadding) !== null && _j !== void 0 ? _j : VecNMath.create(4), true);
+        this.bgBorderRadius = SubscribableUtils.toSubscribable((_k = options === null || options === void 0 ? void 0 : options.bgBorderRadius) !== null && _k !== void 0 ? _k : 0, true);
+        this.bgOutlineWidth = SubscribableUtils.toSubscribable((_l = options === null || options === void 0 ? void 0 : options.bgOutlineWidth) !== null && _l !== void 0 ? _l : 0, true);
+        this.bgOutlineColor = SubscribableUtils.toSubscribable((_m = options === null || options === void 0 ? void 0 : options.bgOutlineColor) !== null && _m !== void 0 ? _m : 'white', true);
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    draw(context, mapProjection) {
+        if (this.fontSize.get() !== 0) {
+            this.setTextStyle(context);
+            const width = context.measureText(this.text.get()).width;
+            const height = this.fontSize.get();
+            const showBg = this.showBg.get();
+            const bgPadding = this.bgPadding.get();
+            const bgOutlineWidth = this.bgOutlineWidth.get();
+            const bgExtraWidth = showBg ? bgPadding[1] + bgPadding[3] + bgOutlineWidth * 2 : 0;
+            const bgExtraHeight = showBg ? bgPadding[0] + bgPadding[2] + bgOutlineWidth * 2 : 0;
+            const anchor = this.anchor.get();
+            const pos = this.getPosition(mapProjection, AbstractMapTextLabel.tempVec2);
+            const centerX = pos[0] - (anchor[0] - 0.5) * (width + bgExtraWidth);
+            const centerY = pos[1] - (anchor[1] - 0.5) * (height + bgExtraHeight);
+            if (showBg) {
+                this.drawBackground(context, centerX, centerY, width, height);
+            }
+            this.drawText(context, centerX, centerY);
+        }
+    }
+    /**
+     * Loads this label's text style to a canvas rendering context.
+     * @param context The canvas rendering context to use.
+     */
+    setTextStyle(context) {
+        context.font = this.fontStr.get();
+        context.textBaseline = 'middle';
+        context.textAlign = 'center';
+    }
+    /**
+     * Draws this label's text to a canvas.
+     * @param context The canvas rendering context.
+     * @param centerX The x-coordinate of the center of the label, in pixels.
+     * @param centerY the y-coordinate of the center of the label, in pixels.
+     */
+    drawText(context, centerX, centerY) {
+        const text = this.text.get();
+        const fontOutlineWidth = this.fontOutlineWidth.get();
+        if (fontOutlineWidth > 0) {
+            context.lineWidth = fontOutlineWidth * 2;
+            context.strokeStyle = this.fontOutlineColor.get();
+            context.strokeText(text, centerX, centerY);
+        }
+        context.fillStyle = this.fontColor.get();
+        context.fillText(text, centerX, centerY);
+    }
+    /**
+     * Draws this label's background to a canvas.
+     * @param context The canvas rendering context.
+     * @param centerX The x-coordinate of the center of the label, in pixels.
+     * @param centerY the y-coordinate of the center of the label, in pixels.
+     * @param width The width of the background, in pixels.
+     * @param height The height of the background, in pixels.
+     */
+    drawBackground(context, centerX, centerY, width, height) {
+        const bgPadding = this.bgPadding.get();
+        const bgOutlineWidth = this.bgOutlineWidth.get();
+        const bgBorderRadius = this.bgBorderRadius.get();
+        const backgroundLeft = centerX - width / 2 - (bgPadding[3] + bgOutlineWidth);
+        const backgroundTop = centerY - height / 2 - (bgPadding[0] + bgOutlineWidth);
+        const backgroundWidth = width + (bgPadding[1] + bgPadding[3] + 2 * bgOutlineWidth);
+        const backgroundHeight = height + (bgPadding[0] + bgPadding[2] + 2 * bgOutlineWidth);
+        let isRounded = false;
+        if (bgBorderRadius > 0) {
+            isRounded = true;
+            this.loadBackgroundPath(context, backgroundLeft, backgroundTop, backgroundWidth, backgroundHeight, bgBorderRadius);
+        }
+        if (bgOutlineWidth > 0) {
+            context.lineWidth = bgOutlineWidth * 2;
+            context.strokeStyle = this.bgOutlineColor.get();
+            if (isRounded) {
+                context.stroke();
+            }
+            else {
+                context.strokeRect(backgroundLeft, backgroundTop, backgroundWidth, backgroundHeight);
+            }
+        }
+        context.fillStyle = this.bgColor.get();
+        if (isRounded) {
+            context.fill();
+        }
+        else {
+            context.fillRect(backgroundLeft, backgroundTop, backgroundWidth, backgroundHeight);
+        }
+    }
+    /**
+     * Loads the path of this label's background to a canvas rendering context.
+     * @param context The canvas rendering context to use.
+     * @param left The x-coordinate of the left edge of the background, in pixels.
+     * @param top The y-coordinate of the top edge of the background, in pixels.
+     * @param width The width of the background, in pixels.
+     * @param height The height of the background, in pixels.
+     * @param radius The border radius of the background, in pixels.
+     */
+    loadBackgroundPath(context, left, top, width, height, radius) {
+        const right = left + width;
+        const bottom = top + height;
+        context.beginPath();
+        context.moveTo(left + radius, top);
+        context.lineTo(right - radius, top);
+        context.arcTo(right, top, right, top + radius, radius);
+        context.lineTo(right, bottom - radius);
+        context.arcTo(right, bottom, right - radius, bottom, radius);
+        context.lineTo(left + radius, bottom);
+        context.arcTo(left, bottom, left, bottom - radius, radius);
+        context.lineTo(left, top + radius);
+        context.arcTo(left, top, left + radius, top, radius);
+    }
+}
+AbstractMapTextLabel.tempVec2 = new Float64Array(2);
+/**
+ * A text label associated with a specific geographic location.
+ */
+class MapLocationTextLabel extends AbstractMapTextLabel {
+    /**
+     * Constructor.
+     * @param text The text of this label, or a subscribable which provides it.
+     * @param priority The render priority of this label, or a subscribable which provides it.
+     * @param location The geographic location of this label, or a subscribable which provides it.
+     * @param options Options with which to initialize this label.
+     */
+    constructor(text, priority, location, options) {
+        var _a;
+        super(text, priority, options);
+        this.location = SubscribableUtils.toSubscribable(location, true);
+        this.offset = SubscribableUtils.toSubscribable((_a = options === null || options === void 0 ? void 0 : options.offset) !== null && _a !== void 0 ? _a : Vec2Math.create(), true);
+    }
+    /** @inheritdoc */
+    getPosition(mapProjection, out) {
+        mapProjection.project(this.location.get(), out);
+        Vec2Math.add(out, this.offset.get(), out);
+        return out;
+    }
+}
+
+/**
+ * A cullable (hides labels that collide with other labels) text label associated with a specific geographic location.
+ */
+class MapCullableLocationTextLabel extends MapLocationTextLabel {
+    /**
+     * Constructor.
+     * @param text The text of this label, or a subscribable which provides it.
+     * @param priority The priority of this label, or a subscribable which provides it.
+     * @param location The geographic location of this label, or a subscribable which provides it.
+     * @param alwaysShow Whether this label is immune to culling, or a subscribable which provides it.
+     * @param options Options with which to initialize this label.
+     */
+    constructor(text, priority, location, alwaysShow, options) {
+        super(text, priority, location, options);
+        /** @inheritdoc */
+        this.bounds = new Float64Array(4);
+        /** @inheritdoc */
+        this.invalidation = new SubEvent();
+        this.subs = [];
+        this.alwaysShow = SubscribableUtils.toSubscribable(alwaysShow, true);
+        this.subs.push(this.priority.sub(() => { this.invalidation.notify(this); }));
+        this.subs.push(this.alwaysShow.sub(() => { this.invalidation.notify(this); }));
+        this.subs.push(this.location.sub(() => { this.invalidation.notify(this); }));
+        this.subs.push(this.text.sub(() => { this.invalidation.notify(this); }));
+        this.subs.push(this.fontSize.sub(() => { this.invalidation.notify(this); }));
+        this.subs.push(this.anchor.sub(() => { this.invalidation.notify(this); }));
+        this.subs.push(this.offset.sub(() => { this.invalidation.notify(this); }));
+        this.subs.push(this.bgPadding.sub(() => { this.invalidation.notify(this); }));
+        this.subs.push(this.bgOutlineWidth.sub(() => { this.invalidation.notify(this); }));
+    }
+    /** @inheritdoc */
+    updateBounds(mapProjection) {
+        const fontSize = this.fontSize.get();
+        const anchor = this.anchor.get();
+        const width = 0.6 * fontSize * this.text.get().length;
+        const height = fontSize;
+        const pos = this.getPosition(mapProjection, MapCullableLocationTextLabel.tempVec2);
+        let left = pos[0] - anchor[0] * width;
+        let right = left + width;
+        let top = pos[1] - anchor[1] * height;
+        let bottom = top + height;
+        if (this.showBg.get()) {
+            const bgPadding = this.bgPadding.get();
+            const bgOutlineWidth = this.bgOutlineWidth.get();
+            left -= (bgPadding[3] + bgOutlineWidth);
+            right += (bgPadding[1] + bgOutlineWidth);
+            top -= (bgPadding[0] + bgOutlineWidth);
+            bottom += (bgPadding[2] + bgOutlineWidth);
+        }
+        this.bounds[0] = left;
+        this.bounds[1] = top;
+        this.bounds[2] = right;
+        this.bounds[3] = bottom;
+    }
+    /**
+     * Destroys this label.
+     */
+    destroy() {
+        for (const sub of this.subs) {
+            sub.destroy();
+        }
+    }
+}
+/**
+ * Manages a set of MapCullableTextLabels. Colliding labels will be culled based on their render priority. Labels with
+ * lower priorities will be culled before labels with higher priorities.
+ */
+class MapCullableTextLabelManager {
+    /**
+     * Creates an instance of the MapCullableTextLabelManager.
+     * @param cullingEnabled Whether or not culling of labels is enabled.
+     */
+    constructor(cullingEnabled = true) {
+        this.cullingEnabled = cullingEnabled;
+        this.registered = new Map();
+        this._visibleLabels = [];
+        this.needUpdate = false;
+        this.lastScaleFactor = 1;
+        this.lastRotation = 0;
+        this.invalidationHandler = () => { this.needUpdate = true; };
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /** An array of labels registered with this manager that are visible. */
+    get visibleLabels() {
+        return this._visibleLabels;
+    }
+    /**
+     * Registers a label with this manager. Newly registered labels will be processed with the next manager update.
+     * @param label The label to register.
+     */
+    register(label) {
+        if (this.registered.has(label)) {
+            return;
+        }
+        this.registered.set(label, label.invalidation.on(this.invalidationHandler));
+        this.needUpdate = true;
+    }
+    /**
+     * Deregisters a label with this manager. Newly deregistered labels will be processed with the next manager update.
+     * @param label The label to deregister.
+     */
+    deregister(label) {
+        const sub = this.registered.get(label);
+        if (sub === undefined) {
+            return;
+        }
+        sub.destroy();
+        this.registered.delete(label);
+        this.needUpdate = true;
+    }
+    /**
+     * Sets whether or not text label culling is enabled.
+     * @param enabled Whether or not culling is enabled.
+     */
+    setCullingEnabled(enabled) {
+        this.cullingEnabled = enabled;
+        this.needUpdate = true;
+    }
+    /**
+     * Updates this manager.
+     * @param mapProjection The projection of the map to which this manager's labels are to be drawn.
+     */
+    update(mapProjection) {
+        if (!this.needUpdate) {
+            const scaleFactorRatio = mapProjection.getScaleFactor() / this.lastScaleFactor;
+            if (scaleFactorRatio < MapCullableTextLabelManager.SCALE_UPDATE_THRESHOLD && scaleFactorRatio > 1 / MapCullableTextLabelManager.SCALE_UPDATE_THRESHOLD) {
+                const rotationDelta = Math.abs(mapProjection.getRotation() - this.lastRotation);
+                if (Math.min(rotationDelta, 2 * Math.PI - rotationDelta) < MapCullableTextLabelManager.ROTATION_UPDATE_THRESHOLD) {
+                    return;
+                }
+            }
+        }
+        const labelArray = Array.from(this.registered.keys())
+            .sort(MapCullableTextLabelManager.SORT_FUNC);
+        if (this.cullingEnabled) {
+            this._visibleLabels = [];
+            const len = labelArray.length;
+            for (let i = 0; i < len; i++) {
+                labelArray[i].updateBounds(mapProjection);
+            }
+            const collisionArray = [];
+            for (let i = 0; i < len; i++) {
+                const label = labelArray[i];
+                let show = true;
+                if (!label.alwaysShow.get()) {
+                    const len2 = collisionArray.length;
+                    for (let j = 0; j < len2; j++) {
+                        const other = collisionArray[j];
+                        if (MapCullableTextLabelManager.doesCollide(label.bounds, other)) {
+                            show = false;
+                            break;
+                        }
+                    }
+                }
+                if (show) {
+                    collisionArray.push(label.bounds);
+                    this._visibleLabels.push(label);
+                }
             }
         }
         else {
-            const turnCenter = FlightPathUtils.getTurnCenterFromCircle(circle, GeoCirclePathRenderer.geoPointCache[0]);
-            const turnDirection = FlightPathUtils.getTurnDirectionFromCircle(circle);
-            const isCenterPole = Math.abs(turnCenter.lat) >= 90 - GeoCircle.ANGULAR_TOLERANCE * Avionics.Utils.RAD2DEG;
-            let startAngle, endAngle;
-            if (isCenterPole) {
-                startAngle = startLon;
-                endAngle = endLon;
-            }
-            else {
-                startAngle = turnCenter.bearingTo(startLat, startLon);
-                endAngle = turnCenter.bearingTo(endLat, endLon);
-            }
-            streamStack.arc(turnCenter.lon, turnCenter.lat, FlightPathUtils.getTurnRadiusFromCircle(circle), startAngle, endAngle, turnDirection === 'left');
+            this._visibleLabels = labelArray;
         }
+        this.lastScaleFactor = mapProjection.getScaleFactor();
+        this.lastRotation = mapProjection.getRotation();
+        this.needUpdate = false;
+    }
+    /**
+     * Checks if two bounding boxes collide.
+     * @param a The first bounding box, as a 4-tuple [left, top, right, bottom].
+     * @param b The second bounding box, as a 4-tuple [left, top, right, bottom].
+     * @returns whether the bounding boxes collide.
+     */
+    static doesCollide(a, b) {
+        return a[0] < b[2]
+            && a[2] > b[0]
+            && a[1] < b[3]
+            && a[3] > b[1];
     }
 }
-GeoCirclePathRenderer.NORTH_POLE_VEC = new Float64Array([0, 0, 1]);
-GeoCirclePathRenderer.geoPointCache = [new GeoPoint(0, 0), new GeoPoint(0, 0)];
-GeoCirclePathRenderer.vec3Cache = [new Float64Array(3)];
+MapCullableTextLabelManager.SCALE_UPDATE_THRESHOLD = 1.2;
+MapCullableTextLabelManager.ROTATION_UPDATE_THRESHOLD = Math.PI / 6;
+MapCullableTextLabelManager.SORT_FUNC = (a, b) => {
+    const alwaysShowA = a.alwaysShow.get();
+    const alwaysShowB = b.alwaysShow.get();
+    if (alwaysShowA && !alwaysShowB) {
+        return -1;
+    }
+    else if (alwaysShowB && !alwaysShowA) {
+        return 1;
+    }
+    else {
+        return b.priority.get() - a.priority.get();
+    }
+};
 
 /**
- * Renders arcs along geo circles as curved lines.
+ * A model for maps. Specific functionality is added by adding one or more modules to the model. Each module added to
+ * the model is assigned a name which is used to retrieve it from the model.
  */
-class GeoCircleLineRenderer {
+class MapModel {
     constructor() {
-        this.pathRenderer = new GeoCirclePathRenderer();
+        this.modules = new Map();
     }
     /**
-     * Renders an arc along a geo circle to a canvas.
-     * @param circle The geo circle containing the arc to render.
-     * @param startLat The latitude of the start of the arc, in degrees.
-     * @param startLon The longitude of the start of the arc, in degrees.
-     * @param endLat The latitude of the end of the arc, in degrees.
-     * @param endLon The longitude of the end of the arc, in degrees.
-     * @param context The canvas 2D rendering context to which to render.
-     * @param streamStack The path stream stack to which to render.
-     * @param width The width of the rendered line.
-     * @param style The style of the rendered line.
-     * @param dash The dash array of the rendered line. Defaults to no dash.
-     * @param outlineWidth The width of the outline, in pixels. Defaults to 0 pixels.
-     * @param outlineStyle The style of the outline. Defaults to `'black'`.
-     * @param lineCap The line cap style to use. Defaults to `'butt'`.
+     * Gets a module instance from the model and assigns it
+     * to the provided type.
+     * @param nameOrModule The module to get or the name of the module.
+     * @returns The requested map data module.
+     * @throws An error if
      */
-    render(circle, startLat, startLon, endLat, endLon, context, streamStack, width, style, dash, outlineWidth = 0, outlineStyle = 'black', lineCap = 'butt') {
-        this.pathRenderer.render(circle, startLat, startLon, endLat, endLon, streamStack);
-        if (outlineWidth > 0) {
-            context.lineWidth = width + (outlineWidth * 2);
-            context.strokeStyle = outlineStyle;
-            context.lineCap = lineCap;
-            context.setLineDash(dash !== null && dash !== void 0 ? dash : GeoCircleLineRenderer.EMPTY_DASH);
-            context.stroke();
+    getModule(nameOrModule) {
+        if (typeof nameOrModule === 'string') {
+            return this.modules.get(nameOrModule);
         }
-        context.lineWidth = width;
-        context.strokeStyle = style;
-        context.lineCap = lineCap;
-        context.setLineDash(dash !== null && dash !== void 0 ? dash : GeoCircleLineRenderer.EMPTY_DASH);
-        context.stroke();
-    }
-}
-GeoCircleLineRenderer.EMPTY_DASH = [];
-
-/**
- * Renders flight plan paths one leg at a time in either forward or reverse order. Optionally forces the rendering of
- * the active flight plan leg to be last.
- */
-class AbstractFlightPathPlanRenderer {
-    /**
-     * Constructor.
-     * @param renderOrder The order which this renderer renders the flight plan legs. Forward order renders the legs in
-     * a first-to-last fashion. Reverse order renders the legs in a last-to-first fashion. Defaults to forward.
-     * @param renderActiveLegLast Whether to render the active leg last. Defaults to true.
-     */
-    constructor(renderOrder = 'forward', renderActiveLegLast = true) {
-        this.renderOrder = renderOrder;
-        this.renderActiveLegLast = renderActiveLegLast;
+        else if (typeof nameOrModule === 'function') {
+            return this.modules.get(nameOrModule.name);
+        }
+        throw new Error('Invalid type supplied: must be a string key or a module constructor.');
     }
     /**
-     * Renders a flight plan path to a canvas.
-     * @param plan The flight plan to render.
-     * @param startIndex The global index of the first flight plan leg to render, inclusive. Defaults to `0`.
-     * @param endIndex The global index of the last flight plan leg to render, inclusive. Defaults to `plan.length - 1`.
-     * @param context The canvas 2D rendering context to which to render.
-     * @param streamStack The path stream stack to which to render.
-     * @param args Additional arguments.
+     * Adds a module to this model.
+     * @param name The name of the module to add.
+     * @param module The module to add.
      */
-    render(plan, startIndex, endIndex, context, streamStack, ...args) {
-        startIndex !== null && startIndex !== void 0 ? startIndex : (startIndex = 0);
-        endIndex !== null && endIndex !== void 0 ? endIndex : (endIndex = plan.length - 1);
-        const activeLegIndex = plan.activeLateralLeg < plan.length ? plan.activeLateralLeg : -1;
-        const activeLeg = plan.activeLateralLeg < plan.length ? plan.getLeg(plan.activeLateralLeg) : undefined;
-        const isReverse = this.renderOrder === 'reverse';
-        if (isReverse) {
-            const oldEndIndex = endIndex;
-            endIndex = startIndex;
-            startIndex = oldEndIndex;
-        }
-        let index = startIndex;
-        const delta = isReverse ? -1 : 1;
-        for (const leg of plan.legs(isReverse, startIndex)) {
-            if ((index - endIndex) * delta > 0) {
-                break;
-            }
-            if (this.renderActiveLegLast && index === activeLegIndex) {
-                index += delta;
-                continue;
-            }
-            this.renderLeg(leg, plan, activeLeg, index, activeLegIndex, context, streamStack, ...args);
-            index += delta;
-        }
-        if (this.renderActiveLegLast && activeLeg) {
-            this.renderLeg(activeLeg, plan, activeLeg, activeLegIndex, activeLegIndex, context, streamStack, ...args);
-        }
-    }
-}
-
-/**
- * Parts of a flight plan leg path to render.
- */
-var FlightPathLegRenderPart;
-(function (FlightPathLegRenderPart) {
-    /** None. */
-    FlightPathLegRenderPart[FlightPathLegRenderPart["None"] = 0] = "None";
-    /** The ingress transition. */
-    FlightPathLegRenderPart[FlightPathLegRenderPart["Ingress"] = 1] = "Ingress";
-    /** The base path. */
-    FlightPathLegRenderPart[FlightPathLegRenderPart["Base"] = 2] = "Base";
-    /** The egress transition. */
-    FlightPathLegRenderPart[FlightPathLegRenderPart["Egress"] = 4] = "Egress";
-    /** The entire leg path. */
-    FlightPathLegRenderPart[FlightPathLegRenderPart["All"] = 7] = "All";
-})(FlightPathLegRenderPart || (FlightPathLegRenderPart = {}));
-/**
- * Renders flight plan leg paths one vector at a time, optionally excluding the ingress and/or egress transition
- * vectors.
- */
-class AbstractFlightPathLegRenderer {
-    constructor() {
-        this.tempVector = FlightPathUtils.createEmptyCircleVector();
-    }
-    /**
-     * Renders a flight plan leg path to a canvas.
-     * @param leg The flight plan leg to render.
-     * @param context The canvas 2D rendering context to which to render.
-     * @param streamStack The path stream stack to which to render.
-     * @param partsToRender The parts of the leg to render, as a combination of {@link FlightPathLegRenderPart}
-     * values.
-     * @param args Additional arguments.
-     */
-    render(leg, context, streamStack, partsToRender, ...args) {
-        const legCalc = leg.calculated;
-        if (!legCalc || !BitFlags.isAny(partsToRender, FlightPathLegRenderPart.Ingress | FlightPathLegRenderPart.Base | FlightPathLegRenderPart.Egress)) {
+    addModule(name, module) {
+        if (this.modules.has(name)) {
             return;
         }
-        const excludeIngress = !BitFlags.isAll(partsToRender, FlightPathLegRenderPart.Ingress);
-        const excludeBase = !BitFlags.isAll(partsToRender, FlightPathLegRenderPart.Base);
-        const excludeEgress = !BitFlags.isAll(partsToRender, FlightPathLegRenderPart.Egress);
-        let mainVectors = legCalc.ingressToEgress;
-        let mainVectorStartIndex = 0;
-        let mainVectorEndIndex = legCalc.ingressToEgress.length;
-        if (excludeIngress || excludeEgress) {
-            mainVectors = legCalc.flightPath;
-            mainVectorEndIndex = excludeEgress || legCalc.egressJoinIndex < 0 || legCalc.egress.length === 0 ? legCalc.flightPath.length : legCalc.egressJoinIndex;
-        }
-        if (!excludeIngress) {
-            for (let i = 0; i < legCalc.ingress.length; i++) {
-                this.renderVector(legCalc.ingress[i], true, false, leg, context, streamStack, ...args);
-            }
-            if (excludeEgress && !excludeBase) {
-                mainVectorStartIndex = Math.max(0, legCalc.ingressJoinIndex);
-                const lastIngressVector = legCalc.ingress[legCalc.ingress.length - 1];
-                const ingressJoinVector = legCalc.flightPath[legCalc.ingressJoinIndex];
-                if (lastIngressVector && ingressJoinVector) {
-                    const ingressEnd = AbstractFlightPathLegRenderer.geoPointCache[0].set(lastIngressVector.endLat, lastIngressVector.endLon);
-                    const vectorEnd = AbstractFlightPathLegRenderer.geoPointCache[1].set(ingressJoinVector.endLat, ingressJoinVector.endLon);
-                    if (!ingressEnd.equals(vectorEnd)) {
-                        const ingressJoinVectorCircle = FlightPathUtils.setGeoCircleFromVector(ingressJoinVector, AbstractFlightPathLegRenderer.geoCircleCache[0]);
-                        FlightPathUtils.setCircleVector(this.tempVector, ingressJoinVectorCircle, ingressEnd, vectorEnd, ingressJoinVector.flags);
-                        this.renderVector(this.tempVector, false, false, leg, context, streamStack, ...args);
-                    }
-                    mainVectorStartIndex++;
-                }
-            }
-        }
-        if (!excludeBase) {
-            const len = Math.min(mainVectorEndIndex, mainVectors.length);
-            for (let i = mainVectorStartIndex; i < len; i++) {
-                this.renderVector(mainVectors[i], false, false, leg, context, streamStack, ...args);
-            }
-        }
-        if (!excludeEgress) {
-            if (excludeIngress && !excludeBase) {
-                const firstEgressVector = legCalc.egress[0];
-                const egressJoinVector = legCalc.flightPath[legCalc.egressJoinIndex];
-                if (firstEgressVector && egressJoinVector) {
-                    const egressStart = AbstractFlightPathLegRenderer.geoPointCache[0].set(firstEgressVector.startLat, firstEgressVector.startLon);
-                    const egressJoinVectorStart = AbstractFlightPathLegRenderer.geoPointCache[1].set(egressJoinVector.startLat, egressJoinVector.startLon);
-                    if (!egressStart.equals(egressJoinVectorStart)) {
-                        const egressJoinVectorCircle = FlightPathUtils.setGeoCircleFromVector(egressJoinVector, AbstractFlightPathLegRenderer.geoCircleCache[0]);
-                        FlightPathUtils.setCircleVector(this.tempVector, egressJoinVectorCircle, egressJoinVectorStart, egressStart, egressJoinVector.flags);
-                        this.renderVector(this.tempVector, false, false, leg, context, streamStack, ...args);
-                    }
-                }
-            }
-            for (let i = 0; i < legCalc.egress.length; i++) {
-                this.renderVector(legCalc.egress[i], false, true, leg, context, streamStack, ...args);
-            }
-        }
+        this.modules.set(name, module);
     }
 }
-AbstractFlightPathLegRenderer.geoPointCache = [new GeoPoint(0, 0), new GeoPoint(0, 0)];
-AbstractFlightPathLegRenderer.geoCircleCache = [new GeoCircle(new Float64Array(3), 0)];
 
 /**
- * Renders flight path vectors as a curved line.
+ * An abstract implementation of MapWaypointIcon which supports an arbitrary anchor point and offset.
  */
-class FlightPathVectorLineRenderer {
-    constructor() {
-        this.renderer = new GeoCircleLineRenderer();
+class AbstractMapWaypointIcon {
+    /**
+     * Constructor.
+     * @param waypoint The waypoint associated with this icon.
+     * @param priority The render priority of this icon, or a subscribable which provides it. Icons with higher
+     * priorities should be rendered above those with lower priorities.
+     * @param size The size of this icon, as `[width, height]` in pixels, or a subscribable which provides it.
+     * @param options Options with which to initialize this icon.
+     */
+    constructor(waypoint, priority, size, options) {
+        var _a, _b;
+        this.waypoint = waypoint;
+        this.priority = SubscribableUtils.toSubscribable(priority, true);
+        this.size = SubscribableUtils.toSubscribable(size, true);
+        this.anchor = SubscribableUtils.toSubscribable((_a = options === null || options === void 0 ? void 0 : options.anchor) !== null && _a !== void 0 ? _a : Vec2Math.create(0.5, 0.5), true);
+        this.offset = SubscribableUtils.toSubscribable((_b = options === null || options === void 0 ? void 0 : options.offset) !== null && _b !== void 0 ? _b : Vec2Math.create(), true);
+    }
+    /** @inheritdoc */
+    draw(context, mapProjection) {
+        const size = this.size.get();
+        const offset = this.offset.get();
+        const anchor = this.anchor.get();
+        const projected = mapProjection.project(this.waypoint.location.get(), MapWaypointImageIcon.tempVec2);
+        const left = projected[0] + offset[0] - anchor[0] * size[0];
+        const top = projected[1] + offset[1] - anchor[1] * size[1];
+        this.drawIconAt(context, mapProjection, left, top);
+    }
+}
+AbstractMapWaypointIcon.tempVec2 = new Float64Array(2);
+/**
+ * A waypoint icon with an image as the icon's graphic source.
+ */
+class MapWaypointImageIcon extends AbstractMapWaypointIcon {
+    /**
+     * Constructor.
+     * @param waypoint The waypoint associated with this icon.
+     * @param priority The render priority of this icon. Icons with higher priorities should be rendered above those
+     * with lower priorities.
+     * @param img This icon's image.
+     * @param size The size of this icon, as `[width, height]` in pixels, or a subscribable which provides it.
+     * @param options Options with which to initialize this icon.
+     */
+    constructor(waypoint, priority, img, size, options) {
+        super(waypoint, priority, size, options);
+        this.img = img;
+    }
+    /** @inheritdoc */
+    drawIconAt(context, mapProjection, left, top) {
+        const size = this.size.get();
+        context.drawImage(this.img, left, top, size[0], size[1]);
+    }
+}
+
+/**
+ * A renderer that draws waypoints to a map. For the renderer to draw a waypoint, the waypoint must first be registered
+ * with the renderer. Waypoints may be registered under multiple render roles. Each render role is represented as a bit
+ * flag. During each render cycle, a specific role is chosen for each waypoint by a selector function. Once the role is
+ * chosen, the waypoint will be rendered in that role.
+ */
+class MapWaypointRenderer {
+    /**
+     * Constructor.
+     * @param textManager The text manager to use for waypoint labels.
+     * @param selectRoleToRender A function which selects roles under which to render waypoints. Defaults to
+     * {@link MapWaypointRenderer.DEFAULT_RENDER_ROLE_SELECTOR}.
+     */
+    constructor(textManager, selectRoleToRender = MapWaypointRenderer.DEFAULT_RENDER_ROLE_SELECTOR) {
+        this.textManager = textManager;
+        this.selectRoleToRender = selectRoleToRender;
+        this.registered = new Map();
+        this.toCleanUp = new Set();
+        /**
+         * This renderer's render role definitions. Waypoints assigned to be rendered under a role or combination of roles
+         * with no definition will not be rendered.
+         */
+        this.roleDefinitions = new Map();
+        /**
+         * An event to subscribe to, fired when waypoints are added to the renderer.
+         */
+        this.onWaypointAdded = new SubEvent();
+        /**
+         * An event to subscribe to, fired when waypoints are removed from the render.
+         */
+        this.onWaypointRemoved = new SubEvent();
     }
     /**
-     * Renders a flight path vector to a canvas.
-     * @param vector The flight path vector to render.
-     * @param context The canvas 2D rendering context to which to render.
-     * @param streamStack The path stream to which to render.
-     * @param width The width of the rendered line.
-     * @param style The style of the rendered line.
-     * @param dash The dash array of the rendered line. Defaults to no dash.
-     * @param outlineWidth The width of the outline, in pixels. Defaults to 0 pixels.
-     * @param outlineStyle The style of the outline. Defaults to `'black'`.
-     * @param lineCap The line cap style to use. Defaults to `'butt'`.
+     * Checks whether a render role has been added to this renderer.
+     * @param role The render role to check.
+     * @returns Whether the render role has been added to this renderer.
      */
-    render(vector, context, streamStack, width, style, dash, outlineWidth, outlineStyle, lineCap = 'butt') {
-        const circle = FlightPathUtils.setGeoCircleFromVector(vector, FlightPathVectorLineRenderer.geoCircleCache[0]);
-        this.renderer.render(circle, vector.startLat, vector.startLon, vector.endLat, vector.endLon, context, streamStack, width, style, dash, outlineWidth, outlineStyle, lineCap);
+    hasRenderRole(role) {
+        return this.roleDefinitions.has(role);
+    }
+    /**
+     * Adds a render role to this renderer. If the role has already been added to this renderer, this method does
+     * nothing.
+     * @param role The render role to add.
+     * @param def The render role's definition. If undefined, the new role will be assigned a default definition with
+     * no defined rendering context, icon, or label factories, and a visibility handler which always returns true.
+     * @returns Whether the render role was successfully added.
+     */
+    addRenderRole(role, def) {
+        if (this.roleDefinitions.has(role)) {
+            return false;
+        }
+        this.roleDefinitions.set(role, Object.assign({}, def !== null && def !== void 0 ? def : MapWaypointRenderer.NULL_ROLE_DEF));
+        return true;
+    }
+    /**
+     * Removes a render role from this renderer.
+     * @param role The render role to remove.
+     * @returns Whether the render role was successfully removed.
+     */
+    removeRenderRole(role) {
+        return this.roleDefinitions.delete(role);
+    }
+    /**
+     * Gets the definition for a render role.
+     * @param role A render role.
+     * @returns The definition for the specified render role, or undefined if no such role has been added to this
+     * renderer.
+     */
+    getRenderRoleDefinition(role) {
+        return this.roleDefinitions.get(role);
+    }
+    /**
+     * Gets an iterable of render roles added to this renderer. The iterable will return the roles in the order in which
+     * they were added.
+     * @returns An iterable of render roles added to this renderer.
+     */
+    renderRoles() {
+        return this.roleDefinitions.keys();
+    }
+    /**
+     * Removes all render roles from this renderer.
+     */
+    clearRenderRoles() {
+        this.roleDefinitions.clear();
+    }
+    /**
+     * Sets the factory to use to create waypoint icons for a render role. If the render role has not been added to this
+     * renderer, this method does nothing.
+     * @param role A render role.
+     * @param factory A waypoint icon factory.
+     * @returns Whether the factory was set.
+     */
+    setIconFactory(role, factory) {
+        const roleDef = this.roleDefinitions.get(role);
+        if (!roleDef) {
+            return false;
+        }
+        roleDef.iconFactory = factory;
+        return true;
+    }
+    /**
+     * Sets the factory to use to create waypoint labels for a render role. If the render role has not been added to this
+     * renderer, this method does nothing.
+     * @param role A render role.
+     * @param factory A waypoint label factory.
+     * @returns Whether the factory was set.
+     */
+    setLabelFactory(role, factory) {
+        const roleDef = this.roleDefinitions.get(role);
+        if (!roleDef) {
+            return false;
+        }
+        roleDef.labelFactory = factory;
+        return true;
+    }
+    /**
+     * Sets the canvas rendering context for a render role. If the render role has not been added to this renderer, this
+     * method does nothing.
+     * @param role A render role.
+     * @param context A canvas 2D rendering context.
+     * @returns Whether the context was set.
+     */
+    setCanvasContext(role, context) {
+        const roleDef = this.roleDefinitions.get(role);
+        if (!roleDef) {
+            return false;
+        }
+        roleDef.canvasContext = context;
+        return true;
+    }
+    /**
+     * Sets the handler that determines if a waypoint should visible for a render role. If the render role has not been
+     * added to this renderer, this method does nothing.
+     * @param role A render role.
+     * @param handler A function that determines if a waypoint should be visible.
+     * @returns Whether the handler was set.
+     */
+    setVisibilityHandler(role, handler) {
+        const roleDef = this.roleDefinitions.get(role);
+        if (!roleDef) {
+            return false;
+        }
+        roleDef.visibilityHandler = handler;
+        return true;
+    }
+    /**
+     * Checks if a waypoint is registered with this renderer. A role or roles can be optionally specified such that the
+     * method will only return true if the waypoint is registered under those specific roles.
+     * @param waypoint A waypoint.
+     * @param role The specific role(s) to check.
+     * @returns whether the waypoint is registered with this renderer.
+     */
+    isRegistered(waypoint, role) {
+        if (!waypoint) {
+            return false;
+        }
+        const entry = this.registered.get(waypoint.uid);
+        if (!entry) {
+            return false;
+        }
+        if (role === undefined) {
+            return true;
+        }
+        return entry.isAllRoles(role);
+    }
+    /**
+     * Registers a waypoint with this renderer under a specific role or roles. Registered waypoints will be drawn as
+     * appropriate the next time this renderer's update() method is called. Registering a waypoint under a role under
+     * which it is already registered has no effect unless the source of the registration is different.
+     * @param waypoint The waypoint to register.
+     * @param role The role(s) under which the waypoint should be registered.
+     * @param sourceId A unique string ID for the source of the registration.
+     */
+    register(waypoint, role, sourceId) {
+        if (role === 0 || sourceId === '') {
+            return;
+        }
+        let entry = this.registered.get(waypoint.uid);
+        if (!entry) {
+            entry = new MapWaypointRendererEntry(waypoint, this.textManager, this.roleDefinitions, this.selectRoleToRender);
+            this.registered.set(waypoint.uid, entry);
+            this.onWaypointAdded.notify(this, waypoint);
+        }
+        entry.addRole(role, sourceId);
+    }
+    /**
+     * Removes a registration for a waypoint for a specific role or roles. Once all of a waypoint's registrations for a
+     * role are removed, it will no longer be rendered in that role the next this renderer's update() method is called.
+     * @param waypoint The waypoint to deregister.
+     * @param role The role(s) from which the waypoint should be deregistered.
+     * @param sourceId The unique string ID for the source of the registration to remove.
+     */
+    deregister(waypoint, role, sourceId) {
+        if (role === 0 || sourceId === '') {
+            return;
+        }
+        const entry = this.registered.get(waypoint.uid);
+        if (!entry) {
+            return;
+        }
+        entry.removeRole(role, sourceId);
+        if (entry.roles === 0) {
+            this.deleteEntry(entry);
+            this.onWaypointRemoved.notify(this, waypoint);
+        }
+    }
+    /**
+     * Deletes and cleans up a registered waypoint entry.
+     * @param entry The entry to delete.
+     */
+    deleteEntry(entry) {
+        this.registered.delete(entry.waypoint.uid);
+        this.toCleanUp.add(entry);
+    }
+    /**
+     * Redraws waypoints registered with this renderer.
+     * @param mapProjection The map projection to use.
+     */
+    update(mapProjection) {
+        var _a;
+        this.toCleanUp.forEach(entry => {
+            entry.destroy();
+        });
+        this.toCleanUp.clear();
+        const entriesToDrawIcon = [];
+        this.registered.forEach(entry => {
+            entry.update();
+            if (entry.icon) {
+                entriesToDrawIcon.push(entry);
+            }
+        });
+        const projectedSize = mapProjection.getProjectedSize();
+        for (const roleDef of this.roleDefinitions.values()) {
+            const context = roleDef.canvasContext;
+            if (context) {
+                context.clearRect(0, 0, projectedSize[0], projectedSize[1]);
+            }
+        }
+        entriesToDrawIcon.sort(MapWaypointRenderer.ENTRY_SORT_FUNC);
+        const len2 = entriesToDrawIcon.length;
+        for (let i = 0; i < len2; i++) {
+            const entry = entriesToDrawIcon[i];
+            const icon = entry.icon;
+            const context = (_a = this.roleDefinitions.get(entry.lastRenderedRole)) === null || _a === void 0 ? void 0 : _a.canvasContext;
+            if (context) {
+                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                icon.draw(context, mapProjection);
+            }
+        }
+    }
+    /**
+     * Gets the nearest waypoint currently registered in the renderer.
+     * @param pos The position to get the closest waypoint to.
+     * @param first A predicate that will search the list of closest waypoints for a match, and return the first one found.
+     * @returns The nearest waypoint, or undefined if none found.
+     */
+    getNearestWaypoint(pos, first) {
+        var _a, _b;
+        const ordered = [...this.registered.values()].sort((a, b) => this.orderByDistance(a.waypoint, b.waypoint, pos))
+            .filter(w => {
+            const roleDef = this.getRenderRoleDefinition(w.lastRenderedRole);
+            if (roleDef !== undefined) {
+                return roleDef.visibilityHandler(w.waypoint);
+            }
+            return false;
+        });
+        if (first !== undefined) {
+            return (_a = ordered.find(entry => first(entry.waypoint))) === null || _a === void 0 ? void 0 : _a.waypoint;
+        }
+        return (_b = ordered[0]) === null || _b === void 0 ? void 0 : _b.waypoint;
+    }
+    /**
+     * Orders waypoints by their distance to the plane PPOS.
+     * @param a The first waypoint.
+     * @param b The second waypoint.
+     * @param pos The position to compare against.
+     * @returns The comparison order number.
+     */
+    orderByDistance(a, b, pos) {
+        const aDist = a.location.get().distance(pos);
+        const bDist = b.location.get().distance(pos);
+        return aDist - bDist;
     }
 }
-FlightPathVectorLineRenderer.geoCircleCache = [new GeoCircle(new Float64Array(3), 0)];
+/** A null render role definition. Icons rendered under this role are never visible. */
+MapWaypointRenderer.NULL_ROLE_DEF = {
+    iconFactory: null,
+    labelFactory: null,
+    canvasContext: null,
+    visibilityHandler: () => true
+};
+/**
+ * Sorts waypoint entries such that those with icons of higher priority are sorted after those with icons of lower
+ * priority.
+ * @param a The first waypoint entry to sort.
+ * @param b The second waypoint entry to sort.
+ * @returns A negative number if the first entry is to be sorted before the second, a positive number if the second
+ * entry is to be sorted before the first, and zero if the entries' relative sorting order does not matter.
+ */
+MapWaypointRenderer.ENTRY_SORT_FUNC = (a, b) => {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    return a.icon.priority.get() - b.icon.priority.get();
+};
+/**
+ * The default render role selector. For each waypoint entry, iterates through all possible render roles in the order
+ * they were originally added to the renderer and selects the first role under which the entry is registered and is
+ * visible.
+ * @param entry A waypoint entry.
+ * @param roleDefinitions A map from all possible render roles to their definitions.
+ * @returns The role under which the waypoint entry should be rendered, or 0 if the entry should not be rendered
+ * under any role.
+ */
+MapWaypointRenderer.DEFAULT_RENDER_ROLE_SELECTOR = (entry, roleDefinitions) => {
+    for (const role of roleDefinitions.keys()) {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        if (entry.isAllRoles(role) && roleDefinitions.get(role).visibilityHandler(entry.waypoint)) {
+            return role;
+        }
+    }
+    return 0;
+};
+/**
+ * An entry for a waypoint registered with {@link MapWaypointRenderer}.
+ */
+class MapWaypointRendererEntry {
+    /**
+     * Constructor.
+     * @param waypoint The waypoint associated with this entry.
+     * @param textManager The text manager to which to register this entry's labels.
+     * @param roleDefinitions A map of all valid render roles to their definitions.
+     * @param selectRoleToRender A function to use to select roles under which to render this entry.
+     */
+    constructor(waypoint, textManager, roleDefinitions, selectRoleToRender) {
+        this.waypoint = waypoint;
+        this.textManager = textManager;
+        this.roleDefinitions = roleDefinitions;
+        this.selectRoleToRender = selectRoleToRender;
+        this.registrations = {};
+        this._roles = 0;
+        this._icon = null;
+        this._label = null;
+        this._lastRenderedRole = 0;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /** The render role(s) assigned to this entry. */
+    get roles() {
+        return this._roles;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /** The role under which this entry was last rendered, or 0 if this entry has not yet been rendered. */
+    get lastRenderedRole() {
+        return this._lastRenderedRole;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /** This entry's waypoint icon. */
+    get icon() {
+        return this._icon;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /** This entry's waypoint label. */
+    get label() {
+        return this._label;
+    }
+    /**
+     * Checks whether this entry is assigned any of the specified render roles. Optionally, this method can also check
+     * if this entry was last rendered in any of the specified roles instead.
+     * @param roles The render roles against which to check.
+     * @param useLastRendered Whether to check the role(s) in which this entry was last rendered instead of the current
+     * roles assigned to this entry. False by default.
+     * @returns whether the check passed.
+     */
+    isAnyRole(roles, useLastRendered = false) {
+        let toCompare;
+        if (useLastRendered) {
+            toCompare = this.lastRenderedRole;
+        }
+        else {
+            toCompare = this.roles;
+        }
+        return BitFlags.isAny(toCompare, roles);
+    }
+    /**
+     * Checks whether this entry is assigned only the specified render role(s). Optionally, this method can also check
+     * if this entry was last rendered in only the specified role(s) instead.
+     * @param roles The render roles against which to check.
+     * @param useLastRendered Whether to check the role(s) in which this entry was last rendered instead of the current
+     * roles assigned to this entry. False by default.
+     * @returns whether the check passed.
+     */
+    isOnlyRole(roles, useLastRendered = false) {
+        let toCompare;
+        if (useLastRendered) {
+            toCompare = this.lastRenderedRole;
+        }
+        else {
+            toCompare = this.roles;
+        }
+        return toCompare === roles;
+    }
+    /**
+     * Checks whether this entry is assigned all the specified render role(s). Optionally, this method can also check
+     * if this entry was last rendered in all the specified role(s) instead.
+     * @param roles - the render role(s) against which to check.
+     * @param useLastRendered Whether to check the role(s) in which this entry was last rendered instead of the current
+     * roles assigned to this entry. False by default.
+     * @returns whether the check passed.
+     */
+    isAllRoles(roles, useLastRendered = false) {
+        let toCompare;
+        if (useLastRendered) {
+            toCompare = this.lastRenderedRole;
+        }
+        else {
+            toCompare = this.roles;
+        }
+        return BitFlags.isAll(toCompare, roles);
+    }
+    /**
+     * Assigns one or more render roles to this entry.
+     * @param roles The render role(s) to assign.
+     * @param sourceId The unique string ID of the source of the assignment.
+     */
+    addRole(roles, sourceId) {
+        BitFlags.forEach(roles, (value, index) => {
+            var _a;
+            var _b, _c;
+            ((_a = (_b = this.registrations)[_c = 1 << index]) !== null && _a !== void 0 ? _a : (_b[_c] = new Set())).add(sourceId);
+        }, true);
+        this._roles = this._roles | roles;
+    }
+    /**
+     * Removes one or more render roles from this entry.
+     * @param roles The render role(s) to remove.
+     * @param sourceId The unique string ID of the soruce of the de-assignment.
+     */
+    removeRole(roles, sourceId) {
+        BitFlags.forEach(roles, (value, index) => {
+            const role = 1 << index;
+            const registrations = this.registrations[role];
+            if (registrations) {
+                registrations.delete(sourceId);
+                if (registrations.size === 0) {
+                    this._roles = this._roles & ~role;
+                }
+            }
+        }, true);
+    }
+    /**
+     * Prepares this entry for rendering.
+     * @param showRole The role in which this entry should be rendered.
+     * @param iconFactory The factory to use to get a waypoint icon.
+     * @param labelFactory The factory to use to get a waypoint label.
+     */
+    prepareRender(showRole, iconFactory, labelFactory) {
+        var _a, _b;
+        if (showRole === this._lastRenderedRole) {
+            return;
+        }
+        this._icon = (_a = iconFactory === null || iconFactory === void 0 ? void 0 : iconFactory.getIcon(showRole, this.waypoint)) !== null && _a !== void 0 ? _a : null;
+        const label = (_b = labelFactory === null || labelFactory === void 0 ? void 0 : labelFactory.getLabel(showRole, this.waypoint)) !== null && _b !== void 0 ? _b : null;
+        if (this._label && this._label !== label) {
+            this.textManager.deregister(this._label);
+        }
+        if (label && label !== this._label) {
+            this.textManager.register(label);
+        }
+        this._label = label;
+        this._lastRenderedRole = showRole;
+    }
+    /**
+     * Updates this entry. An appropriate render role is selected, then the icon and label are updated as appropriate
+     * for the chosen role. If the waypoint's label should be visible, it is added to the appropriate text manager.
+     * Of note, this method will not draw the waypoint icon to a canvas element; it will simply ensure the .showIcon
+     * property contains the correct value depending on whether the icon should be visible.
+     */
+    update() {
+        var _a, _b;
+        const showRole = this.selectRoleToRender(this, this.roleDefinitions);
+        const roleDef = this.roleDefinitions.get(showRole);
+        const iconFactory = (_a = roleDef === null || roleDef === void 0 ? void 0 : roleDef.iconFactory) !== null && _a !== void 0 ? _a : null;
+        const labelFactory = (_b = roleDef === null || roleDef === void 0 ? void 0 : roleDef.labelFactory) !== null && _b !== void 0 ? _b : null;
+        this.prepareRender(showRole, iconFactory, labelFactory);
+    }
+    /**
+     * Destroys this entry. Any label from this entry currently registered with the text manager will be deregistered.
+     */
+    destroy() {
+        if (this._label) {
+            this.textManager.deregister(this._label);
+        }
+    }
+}
 
 /**
- * Map own airplane icon orientations.
+ * A module describing the display of airspaces.
  */
-var MapOwnAirplaneIconOrientation;
+class MapAirspaceModule {
+    /**
+     * Constructor.
+     * @param showTypes A map of this module's airspace show types to their associated nearest boundary search filter
+     * bitflags.
+     */
+    constructor(showTypes) {
+        this.showTypes = showTypes;
+        this.show = {};
+        for (const type in showTypes) {
+            this.show[type] = Subject.create(false);
+        }
+    }
+}
+
+/**
+     * A module describing the state of the autopilot.
+     */
+    class MapAutopilotPropsModule {
+    constructor() {
+        /** The altitude preselector setting. */
+        this.selectedAltitude = NumberUnitSubject.create(UnitType.FOOT.createNumber(0));
+        /** The selected heading setting, in degrees. */
+        this.selectedHeading = Subject.create(0);
+    }
+}
+
+    /**
+     * Map own airplane icon orientations.
+     */
+    var MapOwnAirplaneIconOrientation;
 (function (MapOwnAirplaneIconOrientation) {
     MapOwnAirplaneIconOrientation["HeadingUp"] = "HeadingUp";
     MapOwnAirplaneIconOrientation["TrackUp"] = "TrackUp";
@@ -29543,640 +31369,847 @@ class MapOwnAirplanePropsModule {
         /** The magnetic variation at the airplane's position. */
         this.magVar = Subject.create(0);
     }
-}
+    }
 
 /**
- * A module describing the state of the autopilot.
+ * An implementation of MapCanvasLayerCanvasInstance.
  */
-class MapAutopilotPropsModule {
-    constructor() {
-        /** The altitude preselector setting. */
-        this.selectedAltitude = NumberUnitSubject.create(UnitType.FOOT.createNumber(0));
-        /** The selected heading setting, in degrees. */
-        this.selectedHeading = Subject.create(0);
-    }
-}
-
-/**
- * A module describing the display of airspaces.
- */
-class MapAirspaceModule {
+class MapCanvasLayerCanvasInstanceClass {
     /**
-     * Constructor.
-     * @param showTypes A map of this module's airspace show types to their associated nearest boundary search filter
-     * bitflags.
+     * Creates a new canvas instance.
+     * @param canvas The canvas element.
+     * @param context The canvas 2D rendering context.
+     * @param isDisplayed Whether the canvas is displayed.
      */
-    constructor(showTypes) {
-        this.showTypes = showTypes;
-        this.show = {};
-        for (const type in showTypes) {
-            this.show[type] = Subject.create(false);
-        }
-    }
-}
-
-/**
- * An abstract implementation of {@link CssTransform}
- */
-class AbstractCssTransform {
-    /**
-     * Constructor.
-     * @param initialParams The transform's initial parameters.
-     */
-    constructor(initialParams) {
-        this.params = new Float64Array(initialParams);
-        this.cachedParams = new Float64Array(initialParams);
-    }
-    /** @inheritdoc */
-    resolve() {
-        if (this.stringValue !== undefined && VecNMath.equals(this.params, this.cachedParams)) {
-            return this.stringValue;
-        }
-        VecNMath.copy(this.params, this.cachedParams);
-        this.stringValue = this.buildString(this.params);
-        return this.stringValue;
-    }
-}
-/**
- * A CSS `matrix` transform.
- */
-class CssMatrixTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `matrix` transform, initialized to the identity transformation.
-     */
-    constructor() {
-        super(CssMatrixTransform.DEFAULT_PARAMS);
+    constructor(canvas, context, isDisplayed) {
+        this.canvas = canvas;
+        this.context = context;
+        this.isDisplayed = isDisplayed;
     }
     // eslint-disable-next-line jsdoc/require-jsdoc
-    set(arg1, skewY, skewX, scaleY, translateX, translateY) {
-        let scaleX;
-        if (typeof arg1 === 'number') {
-            scaleX = arg1;
+    clear() {
+        this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    reset() {
+        const width = this.canvas.width;
+        this.canvas.width = 0;
+        this.canvas.width = width;
+    }
+                }
+            /**
+ * A layer which uses a canvas to draw graphics.
+ */
+class MapCanvasLayer extends MapLayer {
+    constructor() {
+        super(...arguments);
+        this.displayCanvasRef = FSComponent.createRef();
+        this.width = 0;
+        this.height = 0;
+        this.displayCanvasContext = null;
+        this.isInit = false;
+    }
+    /**
+     * Gets this layer's display canvas instance.
+     * @returns This layer's display canvas instance.
+     * @throws Error if this layer's display canvas instance has not been initialized.
+     */
+    get display() {
+        if (!this._display) {
+            throw new Error('MapCanvasLayer: attempted to access display before it was initialized');
         }
-        else {
-            [scaleX, skewX, skewY, scaleY, translateX, translateY] = arg1.getParameters();
+        return this._display;
         }
-        this.params[0] = scaleX;
-        this.params[1] = skewY;
-        this.params[2] = skewX;
-        this.params[3] = scaleY;
-        this.params[4] = translateX;
-        this.params[5] = translateY;
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `matrix(${params.join(', ')})`;
-    }
-}
-CssMatrixTransform.DEFAULT_PARAMS = [1, 0, 0, 1, 0, 0];
-/**
- * A CSS `rotate` transform.
- */
-class CssRotateTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `rotate` transform, initialized to zero rotation.
-     * @param unit The angle unit to use for this transform.
+        /**
+     * Gets this layer's buffer canvas instance.
+     * @returns This layer's buffer canvas instance.
+     * @throws Error if this layer's buffer canvas instance has not been initialized.
      */
-    constructor(unit) {
-        super(CssRotateTransform.DEFAULT_PARAMS);
-        this.unit = unit;
-    }
-    /**
-     * Sets this transform's rotation angle.
-     * @param angle The angle to set.
-     * @param precision The precision with which to set the angle. A value of `0` denotes infinite precision. Defaults
-     * to `0`.
-     */
-    set(angle, precision = 0) {
-        this.params[0] = precision === 0 ? angle : MathUtils.round(angle, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `rotate(${params[0]}${this.unit})`;
-    }
-}
-CssRotateTransform.DEFAULT_PARAMS = [0];
-/**
- * A CSS `rotate3d` transform.
- */
-class CssRotate3dTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
-     * @param unit The angle unit to use for this transform.
-     */
-    constructor(unit) {
-        super(CssRotate3dTransform.DEFAULT_PARAMS);
-        this.unit = unit;
-    }
-    /**
-     * Sets this transform's rotation.
-     * @param x The x component of the rotation axis vector.
-     * @param y The y component of the rotation axis vector.
-     * @param z The z component of the rotation axis vector.
-     * @param angle The rotation angle to set.
-     * @param precision The precision with which to set the angle. A value of `0` denotes infinite precision. Defaults
-     * to `0`.
-     */
-    set(x, y, z, angle, precision = 0) {
-        this.params[0] = x;
-        this.params[1] = y;
-        this.params[2] = z;
-        this.params[3] = precision === 0 ? angle : MathUtils.round(angle, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `rotate3d(${params[0]}, ${params[1]}, ${params[2]}, ${params[3]}${this.unit})`;
-    }
-}
-CssRotate3dTransform.DEFAULT_PARAMS = [0, 0, 1, 0];
-/**
- * A CSS `translateX` transform.
- */
-class CssTranslateXTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `translateX` transform, initialized to zero translation.
-     * @param unit The unit to use for this transform.
-     */
-    constructor(unit) {
-        super(CssTranslateXTransform.DEFAULT_PARAMS);
-        this.unit = unit;
-    }
-    /**
-     * Sets this transform's translation.
-     * @param x The translation to set.
-     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     */
-    set(x, precision = 0) {
-        this.params[0] = precision === 0 ? x : MathUtils.round(x, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `translateX(${params[0]}${this.unit})`;
-    }
-}
-CssTranslateXTransform.DEFAULT_PARAMS = [0];
-/**
- * A CSS `translateY` transform.
- */
-class CssTranslateYTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `translateY` transform, initialized to zero translation.
-     * @param unit The unit to use for this transform.
-     */
-    constructor(unit) {
-        super(CssTranslateYTransform.DEFAULT_PARAMS);
-        this.unit = unit;
-    }
-    /**
-     * Sets this transform's translation.
-     * @param y The translation to set.
-     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     */
-    set(y, precision = 0) {
-        this.params[0] = precision === 0 ? y : MathUtils.round(y, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `translateY(${params[0]}${this.unit})`;
-    }
-}
-CssTranslateYTransform.DEFAULT_PARAMS = [0];
-/**
- * A CSS `translateZ` transform.
- */
-class CssTranslateZTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `translateZ` transform, initialized to zero translation.
-     * @param unit The unit to use for this transform.
-     */
-    constructor(unit) {
-        super(CssTranslateZTransform.DEFAULT_PARAMS);
-        this.unit = unit;
-    }
-    /**
-     * Sets this transform's translation.
-     * @param z The translation to set.
-     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     */
-    set(z, precision = 0) {
-        this.params[0] = precision === 0 ? z : MathUtils.round(z, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `translateZ(${params[0]}${this.unit})`;
-    }
-}
-CssTranslateZTransform.DEFAULT_PARAMS = [0];
-/**
- * A CSS `translate` transform.
- */
-class CssTranslateTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `translate` transform, initialized to zero translation.
-     * @param unitX The unit to use for this transform's x translation.
-     * @param unitY The unit to use for this transform's y translation. Defaults to the same unit as the x translation.
-     */
-    constructor(unitX, unitY = unitX) {
-        super(CssTranslateTransform.DEFAULT_PARAMS);
-        this.unitX = unitX;
-        this.unitY = unitY;
-    }
-    /**
-     * Sets this transform's translation.
-     * @param x The x translation to set.
-     * @param y The y translation to set.
-     * @param precisionX The precision with which to set the x translation. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     * @param precisionY The precision with which to set the y translation. A value of `0` denotes infinite precision.
-     * Defaults to the x translation precision value.
-     */
-    set(x, y, precisionX = 0, precisionY = precisionX) {
-        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
-        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `translate(${params[0]}${this.unitX}, ${params[1]}${this.unitY})`;
-    }
-}
-CssTranslateTransform.DEFAULT_PARAMS = [0, 0];
-/**
- * A CSS `translate3d` transform.
- */
-class CssTranslate3dTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `translate3d` transform, initialized to zero translation.
-     * @param unitX The unit to use for this transform's x translation.
-     * @param unitY The unit to use for this transform's y translation. Defaults to the same unit as the x translation.
-     * @param unitZ The unit to use for this transform's z translation. Defaults to the same unit as the x translation.
-     */
-    constructor(unitX, unitY = unitX, unitZ = unitX) {
-        super(CssTranslate3dTransform.DEFAULT_PARAMS);
-        this.unitX = unitX;
-        this.unitY = unitY;
-        this.unitZ = unitZ;
-    }
-    /**
-     * Sets this transform's translation.
-     * @param x The x translation to set.
-     * @param y The y translation to set.
-     * @param z The z translation to set.
-     * @param precisionX The precision with which to set the x translation. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     * @param precisionY The precision with which to set the y translation. A value of `0` denotes infinite precision.
-     * Defaults to the x translation precision value.
-     * @param precisionZ The precision with which to set the z translation. A value of `0` denotes infinite precision.
-     * Defaults to the x translation precision value.
-     */
-    set(x, y, z, precisionX = 0, precisionY = precisionX, precisionZ = precisionX) {
-        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
-        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
-        this.params[2] = precisionZ === 0 ? z : MathUtils.round(z, precisionZ);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `translate3d(${params[0]}${this.unitX}, ${params[1]}${this.unitY}, ${params[2]}${this.unitZ})`;
-    }
-}
-CssTranslate3dTransform.DEFAULT_PARAMS = [0, 0, 0];
-/**
- * A CSS `scaleX` transform.
- */
-class CssScaleXTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `scaleX` transform, initialized to the identity scaling.
-     */
-    constructor() {
-        super(CssScaleXTransform.DEFAULT_PARAMS);
-    }
-    /**
-     * Sets this transform's scaling.
-     * @param x The scaling to set.
-     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
-     * to `0`.
-     */
-    set(x, precision = 0) {
-        this.params[0] = precision === 0 ? x : MathUtils.round(x, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `scaleX(${params[0]})`;
-    }
-}
-CssScaleXTransform.DEFAULT_PARAMS = [1];
-/**
- * A CSS `scaleY` transform.
- */
-class CssScaleYTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `scaleY` transform, initialized to the identity scaling.
-     */
-    constructor() {
-        super(CssScaleYTransform.DEFAULT_PARAMS);
-    }
-    /**
-     * Sets this transform's scaling.
-     * @param y The scaling to set.
-     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
-     * to `0`.
-     */
-    set(y, precision = 0) {
-        this.params[0] = precision === 0 ? y : MathUtils.round(y, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `scaleY(${params[0]})`;
-    }
-}
-CssScaleYTransform.DEFAULT_PARAMS = [1];
-/**
- * A CSS `scaleZ` transform.
- */
-class CssScaleZTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
-     */
-    constructor() {
-        super(CssScaleZTransform.DEFAULT_PARAMS);
-    }
-    /**
-     * Sets this transform's scaling.
-     * @param z The scaling to set.
-     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
-     * to `0`.
-     */
-    set(z, precision = 0) {
-        this.params[0] = precision === 0 ? z : MathUtils.round(z, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `scaleZ(${params[0]})`;
-    }
-}
-CssScaleZTransform.DEFAULT_PARAMS = [1];
-/**
- * A CSS `scale` transform.
- */
-class CssScaleTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `scale` transform, initialized to the identity scaling.
-     */
-    constructor() {
-        super(CssScaleTransform.DEFAULT_PARAMS);
-    }
-    /**
-     * Sets this transform's scaling.
-     * @param x The x scaling to set.
-     * @param y The y scaling to set.
-     * @param precisionX The precision with which to set the x scaling. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     * @param precisionY The precision with which to set the y scaling. A value of `0` denotes infinite precision.
-     * Defaults to the x scaling precision value.
-     */
-    set(x, y, precisionX = 0, precisionY = precisionX) {
-        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
-        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `scale(${params[0]}, ${params[1]})`;
-    }
-}
-CssScaleTransform.DEFAULT_PARAMS = [1, 1];
-/**
- * A CSS `scale3d` transform.
- */
-class CssScale3dTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `scale3d` transform, initialized to the identity scaling.
-     */
-    constructor() {
-        super(CssScale3dTransform.DEFAULT_PARAMS);
-    }
-    /**
-     * Sets this transform's scaling.
-     * @param x The x scaling to set.
-     * @param y The y scaling to set.
-     * @param z The z scaling to set.
-     * @param precisionX The precision with which to set the x scaling. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     * @param precisionY The precision with which to set the y scaling. A value of `0` denotes infinite precision.
-     * Defaults to the x scaling precision value.
-     * @param precisionZ The precision with which to set the z scaling. A value of `0` denotes infinite precision.
-     * Defaults to the x scaling precision value.
-     */
-    set(x, y, z, precisionX = 0, precisionY = precisionX, precisionZ = precisionX) {
-        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
-        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
-        this.params[2] = precisionZ === 0 ? z : MathUtils.round(y, precisionZ);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `scale3d(${params[0]}, ${params[1]}, ${params[2]})`;
-    }
-}
-CssScale3dTransform.DEFAULT_PARAMS = [1, 1, 1];
-/**
- * A concatenated chain of CSS transforms.
- */
-class CssTransformChain {
-    /**
-     * Creates a new chain of CSS transforms.
-     * @param transforms The individual child transforms that will constitute the new transform chain. The order of
-     * the children passed to the constructor determines the order of concatenation. Concatenation follows the standard
-     * CSS transform convention: for a concatenation of transforms `[A, B, C]`, the resulting transformation is
-     * equivalent to the one produced by multiplying the transformation matrices in the order `(A * B) * C`.
-     */
-    constructor(...transforms) {
-        this.stringValues = [];
-        this.transforms = transforms;
-    }
-    /**
-     * Gets one of this chain's child transforms.
-     * @param index The index of the child to get.
-     * @returns The child transform at the specified index in this chain.
-     * @throws RangeError if `index` is out of bounds.
-     */
-    getChild(index) {
-        if (index < 0 || index >= this.transforms.length) {
-            throw new RangeError();
+    get buffer() {
+        if (!this._buffer) {
+            throw new Error('MapCanvasLayer: attempted to access buffer before it was initialized');
         }
-        return this.transforms[index];
+        return this._buffer;
+    }
+    /**
+     * Attempts to get this layer's display canvas instance.
+     * @returns This layer's display canvas instance, or undefined if it has not been initialized.
+     */
+    tryGetDisplay() {
+        return this._display;
+    }
+    /**
+     * Attempts to get this layer's buffer canvas instance.
+     * @returns This layer's buffer canvas instance, or undefined if it has not been initialized.
+     */
+    tryGetBuffer() {
+        return this._buffer;
+    }
+    /**
+     * Gets the width of the canvas element, in pixels.
+     * @returns the width of the canvas element.
+     */
+    getWidth() {
+        return this.width;
+    }
+    /**
+     * Gets the height of the canvas element, in pixels.
+     * @returns the height of the canvas element.
+     */
+    getHeight() {
+        return this.height;
+    }
+/**
+     * Sets the width of the canvas element, in pixels.
+     * @param width The new width.
+     */
+setWidth(width) {
+        if (width === this.width) {
+            return;
+        }
+        this.width = width;
+        if (this.isInit) {
+            this.updateCanvasSize();
+        }
+    }
+    /**
+     * Sets the height of the canvas element, in pixels.
+     * @param height The new height.
+     */
+    setHeight(height) {
+        if (height === this.height) {
+            return;
+    }
+    this.height = height;
+        if (this.isInit) {
+        this.updateCanvasSize();
+        }
+    }
+    /**
+     * Copies the contents of the buffer to the display. Has no effect if this layer does not have a buffer.
+     */
+    copyBufferToDisplay() {
+        if (!this.isInit || !this.props.useBuffer) {
+            return;
+        }
+        this.display.context.drawImage(this.buffer.canvas, 0, 0, this.width, this.height);
+    }
+    /**
+     * A callback called after the component renders.
+     */
+    onAfterRender() {
+        this.displayCanvasContext = this.displayCanvasRef.instance.getContext('2d');
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc, @typescript-eslint/no-unused-vars
+    onVisibilityChanged(isVisible) {
+        if (this.isInit) {
+            this.updateCanvasVisibility();
+        }
+        }
+    /**
+     * Updates this layer according to its current visibility.
+     */
+    updateFromVisibility() {
+        this.display.canvas.style.display = this.isVisible() ? 'block' : 'none';
+    }
+        // eslint-disable-next-line jsdoc/require-jsdoc
+    onAttached() {
+        this.initCanvasInstances();
+        this.isInit = true;
+        this.updateCanvasVisibility();
+        this.updateCanvasSize();
+    }
+    /**
+     * Initializes this layer's canvas instances.
+     */
+    initCanvasInstances() {
+        this._display = this.createCanvasInstance(this.displayCanvasRef.instance, this.displayCanvasContext, true);
+        if (this.props.useBuffer) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            this._buffer = this.createCanvasInstance(canvas, context, false);
+        }
+    }
+    /**
+     * Creates a canvas instance.
+     * @param canvas The canvas element.
+     * @param context The canvas 2D rendering context.
+     * @param isDisplayed Whether the canvas is displayed.
+     * @returns a canvas instance.
+     */
+    createCanvasInstance(canvas, context, isDisplayed) {
+        return new MapCanvasLayerCanvasInstanceClass(canvas, context, isDisplayed);
+    }
+    /**
+     * Updates the canvas element's size.
+     */
+    updateCanvasSize() {
+        const displayCanvas = this.display.canvas;
+        displayCanvas.width = this.width;
+        displayCanvas.height = this.height;
+        displayCanvas.style.width = `${this.width}px`;
+        displayCanvas.style.height = `${this.height}px`;
+        if (this._buffer) {
+            const bufferCanvas = this._buffer.canvas;
+            bufferCanvas.width = this.width;
+            bufferCanvas.height = this.height;
+        }
+    }
+    /**
+     * Updates the visibility of the display canvas.
+     */
+    updateCanvasVisibility() {
+        this.display.canvas.style.display = this.isVisible() ? 'block' : 'none';
     }
     /** @inheritdoc */
-    resolve() {
-        let needRebuildString = false;
-        for (let i = 0; i < this.transforms.length; i++) {
-            const stringValue = this.transforms[i].resolve();
-            if (this.stringValues[i] !== stringValue) {
-                this.stringValues[i] = stringValue;
-                needRebuildString = true;
+    render() {
+        var _a;
+        return (FSComponent.buildComponent("canvas", { ref: this.displayCanvasRef, class: (_a = this.props.class) !== null && _a !== void 0 ? _a : '', width: '0', height: '0', style: 'position: absolute;' }));
+    }
+}
+
+/**
+ * A canvas map layer whose size and position is synced with the map projection window.
+ */
+class MapSyncedCanvasLayer extends MapCanvasLayer {
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    onAttached() {
+        super.onAttached();
+        this.updateFromProjectedSize(this.props.mapProjection.getProjectedSize());
+    }
+    /**
+     * Updates this layer according to the current size of the projected map window.
+     * @param projectedSize The size of the projected map window.
+     */
+    updateFromProjectedSize(projectedSize) {
+        this.setWidth(projectedSize[0]);
+        this.setHeight(projectedSize[1]);
+        const displayCanvas = this.display.canvas;
+        displayCanvas.style.left = '0px';
+        displayCanvas.style.top = '0px';
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    onMapProjectionChanged(mapProjection, changeFlags) {
+        if (BitFlags.isAll(changeFlags, MapProjectionChangeType.ProjectedSize)) {
+            this.updateFromProjectedSize(mapProjection.getProjectedSize());
+        }
+    }
+}
+
+/**
+     * Implementation of MapCachedCanvasLayerReference.
+ */
+class MapCachedCanvasLayerReferenceClass {
+    constructor() {
+        this._center = new GeoPoint(0, 0);
+        this._scaleFactor = 1;
+        this._rotation = 0;
+    }
+    /** @inheritdoc */
+    get center() {
+        return this._center.readonly;
+    }
+    /** @inheritdoc */
+    get scaleFactor() {
+        return this._scaleFactor;
+    }
+    /** @inheritdoc */
+    get rotation() {
+        return this._rotation;
+    }
+    /**
+     * Syncs this reference with the current state of a map projection.
+     * @param mapProjection The map projection with which to sync.
+     */
+    syncWithMapProjection(mapProjection) {
+        this._center.set(mapProjection.getCenter());
+        this._scaleFactor = mapProjection.getScaleFactor();
+        this._rotation = mapProjection.getRotation();
+    }
+    /**
+     * Syncs this reference with another reference.
+     * @param reference - the reference with which to sync.
+     */
+    syncWithReference(reference) {
+        this._center.set(reference.center);
+        this._scaleFactor = reference.scaleFactor;
+        this._rotation = reference.rotation;
+    }
+}
+/**
+ * Implementation of MapCachedCanvasLayerTransform.
+ */
+class MapCachedCanvasLayerTransformClass {
+    constructor() {
+        this._scale = 0;
+        this._rotation = 0;
+        this._translation = new Float64Array(2);
+        this._margin = 0;
+        this._marginRemaining = 0;
+    }
+    /** @inheritdoc */
+    get scale() {
+        return this._scale;
+    }
+    /** @inheritdoc */
+    get rotation() {
+        return this._rotation;
+    }
+    /** @inheritdoc */
+    get translation() {
+        return this._translation;
+    }
+    /** @inheritdoc */
+    get margin() {
+        return this._margin;
+    }
+    /** @inheritdoc */
+    get marginRemaining() {
+        return this._marginRemaining;
+    }
+/**
+ * Updates this transform given the current map projection and a reference.
+     * @param mapProjection The current map projection.
+     * @param reference The reference to use.
+     * @param referenceMargin The reference margin, in pixels.
+     */
+    update(mapProjection, reference, referenceMargin) {
+        this._scale = mapProjection.getScaleFactor() / reference.scaleFactor;
+        this._rotation = mapProjection.getRotation() - reference.rotation;
+        mapProjection.project(reference.center, this._translation);
+        Vec2Math.sub(this._translation, mapProjection.getCenterProjected(), this._translation);
+        this._margin = referenceMargin * this._scale;
+        this._marginRemaining = this._margin - Math.max(Math.abs(this._translation[0]), Math.abs(this._translation[1]));
+    }
+    /**
+     * Copies another transform's parameters to this one.
+     * @param other The other transform.
+     */
+    copyFrom(other) {
+        this._scale = other.scale;
+        this._rotation = other.rotation;
+        this._translation.set(other.translation);
+        this._margin = other.margin;
+    }
+}
+    /**
+     * An implementation of MapCachedCanvasLayerCanvasInstance.
+ */
+    class MapCachedCanvasLayerCanvasInstanceClass extends MapCanvasLayerCanvasInstanceClass {
+    /**
+     * Creates a new canvas instance.
+     * @param canvas The canvas element.
+     * @param context The canvas 2D rendering context.
+     * @param isDisplayed Whether the canvas is displayed.
+     * @param getReferenceMargin A function which gets this canvas instance's reference margin, in pixels. The reference
+     * margin is the maximum amount of translation allowed without invalidation at a scale factor of 1.
+     */
+    constructor(canvas, context, isDisplayed, getReferenceMargin) {
+        super(canvas, context, isDisplayed);
+        this.getReferenceMargin = getReferenceMargin;
+        this._reference = new MapCachedCanvasLayerReferenceClass();
+        this._transform = new MapCachedCanvasLayerTransformClass();
+        this._isInvalid = false;
+        this._geoProjection = new MercatorProjection();
+        this.canvasTransform = CssTransformSubject.create(CssTransformBuilder.concat(CssTransformBuilder.scale(), CssTransformBuilder.translate('px'), CssTransformBuilder.rotate('rad')));
+        this.canvasTransform.sub(transform => { this.canvas.style.transform = transform; }, true);
+    }
+    /** @inheritdoc */
+    get reference() {
+        return this._reference;
+    }
+    /** @inheritdoc */
+    get transform() {
+        return this._transform;
+    }
+    /** @inheritdoc */
+    get isInvalid() {
+        return this._isInvalid;
+    }
+    /** @inheritdoc */
+    get geoProjection() {
+        return this._geoProjection;
+    }
+    /** @inheritdoc */
+    syncWithMapProjection(mapProjection) {
+        const projectedCenter = Vec2Math.set(this.canvas.width / 2, this.canvas.height / 2, MapCachedCanvasLayerCanvasInstanceClass.tempVec2_1);
+        this._reference.syncWithMapProjection(mapProjection);
+        this._geoProjection.copyParametersFrom(mapProjection.getGeoProjection()).setTranslation(projectedCenter);
+        this._transform.update(mapProjection, this.reference, this.getReferenceMargin());
+        this._isInvalid = false;
+        if (this.isDisplayed) {
+            this.transformCanvasElement();
+        }
+        }
+    /** @inheritdoc */
+    syncWithCanvasInstance(other) {
+        this._reference.syncWithReference(other.reference);
+        this._geoProjection.copyParametersFrom(other.geoProjection);
+        this._transform.copyFrom(other.transform);
+        this._isInvalid = other.isInvalid;
+        if (this.isDisplayed && !this._isInvalid) {
+            this.transformCanvasElement();
+                }
+    }
+/**
+ * Updates this canvas instance's transform given the current map projection.
+     * @param mapProjection The current map projection.
+     */
+    updateTransform(mapProjection) {
+        this._transform.update(mapProjection, this.reference, this.getReferenceMargin());
+        if (!this._isInvalid) {
+            const scaleFactorRatio = mapProjection.getScaleFactor() / this._reference.scaleFactor;
+            this._isInvalid = scaleFactorRatio >= MapCachedCanvasLayerCanvasInstanceClass.SCALE_INVALIDATION_THRESHOLD
+                || scaleFactorRatio <= 1 / MapCachedCanvasLayerCanvasInstanceClass.SCALE_INVALIDATION_THRESHOLD
+                || this._transform.marginRemaining < 0;
+        }
+        if (this.isDisplayed && !this._isInvalid) {
+            this.transformCanvasElement();
+        }
+    }
+    /**
+     * Transforms this instance's canvas element.
+     */
+    transformCanvasElement() {
+        const transform = this.transform;
+        const offsetX = transform.translation[0] / transform.scale;
+        const offsetY = transform.translation[1] / transform.scale;
+        this.canvasTransform.transform.getChild(0).set(transform.scale, transform.scale, 0.001);
+        this.canvasTransform.transform.getChild(1).set(offsetX, offsetY, 0.1);
+        this.canvasTransform.transform.getChild(2).set(transform.rotation, 1e-4);
+        this.canvasTransform.resolve();
+    }
+    /** @inheritdoc */
+    invalidate() {
+        this._isInvalid = true;
+        this.clear();
+        }
+        }
+MapCachedCanvasLayerCanvasInstanceClass.SCALE_INVALIDATION_THRESHOLD = 1.2;
+MapCachedCanvasLayerCanvasInstanceClass.tempVec2_1 = new Float64Array(2);
+/**
+ * A canvas map layer whose image can be cached and transformed as the map projection changes.
+ */
+class MapCachedCanvasLayer extends MapCanvasLayer {
+    /** @inheritdoc */
+    constructor(props) {
+        super(props);
+        this.size = 0;
+        this.referenceMargin = 0;
+        this.needUpdateTransforms = false;
+        this.props.overdrawFactor = Math.max(1, this.props.overdrawFactor);
+    }
+    /**
+     * Gets the size, in pixels, of this layer's canvas.
+     * @returns the size of this layer's canvas.
+     */
+    getSize() {
+        return this.size;
+    }
+    /**
+     * Gets the reference translation margin, in pixels, of this layer's display canvas. This value is the maximum amount
+     * the display canvas can be translated in the x or y direction at a scale factor of 1 without invalidation.
+     * @returns the reference translation margin of this layer's display canvas.
+     */
+    getReferenceMargin() {
+        return this.referenceMargin;
+    }
+    /** @inheritdoc */
+    onAttached() {
+        super.onAttached();
+        this.updateFromProjectedSize(this.props.mapProjection.getProjectedSize());
+        this.needUpdateTransforms = true;
+    }
+    /** @inheritdoc */
+    createCanvasInstance(canvas, context, isDisplayed) {
+        return new MapCachedCanvasLayerCanvasInstanceClass(canvas, context, isDisplayed, this.getReferenceMargin.bind(this));
+    }
+    /**
+     * Updates this layer according to the current size of the projected map window.
+     * @param projectedSize The size of the projected map window.
+     */
+    updateFromProjectedSize(projectedSize) {
+        const projectedWidth = projectedSize[0];
+        const projectedHeight = projectedSize[1];
+        const diag = Math.hypot(projectedWidth, projectedHeight);
+        this.size = diag * this.props.overdrawFactor;
+        this.referenceMargin = (this.size - diag) / 2;
+        this.setWidth(this.size);
+        this.setHeight(this.size);
+        const posX = (projectedWidth - this.size) / 2;
+        const posY = (projectedHeight - this.size) / 2;
+        const displayCanvas = this.display.canvas;
+        displayCanvas.style.left = `${posX}px`;
+        displayCanvas.style.top = `${posY}px`;
+    }
+    /** @inheritdoc */
+    onMapProjectionChanged(mapProjection, changeFlags) {
+        var _a;
+        if (BitFlags.isAll(changeFlags, MapProjectionChangeType.ProjectedSize)) {
+            this.updateFromProjectedSize(mapProjection.getProjectedSize());
+            this.display.invalidate();
+            (_a = this.tryGetBuffer()) === null || _a === void 0 ? void 0 : _a.invalidate();
+        }
+        this.needUpdateTransforms = true;
+    }
+    /** @inheritdoc */
+    onUpdated(time, elapsed) {
+        super.onUpdated(time, elapsed);
+        if (!this.needUpdateTransforms) {
+            return;
+        }
+this.updateTransforms();
+    }
+/**
+ * Updates this layer's canvas instances' transforms.
+ */
+updateTransforms() {
+        var _a;
+        const mapProjection = this.props.mapProjection;
+        this.display.updateTransform(mapProjection);
+        (_a = this.tryGetBuffer()) === null || _a === void 0 ? void 0 : _a.updateTransform(mapProjection);
+        this.needUpdateTransforms = false;
+    }
+}
+
+/**
+ * A layer which draws airspaces.
+ */
+class MapAirspaceLayer extends MapLayer {
+    constructor() {
+        var _a, _b;
+        super(...arguments);
+        this.canvasLayerRef = FSComponent.createRef();
+        this.clipBoundsSub = VecNSubject.createFromVector(new Float64Array(4));
+        this.facLoader = new FacilityLoader(FacilityRepository.getRepository(this.props.bus), async () => {
+            this.searchSession = new NearestLodBoundarySearchSession(this.props.lodBoundaryCache, await this.facLoader.startNearestSearchSession(FacilitySearchType.Boundary), 0.5);
+            this.isAttached && this.scheduleSearch(0, true);
+        });
+        this.searchedAirspaces = new Map();
+        this.searchDebounceDelay = (_a = this.props.searchDebounceDelay) !== null && _a !== void 0 ? _a : MapAirspaceLayer.DEFAULT_SEARCH_DEBOUNCE_DELAY;
+        this.renderTimeBudget = (_b = this.props.renderTimeBudget) !== null && _b !== void 0 ? _b : MapAirspaceLayer.DEFAULT_RENDER_TIME_BUDGET;
+        this.activeRenderProcess = null;
+        this.renderTaskQueueHandler = {
+            renderTimeBudget: this.renderTimeBudget,
+            // eslint-disable-next-line jsdoc/require-jsdoc
+            onStarted() {
+                // noop
+            },
+            // eslint-disable-next-line jsdoc/require-jsdoc
+            canContinue(elapsedFrameCount, dispatchedTaskCount, timeElapsed) {
+                return timeElapsed < this.renderTimeBudget;
+            },
+            // eslint-disable-next-line jsdoc/require-jsdoc
+            onPaused: this.onRenderPaused.bind(this),
+            // eslint-disable-next-line jsdoc/require-jsdoc
+            onFinished: this.onRenderFinished.bind(this),
+            // eslint-disable-next-line jsdoc/require-jsdoc
+            onAborted: this.onRenderAborted.bind(this)
+        };
+        this.searchDebounceTimer = 0;
+        this.isSearchScheduled = false;
+        this.needRefilter = false;
+        this.isSearchBusy = false;
+        this.lastDesiredSearchRadius = 0; // meters
+        this.lastSearchRadius = 0; // meters
+        this.isRenderScheduled = false;
+        this.isBackgroundRenderScheduled = false;
+        this.isDisplayInvalidated = true;
+        this.isAttached = false;
+    }
+    /** @inheritdoc */
+    onAttached() {
+        this.canvasLayerRef.instance.onAttached();
+        this.updateClipBounds();
+        this.clippedPathStream = new ClippedPathStream(this.canvasLayerRef.instance.buffer.context, this.clipBoundsSub);
+        this.props.maxSearchRadius.sub(radius => {
+            const radiusMeters = radius.asUnit(UnitType.METER);
+            if (radiusMeters < this.lastSearchRadius || radiusMeters > this.lastDesiredSearchRadius) {
+                this.scheduleSearch(0, false);
+            }
+        });
+        this.props.maxSearchItemCount.sub(() => { this.scheduleSearch(0, false); });
+        this.initModuleListeners();
+        this.isAttached = true;
+        this.searchSession && this.scheduleSearch(0, true);
+    }
+    /**
+     * Initializes this layer's airspace module property listeners.
+     */
+    initModuleListeners() {
+        const airspaceModule = this.props.model.getModule('airspace');
+        for (const type of Object.values(airspaceModule.show)) {
+            type.sub(this.onAirspaceTypeShowChanged.bind(this));
+        }
+    }
+    /** @inheritdoc */
+    onMapProjectionChanged(mapProjection, changeFlags) {
+        this.canvasLayerRef.instance.onMapProjectionChanged(mapProjection, changeFlags);
+        if (BitFlags.isAll(changeFlags, MapProjectionChangeType.ProjectedSize)) {
+            this.updateClipBounds();
+        }
+    }
+    /**
+     * Updates this layer's canvas clipping bounds.
+     */
+    updateClipBounds() {
+        const size = this.canvasLayerRef.instance.getSize();
+        this.clipBoundsSub.set(-MapAirspaceLayer.CLIP_BOUNDS_BUFFER, -MapAirspaceLayer.CLIP_BOUNDS_BUFFER, size + MapAirspaceLayer.CLIP_BOUNDS_BUFFER, size + MapAirspaceLayer.CLIP_BOUNDS_BUFFER);
+    }
+    /**
+     * Schedules a search. If a search was previously scheduled but not yet executed, this new scheduled search will
+     * replace the old one.
+     * @param delay The delay, in milliseconds, before the search is executed.
+     * @param refilter Whether to update the search's boundary class filter.
+     */
+    scheduleSearch(delay, refilter) {
+        if (!this.searchSession) {
+            return;
+    }
+    this.searchDebounceTimer = delay;
+        this.isSearchScheduled = true;
+        this.needRefilter || (this.needRefilter = refilter);
+    }
+    /**
+     * Schedules a render to be executed during the next update cycle.
+     */
+    scheduleRender() {
+        this.isRenderScheduled = true;
+    }
+    /**
+     * Searches for airspaces around the map center. After the search is complete, the list of search results is filtered
+     * and, if necessary, rendered.
+     * @param refilter Whether to update the search's boundary class filter.
+     */
+    async searchAirspaces(refilter) {
+        this.isSearchBusy = true;
+        const center = this.props.mapProjection.getCenter();
+        const drawableDiag = this.canvasLayerRef.instance.display.canvas.width * Math.SQRT2;
+        this.lastDesiredSearchRadius = UnitType.GA_RADIAN.convertTo(this.props.mapProjection.getProjectedResolution() * drawableDiag / 2, UnitType.METER);
+        this.lastSearchRadius = Math.min(this.props.maxSearchRadius.get().asUnit(UnitType.METER), this.lastDesiredSearchRadius);
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        const session = this.searchSession;
+        refilter && session.setFilter(this.getBoundaryFilter());
+        const results = await session.searchNearest(center.lat, center.lon, this.lastSearchRadius, this.props.maxSearchItemCount.get());
+        for (let i = 0; i < results.added.length; i++) {
+            const airspace = results.added[i];
+            this.searchedAirspaces.set(airspace.facility.id, airspace);
+        }
+for (let i = 0; i < results.removed.length; i++) {
+            this.searchedAirspaces.delete(results.removed[i]);
+        }
+        this.isSearchBusy = false;
+        this.scheduleRender();
+    }
+    /**
+     * Gets the boundary class filter based on the current airspace type visibility settings.
+     * @returns The boundary class filter based on the current airspace type visibility settings.
+     */
+    getBoundaryFilter() {
+        const module = this.props.model.getModule('airspace');
+        const show = module.show;
+        let filter = 0;
+        for (const type in show) {
+            if (show[type].get()) {
+                filter |= module.showTypes[type];
             }
         }
-        if (needRebuildString || this.chainedStringValue === undefined) {
-            this.chainedStringValue = this.stringValues.join(' ');
+        return filter;
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    onUpdated(time, elapsed) {
+        this.canvasLayerRef.instance.onUpdated(time, elapsed);
+        this.updateFromInvalidation();
+        this.updateScheduledRender();
+        this.updateScheduledSearch(elapsed);
+    }
+    /**
+     * Checks if the display and buffer canvases have been invalidated, and if so, clears them and schedules a render.
+     */
+    updateFromInvalidation() {
+        const canvasLayer = this.canvasLayerRef.instance;
+        const display = canvasLayer.display;
+        const buffer = canvasLayer.buffer;
+        const needBackgroundRender = !this.isBackgroundRenderScheduled
+            && !this.activeRenderProcess
+            && (display.transform.marginRemaining / display.transform.margin <= MapAirspaceLayer.BACKGROUND_RENDER_MARGIN_THRESHOLD);
+        const shouldScheduleSearch = needBackgroundRender
+            || display.isInvalid
+            || (buffer.isInvalid && this.activeRenderProcess);
+        this.isBackgroundRenderScheduled || (this.isBackgroundRenderScheduled = needBackgroundRender);
+        if (display.isInvalid) {
+            this.isDisplayInvalidated = true;
+            this.isBackgroundRenderScheduled = false;
+            display.clear();
+            display.syncWithMapProjection(this.props.mapProjection);
         }
-        return this.chainedStringValue;
+        if (buffer.isInvalid) {
+            if (this.activeRenderProcess) {
+                this.activeRenderProcess.abort();
+                this.cleanUpRender();
+            }
+        buffer.clear();
+            buffer.syncWithMapProjection(this.props.mapProjection);
+        }
+        if (shouldScheduleSearch) {
+            this.scheduleSearch(this.searchDebounceDelay, false);
     }
 }
 /**
- * A subscribable subject whose value is a CSS transform string resolved from a {@link CssTransform}.
- */
-class CssTransformSubject extends AbstractSubscribable {
-    /**
-     * Constructor.
-     * @param transform The new subject's CSS transform.
+ * If a search is scheduled, decrements the delay timer and if necessary, executes the search.
+     * @param elapsed The time elapsed, in milliseconds, since the last update.
      */
-    constructor(transform) {
-        super();
-        this._transform = transform;
-        this.stringValue = transform.resolve();
-        this.transform = transform;
+    updateScheduledSearch(elapsed) {
+        if (!this.isSearchScheduled) {
+            return;
+        }
+        this.searchDebounceTimer = Math.max(0, this.searchDebounceTimer - elapsed);
+        if (this.searchDebounceTimer === 0 && !this.isSearchBusy) {
+            this.searchAirspaces(this.needRefilter);
+            this.isSearchScheduled = false;
+            this.needRefilter = false;
+        }
+    }
+    /**
+     * Executes a render if one is scheduled.
+     */
+    updateScheduledRender() {
+        if (!this.isRenderScheduled) {
+            return;
+        }
+        this.startRenderProcess();
+        this.isRenderScheduled = false;
+        this.isBackgroundRenderScheduled = false;
+    }
+    /**
+     * Syncs this layer's display canvas instance with the current map projection and renders this layer's airspaces to
+     * the display.
+     */
+    startRenderProcess() {
+        const canvasLayer = this.canvasLayerRef.instance;
+        if (this.activeRenderProcess) {
+            this.activeRenderProcess.abort();
+        }
+const buffer = canvasLayer.buffer;
+        buffer.clear();
+        buffer.syncWithMapProjection(this.props.mapProjection);
+        this.props.airspaceRenderManager.clearRegisteredAirspaces();
+        for (const airspace of this.searchedAirspaces.values()) {
+            if (this.isAirspaceInBounds(airspace, buffer)) {
+                this.props.airspaceRenderManager.registerAirspace(airspace);
+            }
+    }
+        const lod = this.selectLod(this.props.mapProjection.getProjectedResolution());
+        this.activeRenderProcess = this.props.airspaceRenderManager.prepareRenderProcess(buffer.geoProjection, buffer.context, this.renderTaskQueueHandler, lod, this.clippedPathStream);
+        this.activeRenderProcess.start();
+    }
+    /**
+     * Checks whether an airspace is within the projected bounds of a cached canvas instance.
+     * @param airspace An airspace.
+     * @param canvas A cached canvas instance.
+     * @returns Whether the airspace is within the projected bounds of the cached canvas instance.
+     */
+    isAirspaceInBounds(airspace, canvas) {
+        const corner = MapAirspaceLayer.geoPointCache[0];
+        const cornerProjected = MapAirspaceLayer.vec2Cache[0];
+        let minX, maxX, minY, maxY;
+        canvas.geoProjection.project(corner.set(airspace.facility.topLeft.lat, airspace.facility.topLeft.long), cornerProjected);
+        minX = maxX = cornerProjected[0];
+        minY = maxY = cornerProjected[1];
+        canvas.geoProjection.project(corner.set(airspace.facility.topLeft.lat, airspace.facility.bottomRight.long), cornerProjected);
+        minX = Math.min(minX, cornerProjected[0]);
+        maxX = Math.max(maxX, cornerProjected[0]);
+        minY = Math.min(minY, cornerProjected[1]);
+        maxY = Math.max(maxY, cornerProjected[1]);
+        canvas.geoProjection.project(corner.set(airspace.facility.bottomRight.lat, airspace.facility.bottomRight.long), cornerProjected);
+        minX = Math.min(minX, cornerProjected[0]);
+        maxX = Math.max(maxX, cornerProjected[0]);
+        minY = Math.min(minY, cornerProjected[1]);
+        maxY = Math.max(maxY, cornerProjected[1]);
+        canvas.geoProjection.project(corner.set(airspace.facility.bottomRight.lat, airspace.facility.topLeft.long), cornerProjected);
+        minX = Math.min(minX, cornerProjected[0]);
+        maxX = Math.max(maxX, cornerProjected[0]);
+        minY = Math.min(minY, cornerProjected[1]);
+        maxY = Math.max(maxY, cornerProjected[1]);
+        const width = canvas.canvas.width;
+        const height = canvas.canvas.height;
+        return minX < width
+            && maxX > 0
+            && minY < height
+            && maxY > 0;
+    }
+    /**
+     * Selects an LOD level based on projected map resolution.
+     * @param resolution A projected map resolution, in great-arc radians per pixel.
+     * @returns An LOD level based on the projected map resolution.
+     */
+    selectLod(resolution) {
+        const thresholds = this.props.lodBoundaryCache.lodDistanceThresholds;
+        let i = thresholds.length - 1;
+        while (i >= 0) {
+            if (resolution * 2 >= thresholds[i]) {
+                break;
+            }
+            i--;
+        }
+        return i;
+    }
+    /**
+     * Cleans up the active render process.
+     */
+    cleanUpRender() {
+        this.canvasLayerRef.instance.buffer.reset();
+        this.activeRenderProcess = null;
+    }
+    /**
+     * Renders airspaces from the buffer to the display.
+     */
+    renderAirspacesToDisplay() {
+        const display = this.canvasLayerRef.instance.display;
+        const buffer = this.canvasLayerRef.instance.buffer;
+        display.clear();
+        display.syncWithCanvasInstance(buffer);
+        this.canvasLayerRef.instance.copyBufferToDisplay();
+    }
+    /**
+     * This method is called when the airspace render process pauses.
+     */
+    onRenderPaused() {
+        if (this.isDisplayInvalidated) {
+            this.renderAirspacesToDisplay();
+        }
+    }
+    /**
+     * This method is called when the airspace render process finishes.
+     */
+    onRenderFinished() {
+        this.renderAirspacesToDisplay();
+        this.cleanUpRender();
+        this.isDisplayInvalidated = false;
+    }
+    /**
+     * This method is called when the airspace render process is aborted.
+     */
+    onRenderAborted() {
+        this.cleanUpRender();
+    }
+    /**
+     * This method is called when an airspace show property changes.
+     */
+    onAirspaceTypeShowChanged() {
+        this.scheduleSearch(0, true);
     }
     /** @inheritdoc */
-    get() {
-        return this.stringValue;
-    }
-    /**
-     * Resolves this subject's CSS transform to a CSS transform string, and sets this subject's value to the resolved
-     * string. If this changes this subject's value, subscribers will be notified.
-     */
-    resolve() {
-        const stringValue = this._transform.resolve();
-        if (stringValue !== this.stringValue) {
-            this.stringValue = stringValue;
-            this.notify();
-        }
-    }
-    /**
-     * Creates a new instance of {@link CssTransformSubject} whose value is resolved from a CSS transform.
-     * @param transform A CSS transform.
-     * @returns A new instance of {@link CssTransformSubject} whose value is resolved from the specified CSS transform.
-     */
-    static create(transform) {
-        return new CssTransformSubject(transform);
+    render() {
+        return (FSComponent.buildComponent(MapCachedCanvasLayer, { ref: this.canvasLayerRef, model: this.props.model, mapProjection: this.props.mapProjection, useBuffer: true, overdrawFactor: Math.SQRT2 }));
     }
 }
-/**
- * A utility class for building CSS transforms.
- */
-class CssTransformBuilder {
-    /**
-     * Creates a new instance of a CSS `matrix` transform, initialized to the identity transformation.
-     * @returns A new instance of a CSS `matrix` transform, initialized to the identity transformation.
-     */
-    static matrix() {
-        return new CssMatrixTransform();
-    }
-    /**
-     * Creates a new instance of a CSS `rotate` transform, initialized to zero rotation.
-     * @param unit The angle unit to use for the new transform.
-     * @returns A new instance of a CSS `rotate` transform, initialized to zero rotation.
-     */
-    static rotate(unit) {
-        return new CssRotateTransform(unit);
-    }
-    /**
-     * Creates a new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
-     * @param unit The angle unit to use for the new transform.
-     * @returns A new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
-     */
-    static rotate3d(unit) {
-        return new CssRotate3dTransform(unit);
-    }
-    /**
-     * Creates a new instance of a CSS `translateX` transform, initialized to zero translation.
-     * @param unit The unit to use for the new transform.
-     * @returns A new instance of a CSS `translateX` transform, initialized to zero translation.
-     */
-    static translateX(unit) {
-        return new CssTranslateXTransform(unit);
-    }
-    /**
-     * Creates a new instance of a CSS `translateY` transform, initialized to zero translation.
-     * @param unit The unit to use for the new transform.
-     * @returns A new instance of a CSS `translateY` transform, initialized to zero translation.
-     */
-    static translateY(unit) {
-        return new CssTranslateYTransform(unit);
-    }
-    /**
-     * Creates a new instance of a CSS `translateZ` transform, initialized to zero translation.
-     * @param unit The unit to use for the new transform.
-     * @returns A new instance of a CSS `translateZ` transform, initialized to zero translation.
-     */
-    static translateZ(unit) {
-        return new CssTranslateZTransform(unit);
-    }
-    /**
-     * Creates a new instance of a CSS `translate` transform, initialized to zero translation.
-     * @param unitX The unit to use for the new transform's x translation.
-     * @param unitY The unit to use for the new transform's y translation.
-     * @returns A new instance of a CSS `translate` transform, initialized to zero translation.
-     */
-    static translate(unitX, unitY) {
-        return new CssTranslateTransform(unitX, unitY);
-    }
-    /**
-     * Creates a new instance of a CSS `translate3d` transform, initialized to zero translation.
-     * @param unitX The unit to use for the new transform's x translation.
-     * @param unitY The unit to use for the new transform's y translation.
-     * @param unitZ The unit to use for the new transform's z translation.
-     * @returns A new instance of a CSS `translate3d` transform, initialized to zero translation.
-     */
-    static translate3d(unitX, unitY, unitZ) {
-        return new CssTranslate3dTransform(unitX, unitY, unitZ);
-    }
-    /**
-     * Creates a new instance of a CSS `scaleX` transform, initialized to the identity scaling.
-     * @returns A new instance of a CSS `scaleX` transform, initialized to the identity scaling.
-     */
-    static scaleX() {
-        return new CssScaleXTransform();
-    }
-    /**
-     * Creates a new instance of a CSS `scaleY` transform, initialized to the identity scaling.
-     * @returns A new instance of a CSS `scaleY` transform, initialized to the identity scaling.
-     */
-    static scaleY() {
-        return new CssScaleYTransform();
-    }
-    /**
-     * Creates a new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
-     * @returns A new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
-     */
-    static scaleZ() {
-        return new CssScaleZTransform();
-    }
-    /**
-     * Creates a new instance of a CSS `scale` transform, initialized to the identity scaling.
-     * @returns A new instance of a CSS `scale` transform, initialized to the identity scaling.
-     */
-    static scale() {
-        return new CssScaleTransform();
-    }
-    /**
-     * Creates a new instance of a CSS `scale3d` transform, initialized to the identity scaling.
-     * @returns A new instance of a CSS `scale3d` transform, initialized to the identity scaling.
-     */
-    static scale3d() {
-        return new CssScale3dTransform();
-    }
-    /**
-     * Concatenates zero or more CSS transformations.
-     * @param transforms The individual transforms to concatentate. The order of the transforms passed to the function
-     * determines the order of concatenation. Concatenation follows the standard CSS transform convention: for a
-     * concatenation of transforms `[A, B, C]`, the resulting transformation is equivalent to the one produced by
-     * multiplying the transformation matrices in the order `(A * B) * C`.
-     * @returns A new {@link CssTransformChain} object representing the concatenation of the specified transforms.
-     */
-    static concat(...transforms) {
-        return new CssTransformChain(...transforms);
-    }
-}
+MapAirspaceLayer.DEFAULT_SEARCH_DEBOUNCE_DELAY = 500; // milliseconds
+MapAirspaceLayer.DEFAULT_RENDER_TIME_BUDGET = 0.2; // milliseconds per frame
+MapAirspaceLayer.BACKGROUND_RENDER_MARGIN_THRESHOLD = 0.1; // relative to total margin
+MapAirspaceLayer.CLIP_BOUNDS_BUFFER = 10; // number of pixels from edge of canvas to extend the clipping bounds, in pixels
+MapAirspaceLayer.geoPointCache = [new GeoPoint(0, 0)];
+MapAirspaceLayer.vec2Cache = [new Float64Array(2)];
 
 /**
  * A utility class for creating number formatters.
@@ -30196,7 +32229,7 @@ class NumberFormatter {
         if (isNaN(number)) {
             return opts.nanString;
         }
-        const { precision, roundFunc, maxDigits, forceDecimalZeroes, pad, showCommas, useMinusSign, forceSign, cache } = opts;
+        const { precision, roundFunc, maxDigits, forceDecimalZeroes, pad, showCommas, useMinusSign, forceSign, hideSign, cache } = opts;
         const sign = number < 0 ? -1 : 1;
         const abs = Math.abs(number);
         let rounded = abs;
@@ -30254,34 +32287,41 @@ class NumberFormatter {
             parts[0] = parts[0].replace(NumberFormatter.COMMAS_REGEX, ',');
             formatted = parts.join('.');
         }
-        formatted = ((forceSign || signText !== '+') ? signText : '') + formatted;
+        if (!hideSign && (forceSign || signText !== '+')) {
+            formatted = signText + formatted;
+}
         if (cache) {
             opts.cachedString = formatted;
         }
         return formatted;
     }
+/**
+     * Resolves an internal options object from a partial options object. Any option not explicitly defined by the
+     * partial options object will revert to its default value.
+     * @param options A partial options object.
+     * @returns A new internal options object containing the full set of options resolved from the specified partial
+     * options object.
+     */
+    static resolveOptions(options) {
+        var _a;
+        var _b;
+        const resolved = Object.assign({}, options);
+        for (const key in NumberFormatter.DEFAULT_OPTIONS) {
+            (_a = (_b = resolved)[key]) !== null && _a !== void 0 ? _a : (_b[key] = NumberFormatter.DEFAULT_OPTIONS[key]);
+        }
+        resolved.roundFunc = NumberFormatter.roundFuncs[resolved.round];
+        return resolved;
+    }
     /**
      * Creates a function which formats numeric values to strings. The formatting behavior of the function can be
      * customized using a number of options. Please refer to the {@link NumberFormatterOptions} type documentation for
      * more information on each individual option.
-     * @param options Options to customize the formatter. Options not explicitly defined will be set to the following
-     * default values:
-     * * `precision = 0`
-     * * `round = 0`
-     * * `maxDigits = Infinity`
-     * * `forceDecimalZeroes = true`
-     * * `pad = 1`
-     * * `showCommas = false`
-     * * `useMinusSign = false`
-     * * `forceSign = false`
-     * * `nanString = 'NaN'`
-     * * `cache = false`
+     * @param options Options with which to customize the formatter.
      * @returns A function which formats numeric values to strings.
      */
     static create(options) {
-        const optsToUse = Object.assign({}, NumberFormatter.DEFAULT_OPTIONS, options);
-        optsToUse.roundFunc = NumberFormatter.roundFuncs[optsToUse.round];
-        return (number) => {
+        const optsToUse = NumberFormatter.resolveOptions(options);
+                return (number) => {
             return NumberFormatter.formatNumber(number, optsToUse);
         };
     }
@@ -30295,6 +32335,7 @@ NumberFormatter.DEFAULT_OPTIONS = {
     showCommas: false,
     useMinusSign: false,
     forceSign: false,
+    hideSign: false,
     nanString: 'NaN',
     cache: false
 };
@@ -30482,231 +32523,6 @@ MapSystemKeys.Airspace = 'airspace';
 MapSystemKeys.AirspaceManager = 'airspaceRenderManager';
 MapSystemKeys.Traffic = 'traffic';
 MapSystemKeys.DataIntegrity = 'dataIntegrity';
-
-/**
- * An implementation of MapCanvasLayerCanvasInstance.
- */
-class MapCanvasLayerCanvasInstanceClass {
-    /**
-     * Creates a new canvas instance.
-     * @param canvas The canvas element.
-     * @param context The canvas 2D rendering context.
-     * @param isDisplayed Whether the canvas is displayed.
-     */
-    constructor(canvas, context, isDisplayed) {
-        this.canvas = canvas;
-        this.context = context;
-        this.isDisplayed = isDisplayed;
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    clear() {
-        this.context.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    reset() {
-        const width = this.canvas.width;
-        this.canvas.width = 0;
-        this.canvas.width = width;
-    }
-}
-/**
- * A layer which uses a canvas to draw graphics.
- */
-class MapCanvasLayer extends MapLayer {
-    constructor() {
-        super(...arguments);
-        this.displayCanvasRef = FSComponent.createRef();
-        this.width = 0;
-        this.height = 0;
-        this.displayCanvasContext = null;
-        this.isInit = false;
-    }
-    /**
-     * Gets this layer's display canvas instance.
-     * @returns This layer's display canvas instance.
-     * @throws Error if this layer's display canvas instance has not been initialized.
-     */
-    get display() {
-        if (!this._display) {
-            throw new Error('MapCanvasLayer: attempted to access display before it was initialized');
-        }
-        return this._display;
-    }
-    /**
-     * Gets this layer's buffer canvas instance.
-     * @returns This layer's buffer canvas instance.
-     * @throws Error if this layer's buffer canvas instance has not been initialized.
-     */
-    get buffer() {
-        if (!this._buffer) {
-            throw new Error('MapCanvasLayer: attempted to access buffer before it was initialized');
-        }
-        return this._buffer;
-    }
-    /**
-     * Attempts to get this layer's display canvas instance.
-     * @returns This layer's display canvas instance, or undefined if it has not been initialized.
-     */
-    tryGetDisplay() {
-        return this._display;
-    }
-    /**
-     * Attempts to get this layer's buffer canvas instance.
-     * @returns This layer's buffer canvas instance, or undefined if it has not been initialized.
-     */
-    tryGetBuffer() {
-        return this._buffer;
-    }
-    /**
-     * Gets the width of the canvas element, in pixels.
-     * @returns the width of the canvas element.
-     */
-    getWidth() {
-        return this.width;
-    }
-    /**
-     * Gets the height of the canvas element, in pixels.
-     * @returns the height of the canvas element.
-     */
-    getHeight() {
-        return this.height;
-    }
-    /**
-     * Sets the width of the canvas element, in pixels.
-     * @param width The new width.
-     */
-    setWidth(width) {
-        if (width === this.width) {
-            return;
-        }
-        this.width = width;
-        if (this.isInit) {
-            this.updateCanvasSize();
-        }
-    }
-    /**
-     * Sets the height of the canvas element, in pixels.
-     * @param height The new height.
-     */
-    setHeight(height) {
-        if (height === this.height) {
-            return;
-        }
-        this.height = height;
-        if (this.isInit) {
-            this.updateCanvasSize();
-        }
-    }
-    /**
-     * Copies the contents of the buffer to the display. Has no effect if this layer does not have a buffer.
-     */
-    copyBufferToDisplay() {
-        if (!this.isInit || !this.props.useBuffer) {
-            return;
-        }
-        this.display.context.drawImage(this.buffer.canvas, 0, 0, this.width, this.height);
-    }
-    /**
-     * A callback called after the component renders.
-     */
-    onAfterRender() {
-        this.displayCanvasContext = this.displayCanvasRef.instance.getContext('2d');
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc, @typescript-eslint/no-unused-vars
-    onVisibilityChanged(isVisible) {
-        if (this.isInit) {
-            this.updateCanvasVisibility();
-        }
-    }
-    /**
-     * Updates this layer according to its current visibility.
-     */
-    updateFromVisibility() {
-        this.display.canvas.style.display = this.isVisible() ? 'block' : 'none';
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    onAttached() {
-        this.initCanvasInstances();
-        this.isInit = true;
-        this.updateCanvasVisibility();
-        this.updateCanvasSize();
-    }
-    /**
-     * Initializes this layer's canvas instances.
-     */
-    initCanvasInstances() {
-        this._display = this.createCanvasInstance(this.displayCanvasRef.instance, this.displayCanvasContext, true);
-        if (this.props.useBuffer) {
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
-            this._buffer = this.createCanvasInstance(canvas, context, false);
-        }
-    }
-    /**
-     * Creates a canvas instance.
-     * @param canvas The canvas element.
-     * @param context The canvas 2D rendering context.
-     * @param isDisplayed Whether the canvas is displayed.
-     * @returns a canvas instance.
-     */
-    createCanvasInstance(canvas, context, isDisplayed) {
-        return new MapCanvasLayerCanvasInstanceClass(canvas, context, isDisplayed);
-    }
-    /**
-     * Updates the canvas element's size.
-     */
-    updateCanvasSize() {
-        const displayCanvas = this.display.canvas;
-        displayCanvas.width = this.width;
-        displayCanvas.height = this.height;
-        displayCanvas.style.width = `${this.width}px`;
-        displayCanvas.style.height = `${this.height}px`;
-        if (this._buffer) {
-            const bufferCanvas = this._buffer.canvas;
-            bufferCanvas.width = this.width;
-            bufferCanvas.height = this.height;
-        }
-    }
-    /**
-     * Updates the visibility of the display canvas.
-     */
-    updateCanvasVisibility() {
-        this.display.canvas.style.display = this.isVisible() ? 'block' : 'none';
-    }
-    /** @inheritdoc */
-    render() {
-        var _a;
-        return (FSComponent.buildComponent("canvas", { ref: this.displayCanvasRef, class: (_a = this.props.class) !== null && _a !== void 0 ? _a : '', width: '0', height: '0', style: 'position: absolute;' }));
-    }
-}
-
-/**
- * A canvas map layer whose size and position is synced with the map projection window.
- */
-class MapSyncedCanvasLayer extends MapCanvasLayer {
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    onAttached() {
-        super.onAttached();
-        this.updateFromProjectedSize(this.props.mapProjection.getProjectedSize());
-    }
-    /**
-     * Updates this layer according to the current size of the projected map window.
-     * @param projectedSize The size of the projected map window.
-     */
-    updateFromProjectedSize(projectedSize) {
-        this.setWidth(projectedSize[0]);
-        this.setHeight(projectedSize[1]);
-        const displayCanvas = this.display.canvas;
-        displayCanvas.style.left = '0px';
-        displayCanvas.style.top = '0px';
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    onMapProjectionChanged(mapProjection, changeFlags) {
-        if (BitFlags.isAll(changeFlags, MapProjectionChangeType.ProjectedSize)) {
-            this.updateFromProjectedSize(mapProjection.getProjectedSize());
-        }
-    }
-}
 
 /**
  * A map layer which displays an altitude intercept arc.
@@ -31184,492 +33000,6 @@ class MapBingLayer extends MapLayer {
 }
 
 /**
- * Implementation of MapCachedCanvasLayerReference.
- */
-class MapCachedCanvasLayerReferenceClass {
-    constructor() {
-        this._center = new GeoPoint(0, 0);
-        this._scaleFactor = 1;
-        this._rotation = 0;
-    }
-    /** @inheritdoc */
-    get center() {
-        return this._center.readonly;
-    }
-    /** @inheritdoc */
-    get scaleFactor() {
-        return this._scaleFactor;
-    }
-    /** @inheritdoc */
-    get rotation() {
-        return this._rotation;
-    }
-    /**
-     * Syncs this reference with the current state of a map projection.
-     * @param mapProjection The map projection with which to sync.
-     */
-    syncWithMapProjection(mapProjection) {
-        this._center.set(mapProjection.getCenter());
-        this._scaleFactor = mapProjection.getScaleFactor();
-        this._rotation = mapProjection.getRotation();
-    }
-    /**
-     * Syncs this reference with another reference.
-     * @param reference - the reference with which to sync.
-     */
-    syncWithReference(reference) {
-        this._center.set(reference.center);
-        this._scaleFactor = reference.scaleFactor;
-        this._rotation = reference.rotation;
-    }
-}
-/**
- * Implementation of MapCachedCanvasLayerTransform.
- */
-class MapCachedCanvasLayerTransformClass {
-    constructor() {
-        this._scale = 0;
-        this._rotation = 0;
-        this._translation = new Float64Array(2);
-        this._margin = 0;
-        this._marginRemaining = 0;
-    }
-    /** @inheritdoc */
-    get scale() {
-        return this._scale;
-    }
-    /** @inheritdoc */
-    get rotation() {
-        return this._rotation;
-    }
-    /** @inheritdoc */
-    get translation() {
-        return this._translation;
-    }
-    /** @inheritdoc */
-    get margin() {
-        return this._margin;
-    }
-    /** @inheritdoc */
-    get marginRemaining() {
-        return this._marginRemaining;
-    }
-    /**
-     * Updates this transform given the current map projection and a reference.
-     * @param mapProjection The current map projection.
-     * @param reference The reference to use.
-     * @param referenceMargin The reference margin, in pixels.
-     */
-    update(mapProjection, reference, referenceMargin) {
-        this._scale = mapProjection.getScaleFactor() / reference.scaleFactor;
-        this._rotation = mapProjection.getRotation() - reference.rotation;
-        mapProjection.project(reference.center, this._translation);
-        Vec2Math.sub(this._translation, mapProjection.getCenterProjected(), this._translation);
-        this._margin = referenceMargin * this._scale;
-        this._marginRemaining = this._margin - Math.max(Math.abs(this._translation[0]), Math.abs(this._translation[1]));
-    }
-    /**
-     * Copies another transform's parameters to this one.
-     * @param other The other transform.
-     */
-    copyFrom(other) {
-        this._scale = other.scale;
-        this._rotation = other.rotation;
-        this._translation.set(other.translation);
-        this._margin = other.margin;
-    }
-}
-/**
- * An implementation of MapCachedCanvasLayerCanvasInstance.
- */
-class MapCachedCanvasLayerCanvasInstanceClass extends MapCanvasLayerCanvasInstanceClass {
-    /**
-     * Creates a new canvas instance.
-     * @param canvas The canvas element.
-     * @param context The canvas 2D rendering context.
-     * @param isDisplayed Whether the canvas is displayed.
-     * @param getReferenceMargin A function which gets this canvas instance's reference margin, in pixels. The reference
-     * margin is the maximum amount of translation allowed without invalidation at a scale factor of 1.
-     */
-    constructor(canvas, context, isDisplayed, getReferenceMargin) {
-        super(canvas, context, isDisplayed);
-        this.getReferenceMargin = getReferenceMargin;
-        this._reference = new MapCachedCanvasLayerReferenceClass();
-        this._transform = new MapCachedCanvasLayerTransformClass();
-        this._isInvalid = false;
-        this._geoProjection = new MercatorProjection();
-        this.canvasTransform = CssTransformSubject.create(CssTransformBuilder.concat(CssTransformBuilder.scale(), CssTransformBuilder.translate('px'), CssTransformBuilder.rotate('rad')));
-        this.canvasTransform.sub(transform => { this.canvas.style.transform = transform; }, true);
-    }
-    /** @inheritdoc */
-    get reference() {
-        return this._reference;
-    }
-    /** @inheritdoc */
-    get transform() {
-        return this._transform;
-    }
-    /** @inheritdoc */
-    get isInvalid() {
-        return this._isInvalid;
-    }
-    /** @inheritdoc */
-    get geoProjection() {
-        return this._geoProjection;
-    }
-    /** @inheritdoc */
-    syncWithMapProjection(mapProjection) {
-        const projectedCenter = Vec2Math.set(this.canvas.width / 2, this.canvas.height / 2, MapCachedCanvasLayerCanvasInstanceClass.tempVec2_1);
-        this._reference.syncWithMapProjection(mapProjection);
-        this._geoProjection.copyParametersFrom(mapProjection.getGeoProjection()).setTranslation(projectedCenter);
-        this._transform.update(mapProjection, this.reference, this.getReferenceMargin());
-        this._isInvalid = false;
-        if (this.isDisplayed) {
-            this.transformCanvasElement();
-        }
-    }
-    /** @inheritdoc */
-    syncWithCanvasInstance(other) {
-        this._reference.syncWithReference(other.reference);
-        this._geoProjection.copyParametersFrom(other.geoProjection);
-        this._transform.copyFrom(other.transform);
-        this._isInvalid = other.isInvalid;
-        if (this.isDisplayed && !this._isInvalid) {
-            this.transformCanvasElement();
-        }
-    }
-    /**
-     * Updates this canvas instance's transform given the current map projection.
-     * @param mapProjection The current map projection.
-     */
-    updateTransform(mapProjection) {
-        this._transform.update(mapProjection, this.reference, this.getReferenceMargin());
-        if (!this._isInvalid) {
-            const scaleFactorRatio = mapProjection.getScaleFactor() / this._reference.scaleFactor;
-            this._isInvalid = scaleFactorRatio >= MapCachedCanvasLayerCanvasInstanceClass.SCALE_INVALIDATION_THRESHOLD
-                || scaleFactorRatio <= 1 / MapCachedCanvasLayerCanvasInstanceClass.SCALE_INVALIDATION_THRESHOLD
-                || this._transform.marginRemaining < 0;
-        }
-        if (this.isDisplayed && !this._isInvalid) {
-            this.transformCanvasElement();
-        }
-    }
-    /**
-     * Transforms this instance's canvas element.
-     */
-    transformCanvasElement() {
-        const transform = this.transform;
-        const offsetX = transform.translation[0] / transform.scale;
-        const offsetY = transform.translation[1] / transform.scale;
-        this.canvasTransform.transform.getChild(0).set(transform.scale, transform.scale, 0.001);
-        this.canvasTransform.transform.getChild(1).set(offsetX, offsetY, 0.1);
-        this.canvasTransform.transform.getChild(2).set(transform.rotation, 1e-4);
-        this.canvasTransform.resolve();
-    }
-    /** @inheritdoc */
-    invalidate() {
-        this._isInvalid = true;
-        this.clear();
-    }
-}
-MapCachedCanvasLayerCanvasInstanceClass.SCALE_INVALIDATION_THRESHOLD = 1.2;
-MapCachedCanvasLayerCanvasInstanceClass.tempVec2_1 = new Float64Array(2);
-/**
- * A canvas map layer whose image can be cached and transformed as the map projection changes.
- */
-class MapCachedCanvasLayer extends MapCanvasLayer {
-    /** @inheritdoc */
-    constructor(props) {
-        super(props);
-        this.size = 0;
-        this.referenceMargin = 0;
-        this.needUpdateTransforms = false;
-        this.props.overdrawFactor = Math.max(1, this.props.overdrawFactor);
-    }
-    /**
-     * Gets the size, in pixels, of this layer's canvas.
-     * @returns the size of this layer's canvas.
-     */
-    getSize() {
-        return this.size;
-    }
-    /**
-     * Gets the reference translation margin, in pixels, of this layer's display canvas. This value is the maximum amount
-     * the display canvas can be translated in the x or y direction at a scale factor of 1 without invalidation.
-     * @returns the reference translation margin of this layer's display canvas.
-     */
-    getReferenceMargin() {
-        return this.referenceMargin;
-    }
-    /** @inheritdoc */
-    onAttached() {
-        super.onAttached();
-        this.updateFromProjectedSize(this.props.mapProjection.getProjectedSize());
-        this.needUpdateTransforms = true;
-    }
-    /** @inheritdoc */
-    createCanvasInstance(canvas, context, isDisplayed) {
-        return new MapCachedCanvasLayerCanvasInstanceClass(canvas, context, isDisplayed, this.getReferenceMargin.bind(this));
-    }
-    /**
-     * Updates this layer according to the current size of the projected map window.
-     * @param projectedSize The size of the projected map window.
-     */
-    updateFromProjectedSize(projectedSize) {
-        const projectedWidth = projectedSize[0];
-        const projectedHeight = projectedSize[1];
-        const diag = Math.hypot(projectedWidth, projectedHeight);
-        this.size = diag * this.props.overdrawFactor;
-        this.referenceMargin = (this.size - diag) / 2;
-        this.setWidth(this.size);
-        this.setHeight(this.size);
-        const posX = (projectedWidth - this.size) / 2;
-        const posY = (projectedHeight - this.size) / 2;
-        const displayCanvas = this.display.canvas;
-        displayCanvas.style.left = `${posX}px`;
-        displayCanvas.style.top = `${posY}px`;
-    }
-    /** @inheritdoc */
-    onMapProjectionChanged(mapProjection, changeFlags) {
-        var _a;
-        if (BitFlags.isAll(changeFlags, MapProjectionChangeType.ProjectedSize)) {
-            this.updateFromProjectedSize(mapProjection.getProjectedSize());
-            this.display.invalidate();
-            (_a = this.tryGetBuffer()) === null || _a === void 0 ? void 0 : _a.invalidate();
-        }
-        this.needUpdateTransforms = true;
-    }
-    /** @inheritdoc */
-    onUpdated(time, elapsed) {
-        super.onUpdated(time, elapsed);
-        if (!this.needUpdateTransforms) {
-            return;
-        }
-        this.updateTransforms();
-    }
-    /**
-     * Updates this layer's canvas instances' transforms.
-     */
-    updateTransforms() {
-        var _a;
-        const mapProjection = this.props.mapProjection;
-        this.display.updateTransform(mapProjection);
-        (_a = this.tryGetBuffer()) === null || _a === void 0 ? void 0 : _a.updateTransform(mapProjection);
-        this.needUpdateTransforms = false;
-    }
-}
-
-/* eslint-disable @typescript-eslint/no-non-null-assertion */
-/**
- * A layer which draws an own airplane icon. The icon is positioned at the projected location of the airplane and is
- * rotated to match the airplane's heading.
- */
-class MapOwnAirplaneLayer extends MapLayer {
-    constructor() {
-        super(...arguments);
-        this.imageFilePath = SubscribableUtils.isSubscribable(this.props.imageFilePath)
-            ? this.props.imageFilePath.map(SubscribableMapFunctions.identity())
-            : this.props.imageFilePath;
-        this.style = ObjectSubject.create({
-            display: '',
-            position: 'absolute',
-            left: '0px',
-            top: '0px',
-            width: '0px',
-            height: '0px',
-            transform: 'translate3d(0, 0, 0) rotate(0deg)',
-            'transform-origin': '50% 50%'
-        });
-        this.ownAirplanePropsModule = this.props.model.getModule('ownAirplaneProps');
-        this.ownAirplaneIconModule = this.props.model.getModule('ownAirplaneIcon');
-        this.iconSize = SubscribableUtils.toSubscribable(this.props.iconSize, true);
-        this.iconAnchor = SubscribableUtils.toSubscribable(this.props.iconAnchor, true);
-        this.iconOffset = Vec2Math.create();
-        this.visibilityBounds = VecNMath.create(4);
-        this.iconTransform = CssTransformBuilder.concat(CssTransformBuilder.translate3d('px'), CssTransformBuilder.rotate('deg'));
-        this.isGsAboveTrackThreshold = this.ownAirplanePropsModule.groundSpeed.map(gs => gs.asUnit(UnitType.KNOT) >= 5).pause();
-        this.showIcon = true;
-        this.isInsideVisibilityBounds = true;
-        this.planeRotation = 0;
-        this.needUpdateVisibility = false;
-        this.needUpdatePositionRotation = false;
-    }
-    /** @inheritdoc */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    onVisibilityChanged(isVisible) {
-        this.needUpdateVisibility = true;
-        this.needUpdatePositionRotation = this.showIcon = isVisible && this.ownAirplaneIconModule.show.get();
-    }
-    /** @inheritdoc */
-    onAttached() {
-        this.showSub = this.ownAirplaneIconModule.show.sub(show => {
-            this.needUpdateVisibility = true;
-            this.needUpdatePositionRotation = this.showIcon = show && this.isVisible();
-        });
-        this.positionSub = this.ownAirplanePropsModule.position.sub(() => {
-            this.needUpdatePositionRotation = this.showIcon;
-        });
-        this.headingSub = this.ownAirplanePropsModule.hdgTrue.sub(hdg => {
-            this.planeRotation = hdg;
-            this.needUpdatePositionRotation = this.showIcon;
-        }, false, true);
-        this.trackSub = this.ownAirplanePropsModule.trackTrue.sub(track => {
-            this.planeRotation = track;
-            this.needUpdatePositionRotation = this.showIcon;
-        }, false, true);
-        this.trackThresholdSub = this.isGsAboveTrackThreshold.sub(isAboveThreshold => {
-            if (isAboveThreshold) {
-                this.headingSub.pause();
-                this.trackSub.resume(true);
-            }
-            else {
-                this.trackSub.pause();
-                this.headingSub.resume(true);
-            }
-        }, false, true);
-        this.iconSizeSub = this.iconSize.sub(size => {
-            this.style.set('width', `${size}px`);
-            this.style.set('height', `${size}px`);
-            this.updateOffset();
-        }, true);
-        this.iconAnchorSub = this.iconAnchor.sub(() => {
-            this.updateOffset();
-        });
-        this.orientationSub = this.ownAirplaneIconModule.orientation.sub(orientation => {
-            switch (orientation) {
-                case MapOwnAirplaneIconOrientation.HeadingUp:
-                    this.isGsAboveTrackThreshold.pause();
-                    this.trackThresholdSub.pause();
-                    this.trackSub.pause();
-                    this.headingSub.resume(true);
-                    break;
-                case MapOwnAirplaneIconOrientation.TrackUp:
-                    this.headingSub.pause();
-                    this.trackSub.pause();
-                    this.isGsAboveTrackThreshold.resume();
-                    this.trackThresholdSub.resume(true);
-                    break;
-                default:
-                    this.needUpdatePositionRotation = this.showIcon;
-                    this.isGsAboveTrackThreshold.pause();
-                    this.trackThresholdSub.pause();
-                    this.headingSub.pause();
-                    this.trackSub.pause();
-                    this.planeRotation = 0;
-            }
-        }, true);
-        this.needUpdateVisibility = true;
-        this.needUpdatePositionRotation = true;
-    }
-    /**
-     * Updates the icon's offset from the projected position of the airplane.
-     */
-    updateOffset() {
-        const anchor = this.iconAnchor.get();
-        this.iconOffset.set(anchor);
-        Vec2Math.multScalar(this.iconOffset, -this.iconSize.get(), this.iconOffset);
-        this.style.set('left', `${this.iconOffset[0]}px`);
-        this.style.set('top', `${this.iconOffset[1]}px`);
-        this.style.set('transform-origin', `${anchor[0] * 100}% ${anchor[1] * 100}%`);
-        this.updateVisibilityBounds();
-    }
-    /**
-     * Updates the boundaries within the map's projected window that define a region such that if the airplane's
-     * projected position falls outside of it, the icon is not visible and therefore does not need to be updated.
-     */
-    updateVisibilityBounds() {
-        const size = this.iconSize.get();
-        // Find the maximum possible protrusion of the icon from its anchor point, defined as the distance from the
-        // anchor point to the farthest point within the bounds of the icon. This farthest point is always one of the
-        // four corners of the icon.
-        const maxProtrusion = Math.max(Math.hypot(this.iconOffset[0], this.iconOffset[1]), // top left corner
-        Math.hypot(this.iconOffset[0] + size, this.iconOffset[1]), // top right corner
-        Math.hypot(this.iconOffset[0] + size, this.iconOffset[1] + size), // bottom right corner
-        Math.hypot(this.iconOffset[0], this.iconOffset[1] + size));
-        const boundsOffset = maxProtrusion + 50; // Add some additional buffer
-        const projectedSize = this.props.mapProjection.getProjectedSize();
-        this.visibilityBounds[0] = -boundsOffset;
-        this.visibilityBounds[1] = -boundsOffset;
-        this.visibilityBounds[2] = projectedSize[0] + boundsOffset;
-        this.visibilityBounds[3] = projectedSize[1] + boundsOffset;
-        this.needUpdatePositionRotation = this.showIcon;
-    }
-    /** @inheritdoc */
-    onMapProjectionChanged(mapProjection, changeFlags) {
-        if (BitFlags.isAll(changeFlags, MapProjectionChangeType.ProjectedSize)) {
-            this.updateVisibilityBounds();
-        }
-        this.needUpdatePositionRotation = this.showIcon;
-    }
-    /** @inheritdoc */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    onUpdated(time, elapsed) {
-        if (this.needUpdatePositionRotation) {
-            this.updateIconPositionRotation();
-            this.needUpdatePositionRotation = false;
-            this.needUpdateVisibility = false;
-        }
-        else if (this.needUpdateVisibility) {
-            this.updateIconVisibility();
-            this.needUpdateVisibility = false;
-        }
-    }
-    /**
-     * Updates the airplane icon's visibility.
-     */
-    updateIconVisibility() {
-        this.style.set('display', this.isInsideVisibilityBounds && this.showIcon ? '' : 'none');
-    }
-    /**
-     * Updates the airplane icon's projected position and rotation.
-     */
-    updateIconPositionRotation() {
-        const projected = this.props.mapProjection.project(this.ownAirplanePropsModule.position.get(), MapOwnAirplaneLayer.vec2Cache[0]);
-        this.isInsideVisibilityBounds = this.props.mapProjection.isInProjectedBounds(projected, this.visibilityBounds);
-        // If the projected position of the icon is far enough out of bounds that the icon is not visible, do not bother to
-        // update the icon.
-        if (this.isInsideVisibilityBounds) {
-            let rotation;
-            switch (this.ownAirplaneIconModule.orientation.get()) {
-                case MapOwnAirplaneIconOrientation.HeadingUp:
-                case MapOwnAirplaneIconOrientation.TrackUp:
-                    rotation = this.planeRotation + this.props.mapProjection.getRotation() * Avionics.Utils.RAD2DEG;
-                    break;
-                default:
-                    rotation = 0;
-            }
-            this.iconTransform.getChild(0).set(projected[0], projected[1], 0, 0.1);
-            this.iconTransform.getChild(1).set(rotation, 0.1);
-            this.style.set('transform', this.iconTransform.resolve());
-        }
-        this.updateIconVisibility();
-    }
-    /** @inheritdoc */
-    render() {
-        var _a;
-        return (FSComponent.buildComponent("img", { src: this.imageFilePath, class: (_a = this.props.class) !== null && _a !== void 0 ? _a : '', style: this.style }));
-    }
-    /** @inheritdoc */
-    destroy() {
-        var _a, _b, _c, _d, _e, _f, _g, _h;
-        if (SubscribableUtils.isSubscribable(this.imageFilePath)) {
-            this.imageFilePath.destroy();
-        }
-        this.isGsAboveTrackThreshold.destroy();
-        (_a = this.showSub) === null || _a === void 0 ? void 0 : _a.destroy();
-        (_b = this.positionSub) === null || _b === void 0 ? void 0 : _b.destroy();
-        (_c = this.headingSub) === null || _c === void 0 ? void 0 : _c.destroy();
-        (_d = this.trackSub) === null || _d === void 0 ? void 0 : _d.destroy();
-        (_e = this.trackThresholdSub) === null || _e === void 0 ? void 0 : _e.destroy();
-        (_f = this.iconSizeSub) === null || _f === void 0 ? void 0 : _f.destroy();
-        (_g = this.iconAnchorSub) === null || _g === void 0 ? void 0 : _g.destroy();
-        (_h = this.orientationSub) === null || _h === void 0 ? void 0 : _h.destroy();
-        super.destroy();
-    }
-}
-MapOwnAirplaneLayer.vec2Cache = [Vec2Math.create()];
-
-/**
  * A layer which displays text which can be culled to avoid overlap.
  */
 class MapCullableTextLayer extends MapSyncedCanvasLayer {
@@ -31691,345 +33021,6 @@ class MapCullableTextLayer extends MapSyncedCanvasLayer {
         }
     }
 }
-
-/**
- * A layer which draws airspaces.
- */
-class MapAirspaceLayer extends MapLayer {
-    constructor() {
-        var _a, _b;
-        super(...arguments);
-        this.canvasLayerRef = FSComponent.createRef();
-        this.clipBoundsSub = VecNSubject.createFromVector(new Float64Array(4));
-        this.facLoader = new FacilityLoader(FacilityRepository.getRepository(this.props.bus), async () => {
-            this.searchSession = new NearestLodBoundarySearchSession(this.props.lodBoundaryCache, await this.facLoader.startNearestSearchSession(FacilitySearchType.Boundary), 0.5);
-            this.isAttached && this.scheduleSearch(0, true);
-        });
-        this.searchedAirspaces = new Map();
-        this.searchDebounceDelay = (_a = this.props.searchDebounceDelay) !== null && _a !== void 0 ? _a : MapAirspaceLayer.DEFAULT_SEARCH_DEBOUNCE_DELAY;
-        this.renderTimeBudget = (_b = this.props.renderTimeBudget) !== null && _b !== void 0 ? _b : MapAirspaceLayer.DEFAULT_RENDER_TIME_BUDGET;
-        this.activeRenderProcess = null;
-        this.renderTaskQueueHandler = {
-            renderTimeBudget: this.renderTimeBudget,
-            // eslint-disable-next-line jsdoc/require-jsdoc
-            onStarted() {
-                // noop
-            },
-            // eslint-disable-next-line jsdoc/require-jsdoc
-            canContinue(elapsedFrameCount, dispatchedTaskCount, timeElapsed) {
-                return timeElapsed < this.renderTimeBudget;
-            },
-            // eslint-disable-next-line jsdoc/require-jsdoc
-            onPaused: this.onRenderPaused.bind(this),
-            // eslint-disable-next-line jsdoc/require-jsdoc
-            onFinished: this.onRenderFinished.bind(this),
-            // eslint-disable-next-line jsdoc/require-jsdoc
-            onAborted: this.onRenderAborted.bind(this)
-        };
-        this.searchDebounceTimer = 0;
-        this.isSearchScheduled = false;
-        this.needRefilter = false;
-        this.isSearchBusy = false;
-        this.lastDesiredSearchRadius = 0; // meters
-        this.lastSearchRadius = 0; // meters
-        this.isRenderScheduled = false;
-        this.isBackgroundRenderScheduled = false;
-        this.isDisplayInvalidated = true;
-        this.isAttached = false;
-    }
-    /** @inheritdoc */
-    onAttached() {
-        this.canvasLayerRef.instance.onAttached();
-        this.updateClipBounds();
-        this.clippedPathStream = new ClippedPathStream(this.canvasLayerRef.instance.buffer.context, this.clipBoundsSub);
-        this.props.maxSearchRadius.sub(radius => {
-            const radiusMeters = radius.asUnit(UnitType.METER);
-            if (radiusMeters < this.lastSearchRadius || radiusMeters > this.lastDesiredSearchRadius) {
-                this.scheduleSearch(0, false);
-            }
-        });
-        this.props.maxSearchItemCount.sub(() => { this.scheduleSearch(0, false); });
-        this.initModuleListeners();
-        this.isAttached = true;
-        this.searchSession && this.scheduleSearch(0, true);
-    }
-    /**
-     * Initializes this layer's airspace module property listeners.
-     */
-    initModuleListeners() {
-        const airspaceModule = this.props.model.getModule('airspace');
-        for (const type of Object.values(airspaceModule.show)) {
-            type.sub(this.onAirspaceTypeShowChanged.bind(this));
-        }
-    }
-    /** @inheritdoc */
-    onMapProjectionChanged(mapProjection, changeFlags) {
-        this.canvasLayerRef.instance.onMapProjectionChanged(mapProjection, changeFlags);
-        if (BitFlags.isAll(changeFlags, MapProjectionChangeType.ProjectedSize)) {
-            this.updateClipBounds();
-        }
-    }
-    /**
-     * Updates this layer's canvas clipping bounds.
-     */
-    updateClipBounds() {
-        const size = this.canvasLayerRef.instance.getSize();
-        this.clipBoundsSub.set(-MapAirspaceLayer.CLIP_BOUNDS_BUFFER, -MapAirspaceLayer.CLIP_BOUNDS_BUFFER, size + MapAirspaceLayer.CLIP_BOUNDS_BUFFER, size + MapAirspaceLayer.CLIP_BOUNDS_BUFFER);
-    }
-    /**
-     * Schedules a search. If a search was previously scheduled but not yet executed, this new scheduled search will
-     * replace the old one.
-     * @param delay The delay, in milliseconds, before the search is executed.
-     * @param refilter Whether to update the search's boundary class filter.
-     */
-    scheduleSearch(delay, refilter) {
-        if (!this.searchSession) {
-            return;
-        }
-        this.searchDebounceTimer = delay;
-        this.isSearchScheduled = true;
-        this.needRefilter || (this.needRefilter = refilter);
-    }
-    /**
-     * Schedules a render to be executed during the next update cycle.
-     */
-    scheduleRender() {
-        this.isRenderScheduled = true;
-    }
-    /**
-     * Searches for airspaces around the map center. After the search is complete, the list of search results is filtered
-     * and, if necessary, rendered.
-     * @param refilter Whether to update the search's boundary class filter.
-     */
-    async searchAirspaces(refilter) {
-        this.isSearchBusy = true;
-        const center = this.props.mapProjection.getCenter();
-        const drawableDiag = this.canvasLayerRef.instance.display.canvas.width * Math.SQRT2;
-        this.lastDesiredSearchRadius = UnitType.GA_RADIAN.convertTo(this.props.mapProjection.getProjectedResolution() * drawableDiag / 2, UnitType.METER);
-        this.lastSearchRadius = Math.min(this.props.maxSearchRadius.get().asUnit(UnitType.METER), this.lastDesiredSearchRadius);
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        const session = this.searchSession;
-        refilter && session.setFilter(this.getBoundaryFilter());
-        const results = await session.searchNearest(center.lat, center.lon, this.lastSearchRadius, this.props.maxSearchItemCount.get());
-        for (let i = 0; i < results.added.length; i++) {
-            const airspace = results.added[i];
-            this.searchedAirspaces.set(airspace.facility.id, airspace);
-        }
-        for (let i = 0; i < results.removed.length; i++) {
-            this.searchedAirspaces.delete(results.removed[i]);
-        }
-        this.isSearchBusy = false;
-        this.scheduleRender();
-    }
-    /**
-     * Gets the boundary class filter based on the current airspace type visibility settings.
-     * @returns The boundary class filter based on the current airspace type visibility settings.
-     */
-    getBoundaryFilter() {
-        const module = this.props.model.getModule('airspace');
-        const show = module.show;
-        let filter = 0;
-        for (const type in show) {
-            if (show[type].get()) {
-                filter |= module.showTypes[type];
-            }
-        }
-        return filter;
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    onUpdated(time, elapsed) {
-        this.canvasLayerRef.instance.onUpdated(time, elapsed);
-        this.updateFromInvalidation();
-        this.updateScheduledRender();
-        this.updateScheduledSearch(elapsed);
-    }
-    /**
-     * Checks if the display and buffer canvases have been invalidated, and if so, clears them and schedules a render.
-     */
-    updateFromInvalidation() {
-        const canvasLayer = this.canvasLayerRef.instance;
-        const display = canvasLayer.display;
-        const buffer = canvasLayer.buffer;
-        const needBackgroundRender = !this.isBackgroundRenderScheduled
-            && !this.activeRenderProcess
-            && (display.transform.marginRemaining / display.transform.margin <= MapAirspaceLayer.BACKGROUND_RENDER_MARGIN_THRESHOLD);
-        const shouldScheduleSearch = needBackgroundRender
-            || display.isInvalid
-            || (buffer.isInvalid && this.activeRenderProcess);
-        this.isBackgroundRenderScheduled || (this.isBackgroundRenderScheduled = needBackgroundRender);
-        if (display.isInvalid) {
-            this.isDisplayInvalidated = true;
-            this.isBackgroundRenderScheduled = false;
-            display.clear();
-            display.syncWithMapProjection(this.props.mapProjection);
-        }
-        if (buffer.isInvalid) {
-            if (this.activeRenderProcess) {
-                this.activeRenderProcess.abort();
-                this.cleanUpRender();
-            }
-            buffer.clear();
-            buffer.syncWithMapProjection(this.props.mapProjection);
-        }
-        if (shouldScheduleSearch) {
-            this.scheduleSearch(this.searchDebounceDelay, false);
-        }
-    }
-    /**
-     * If a search is scheduled, decrements the delay timer and if necessary, executes the search.
-     * @param elapsed The time elapsed, in milliseconds, since the last update.
-     */
-    updateScheduledSearch(elapsed) {
-        if (!this.isSearchScheduled) {
-            return;
-        }
-        this.searchDebounceTimer = Math.max(0, this.searchDebounceTimer - elapsed);
-        if (this.searchDebounceTimer === 0 && !this.isSearchBusy) {
-            this.searchAirspaces(this.needRefilter);
-            this.isSearchScheduled = false;
-            this.needRefilter = false;
-        }
-    }
-    /**
-     * Executes a render if one is scheduled.
-     */
-    updateScheduledRender() {
-        if (!this.isRenderScheduled) {
-            return;
-        }
-        this.startRenderProcess();
-        this.isRenderScheduled = false;
-        this.isBackgroundRenderScheduled = false;
-    }
-    /**
-     * Syncs this layer's display canvas instance with the current map projection and renders this layer's airspaces to
-     * the display.
-     */
-    startRenderProcess() {
-        const canvasLayer = this.canvasLayerRef.instance;
-        if (this.activeRenderProcess) {
-            this.activeRenderProcess.abort();
-        }
-        const buffer = canvasLayer.buffer;
-        buffer.clear();
-        buffer.syncWithMapProjection(this.props.mapProjection);
-        this.props.airspaceRenderManager.clearRegisteredAirspaces();
-        for (const airspace of this.searchedAirspaces.values()) {
-            if (this.isAirspaceInBounds(airspace, buffer)) {
-                this.props.airspaceRenderManager.registerAirspace(airspace);
-            }
-        }
-        const lod = this.selectLod(this.props.mapProjection.getProjectedResolution());
-        this.activeRenderProcess = this.props.airspaceRenderManager.prepareRenderProcess(buffer.geoProjection, buffer.context, this.renderTaskQueueHandler, lod, this.clippedPathStream);
-        this.activeRenderProcess.start();
-    }
-    /**
-     * Checks whether an airspace is within the projected bounds of a cached canvas instance.
-     * @param airspace An airspace.
-     * @param canvas A cached canvas instance.
-     * @returns Whether the airspace is within the projected bounds of the cached canvas instance.
-     */
-    isAirspaceInBounds(airspace, canvas) {
-        const corner = MapAirspaceLayer.geoPointCache[0];
-        const cornerProjected = MapAirspaceLayer.vec2Cache[0];
-        let minX, maxX, minY, maxY;
-        canvas.geoProjection.project(corner.set(airspace.facility.topLeft.lat, airspace.facility.topLeft.long), cornerProjected);
-        minX = maxX = cornerProjected[0];
-        minY = maxY = cornerProjected[1];
-        canvas.geoProjection.project(corner.set(airspace.facility.topLeft.lat, airspace.facility.bottomRight.long), cornerProjected);
-        minX = Math.min(minX, cornerProjected[0]);
-        maxX = Math.max(maxX, cornerProjected[0]);
-        minY = Math.min(minY, cornerProjected[1]);
-        maxY = Math.max(maxY, cornerProjected[1]);
-        canvas.geoProjection.project(corner.set(airspace.facility.bottomRight.lat, airspace.facility.bottomRight.long), cornerProjected);
-        minX = Math.min(minX, cornerProjected[0]);
-        maxX = Math.max(maxX, cornerProjected[0]);
-        minY = Math.min(minY, cornerProjected[1]);
-        maxY = Math.max(maxY, cornerProjected[1]);
-        canvas.geoProjection.project(corner.set(airspace.facility.bottomRight.lat, airspace.facility.topLeft.long), cornerProjected);
-        minX = Math.min(minX, cornerProjected[0]);
-        maxX = Math.max(maxX, cornerProjected[0]);
-        minY = Math.min(minY, cornerProjected[1]);
-        maxY = Math.max(maxY, cornerProjected[1]);
-        const width = canvas.canvas.width;
-        const height = canvas.canvas.height;
-        return minX < width
-            && maxX > 0
-            && minY < height
-            && maxY > 0;
-    }
-    /**
-     * Selects an LOD level based on projected map resolution.
-     * @param resolution A projected map resolution, in great-arc radians per pixel.
-     * @returns An LOD level based on the projected map resolution.
-     */
-    selectLod(resolution) {
-        const thresholds = this.props.lodBoundaryCache.lodDistanceThresholds;
-        let i = thresholds.length - 1;
-        while (i >= 0) {
-            if (resolution * 2 >= thresholds[i]) {
-                break;
-            }
-            i--;
-        }
-        return i;
-    }
-    /**
-     * Cleans up the active render process.
-     */
-    cleanUpRender() {
-        this.canvasLayerRef.instance.buffer.reset();
-        this.activeRenderProcess = null;
-    }
-    /**
-     * Renders airspaces from the buffer to the display.
-     */
-    renderAirspacesToDisplay() {
-        const display = this.canvasLayerRef.instance.display;
-        const buffer = this.canvasLayerRef.instance.buffer;
-        display.clear();
-        display.syncWithCanvasInstance(buffer);
-        this.canvasLayerRef.instance.copyBufferToDisplay();
-    }
-    /**
-     * This method is called when the airspace render process pauses.
-     */
-    onRenderPaused() {
-        if (this.isDisplayInvalidated) {
-            this.renderAirspacesToDisplay();
-        }
-    }
-    /**
-     * This method is called when the airspace render process finishes.
-     */
-    onRenderFinished() {
-        this.renderAirspacesToDisplay();
-        this.cleanUpRender();
-        this.isDisplayInvalidated = false;
-    }
-    /**
-     * This method is called when the airspace render process is aborted.
-     */
-    onRenderAborted() {
-        this.cleanUpRender();
-    }
-    /**
-     * This method is called when an airspace show property changes.
-     */
-    onAirspaceTypeShowChanged() {
-        this.scheduleSearch(0, true);
-    }
-    /** @inheritdoc */
-    render() {
-        return (FSComponent.buildComponent(MapCachedCanvasLayer, { ref: this.canvasLayerRef, model: this.props.model, mapProjection: this.props.mapProjection, useBuffer: true, overdrawFactor: Math.SQRT2 }));
-    }
-}
-MapAirspaceLayer.DEFAULT_SEARCH_DEBOUNCE_DELAY = 500; // milliseconds
-MapAirspaceLayer.DEFAULT_RENDER_TIME_BUDGET = 0.2; // milliseconds per frame
-MapAirspaceLayer.BACKGROUND_RENDER_MARGIN_THRESHOLD = 0.1; // relative to total margin
-MapAirspaceLayer.CLIP_BOUNDS_BUFFER = 10; // number of pixels from edge of canvas to extend the clipping bounds, in pixels
-MapAirspaceLayer.geoPointCache = [new GeoPoint(0, 0)];
-MapAirspaceLayer.vec2Cache = [new Float64Array(2)];
 
 /**
  * An abstract implementation of a map layer which displays waypoints (airports, navaids, and intersections) within a
@@ -32460,6 +33451,216 @@ class MapNearestWaypointsLayerSearch {
     }
 }
 
+/* eslint-disable @typescript-eslint/no-non-null-assertion */
+/**
+ * A layer which draws an own airplane icon. The icon is positioned at the projected location of the airplane and is
+ * rotated to match the airplane's heading.
+ */
+class MapOwnAirplaneLayer extends MapLayer {
+    constructor() {
+        super(...arguments);
+        this.imageFilePath = SubscribableUtils.isSubscribable(this.props.imageFilePath)
+            ? this.props.imageFilePath.map(SubscribableMapFunctions.identity())
+            : this.props.imageFilePath;
+        this.style = ObjectSubject.create({
+            display: '',
+            position: 'absolute',
+            left: '0px',
+            top: '0px',
+            width: '0px',
+            height: '0px',
+            transform: 'translate3d(0, 0, 0) rotate(0deg)',
+            'transform-origin': '50% 50%'
+        });
+        this.ownAirplanePropsModule = this.props.model.getModule('ownAirplaneProps');
+        this.ownAirplaneIconModule = this.props.model.getModule('ownAirplaneIcon');
+        this.iconSize = SubscribableUtils.toSubscribable(this.props.iconSize, true);
+        this.iconAnchor = SubscribableUtils.toSubscribable(this.props.iconAnchor, true);
+        this.iconOffset = Vec2Math.create();
+        this.visibilityBounds = VecNMath.create(4);
+        this.iconTransform = CssTransformBuilder.concat(CssTransformBuilder.translate3d('px'), CssTransformBuilder.rotate('deg'));
+        this.isGsAboveTrackThreshold = this.ownAirplanePropsModule.groundSpeed.map(gs => gs.asUnit(UnitType.KNOT) >= 5).pause();
+        this.showIcon = true;
+        this.isInsideVisibilityBounds = true;
+        this.planeRotation = 0;
+        this.needUpdateVisibility = false;
+        this.needUpdatePositionRotation = false;
+    }
+    /** @inheritdoc */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    onVisibilityChanged(isVisible) {
+        this.needUpdateVisibility = true;
+        this.needUpdatePositionRotation = this.showIcon = isVisible && this.ownAirplaneIconModule.show.get();
+    }
+    /** @inheritdoc */
+    onAttached() {
+        this.showSub = this.ownAirplaneIconModule.show.sub(show => {
+            this.needUpdateVisibility = true;
+            this.needUpdatePositionRotation = this.showIcon = show && this.isVisible();
+        });
+        this.positionSub = this.ownAirplanePropsModule.position.sub(() => {
+            this.needUpdatePositionRotation = this.showIcon;
+        });
+        this.headingSub = this.ownAirplanePropsModule.hdgTrue.sub(hdg => {
+            this.planeRotation = hdg;
+            this.needUpdatePositionRotation = this.showIcon;
+        }, false, true);
+        this.trackSub = this.ownAirplanePropsModule.trackTrue.sub(track => {
+            this.planeRotation = track;
+            this.needUpdatePositionRotation = this.showIcon;
+        }, false, true);
+        this.trackThresholdSub = this.isGsAboveTrackThreshold.sub(isAboveThreshold => {
+            if (isAboveThreshold) {
+                this.headingSub.pause();
+                this.trackSub.resume(true);
+            }
+            else {
+                this.trackSub.pause();
+                this.headingSub.resume(true);
+            }
+        }, false, true);
+        this.iconSizeSub = this.iconSize.sub(size => {
+            this.style.set('width', `${size}px`);
+            this.style.set('height', `${size}px`);
+            this.updateOffset();
+        }, true);
+        this.iconAnchorSub = this.iconAnchor.sub(() => {
+            this.updateOffset();
+        });
+        this.orientationSub = this.ownAirplaneIconModule.orientation.sub(orientation => {
+            switch (orientation) {
+                case MapOwnAirplaneIconOrientation.HeadingUp:
+                    this.isGsAboveTrackThreshold.pause();
+                    this.trackThresholdSub.pause();
+                    this.trackSub.pause();
+                    this.headingSub.resume(true);
+                    break;
+                case MapOwnAirplaneIconOrientation.TrackUp:
+                    this.headingSub.pause();
+                    this.trackSub.pause();
+                    this.isGsAboveTrackThreshold.resume();
+                    this.trackThresholdSub.resume(true);
+                    break;
+                default:
+                    this.needUpdatePositionRotation = this.showIcon;
+                    this.isGsAboveTrackThreshold.pause();
+                    this.trackThresholdSub.pause();
+                    this.headingSub.pause();
+                    this.trackSub.pause();
+                    this.planeRotation = 0;
+            }
+        }, true);
+        this.needUpdateVisibility = true;
+        this.needUpdatePositionRotation = true;
+    }
+    /**
+     * Updates the icon's offset from the projected position of the airplane.
+     */
+    updateOffset() {
+        const anchor = this.iconAnchor.get();
+        this.iconOffset.set(anchor);
+        Vec2Math.multScalar(this.iconOffset, -this.iconSize.get(), this.iconOffset);
+        this.style.set('left', `${this.iconOffset[0]}px`);
+        this.style.set('top', `${this.iconOffset[1]}px`);
+        this.style.set('transform-origin', `${anchor[0] * 100}% ${anchor[1] * 100}%`);
+        this.updateVisibilityBounds();
+    }
+    /**
+     * Updates the boundaries within the map's projected window that define a region such that if the airplane's
+     * projected position falls outside of it, the icon is not visible and therefore does not need to be updated.
+     */
+    updateVisibilityBounds() {
+        const size = this.iconSize.get();
+        // Find the maximum possible protrusion of the icon from its anchor point, defined as the distance from the
+        // anchor point to the farthest point within the bounds of the icon. This farthest point is always one of the
+        // four corners of the icon.
+        const maxProtrusion = Math.max(Math.hypot(this.iconOffset[0], this.iconOffset[1]), // top left corner
+        Math.hypot(this.iconOffset[0] + size, this.iconOffset[1]), // top right corner
+        Math.hypot(this.iconOffset[0] + size, this.iconOffset[1] + size), // bottom right corner
+        Math.hypot(this.iconOffset[0], this.iconOffset[1] + size));
+        const boundsOffset = maxProtrusion + 50; // Add some additional buffer
+        const projectedSize = this.props.mapProjection.getProjectedSize();
+        this.visibilityBounds[0] = -boundsOffset;
+        this.visibilityBounds[1] = -boundsOffset;
+        this.visibilityBounds[2] = projectedSize[0] + boundsOffset;
+        this.visibilityBounds[3] = projectedSize[1] + boundsOffset;
+        this.needUpdatePositionRotation = this.showIcon;
+    }
+    /** @inheritdoc */
+    onMapProjectionChanged(mapProjection, changeFlags) {
+        if (BitFlags.isAll(changeFlags, MapProjectionChangeType.ProjectedSize)) {
+            this.updateVisibilityBounds();
+        }
+        this.needUpdatePositionRotation = this.showIcon;
+    }
+    /** @inheritdoc */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    onUpdated(time, elapsed) {
+        if (this.needUpdatePositionRotation) {
+            this.updateIconPositionRotation();
+            this.needUpdatePositionRotation = false;
+            this.needUpdateVisibility = false;
+        }
+        else if (this.needUpdateVisibility) {
+            this.updateIconVisibility();
+            this.needUpdateVisibility = false;
+        }
+    }
+    /**
+     * Updates the airplane icon's visibility.
+     */
+    updateIconVisibility() {
+        this.style.set('display', this.isInsideVisibilityBounds && this.showIcon ? '' : 'none');
+    }
+    /**
+     * Updates the airplane icon's projected position and rotation.
+     */
+    updateIconPositionRotation() {
+        const projected = this.props.mapProjection.project(this.ownAirplanePropsModule.position.get(), MapOwnAirplaneLayer.vec2Cache[0]);
+        this.isInsideVisibilityBounds = this.props.mapProjection.isInProjectedBounds(projected, this.visibilityBounds);
+        // If the projected position of the icon is far enough out of bounds that the icon is not visible, do not bother to
+        // update the icon.
+        if (this.isInsideVisibilityBounds) {
+            let rotation;
+            switch (this.ownAirplaneIconModule.orientation.get()) {
+                case MapOwnAirplaneIconOrientation.HeadingUp:
+                case MapOwnAirplaneIconOrientation.TrackUp:
+                    rotation = this.planeRotation + this.props.mapProjection.getRotation() * Avionics.Utils.RAD2DEG;
+                    break;
+                default:
+                    rotation = 0;
+            }
+            this.iconTransform.getChild(0).set(projected[0], projected[1], 0, 0.1);
+            this.iconTransform.getChild(1).set(rotation, 0.1);
+            this.style.set('transform', this.iconTransform.resolve());
+        }
+        this.updateIconVisibility();
+    }
+    /** @inheritdoc */
+    render() {
+        var _a;
+        return (FSComponent.buildComponent("img", { src: this.imageFilePath, class: (_a = this.props.class) !== null && _a !== void 0 ? _a : '', style: this.style }));
+    }
+    /** @inheritdoc */
+    destroy() {
+        var _a, _b, _c, _d, _e, _f, _g, _h;
+        if (SubscribableUtils.isSubscribable(this.imageFilePath)) {
+            this.imageFilePath.destroy();
+        }
+        this.isGsAboveTrackThreshold.destroy();
+        (_a = this.showSub) === null || _a === void 0 ? void 0 : _a.destroy();
+        (_b = this.positionSub) === null || _b === void 0 ? void 0 : _b.destroy();
+        (_c = this.headingSub) === null || _c === void 0 ? void 0 : _c.destroy();
+        (_d = this.trackSub) === null || _d === void 0 ? void 0 : _d.destroy();
+        (_e = this.trackThresholdSub) === null || _e === void 0 ? void 0 : _e.destroy();
+        (_f = this.iconSizeSub) === null || _f === void 0 ? void 0 : _f.destroy();
+        (_g = this.iconAnchorSub) === null || _g === void 0 ? void 0 : _g.destroy();
+        (_h = this.orientationSub) === null || _h === void 0 ? void 0 : _h.destroy();
+        super.destroy();
+    }
+}
+MapOwnAirplaneLayer.vec2Cache = [Vec2Math.create()];
+
 /**
  * A map controller.
  */
@@ -32756,7 +33957,7 @@ var MapRotation;
     MapRotation["TrackUp"] = "TrackUp";
     /** Map up position points towards the current airplane heading. */
     MapRotation["HeadingUp"] = "HeadingUp";
-    /** Map up position points towards the current nav desired track. */
+    /** Map up position points towards the current desired track. */
     MapRotation["DtkUp"] = "DtkUp";
 })(MapRotation || (MapRotation = {}));
 /**
@@ -32766,6 +33967,8 @@ class MapRotationModule {
     constructor() {
         /** The type of map rotation to use. */
         this.rotationType = Subject.create(MapRotation.HeadingUp);
+        /** The desired track, in degrees true. */
+        this.dtk = Subject.create(0);
     }
 }
 
@@ -32926,7 +34129,7 @@ class MapRotationController extends MapSystemController {
                     ? -this.ownAirplanePropsModule.hdgTrue.get() * Avionics.Utils.DEG2RAD
                     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
                     : -this.ownAirplanePropsModule.trackTrue.get() * Avionics.Utils.DEG2RAD,
-            [MapRotation.DtkUp]: () => 0 // TODO
+            [MapRotation.DtkUp]: () => -this.rotationModule.dtk.get() * Avionics.Utils.DEG2RAD
         };
     }
     /** @inheritdoc */
@@ -33354,10 +34557,7 @@ class Tcas {
         var _a, _b, _c, _d, _e, _f, _g, _h;
         this.bus = bus;
         this.tfcInstrument = tfcInstrument;
-        this.maxIntruderCount = maxIntruderCount;
-        this.realTimeUpdateFreq = realTimeUpdateFreq;
-        this.simTimeUpdateFreq = simTimeUpdateFreq;
-        this.operatingModeSub = Subject.create(TcasOperatingMode.Standby);
+                this.operatingModeSub = Subject.create(TcasOperatingMode.Standby);
         this.intrudersSorted = [];
         this.intrudersFiltered = [];
         this.intrudersRA = new Set();
@@ -33382,6 +34582,9 @@ class Tcas {
             horizontal: UnitType.NMILE.createNumber(0),
             vertical: UnitType.FOOT.createNumber(0)
         };
+        this.maxIntruderCount = SubscribableUtils.toSubscribable(maxIntruderCount, true);
+        this.realTimeUpdateFreq = SubscribableUtils.toSubscribable(realTimeUpdateFreq, true);
+        this.simTimeUpdateFreq = SubscribableUtils.toSubscribable(simTimeUpdateFreq, true);
         this.sensitivity = this.createSensitivity();
         this.ownAirplane = new OwnAirplane(this.ownAirplaneSubs);
         const fullRAOptions = {
@@ -33444,13 +34647,17 @@ class Tcas {
         // add all existing contacts
         this.tfcInstrument.forEachContact(contact => { this.onContactAdded(contact.uid); });
         // init own airplane subjects
-        sub.on('gps-position').atFrequency(this.realTimeUpdateFreq).handle(lla => {
+        const atFreqSubs = [];
+        this.realTimeUpdateFreq.sub(freq => {
+            for (const atFreqSub of atFreqSubs) {
+                atFreqSub.destroy();
+            }
+            atFreqSubs.length = 0;
+            atFreqSubs.push(sub.on('gps-position').atFrequency(freq).handle(lla => {
             this.ownAirplaneSubs.position.set(lla.lat, lla.long);
             this.ownAirplaneSubs.altitude.set(lla.alt, UnitType.METER);
-        });
-        sub.on('ground_speed').whenChanged().atFrequency(this.realTimeUpdateFreq).handle(gs => { this.ownAirplaneSubs.groundSpeed.set(gs); });
-        sub.on('vertical_speed').whenChanged().atFrequency(this.realTimeUpdateFreq).handle(vs => { this.ownAirplaneSubs.verticalSpeed.set(vs); });
-        sub.on('radio_alt').whenChanged().atFrequency(this.realTimeUpdateFreq).handle(alt => { this.ownAirplaneSubs.radarAltitude.set(alt); });
+            }), sub.on('ground_speed').atFrequency(freq).handle(gs => { this.ownAirplaneSubs.groundSpeed.set(gs); }), sub.on('vertical_speed').atFrequency(freq).handle(vs => { this.ownAirplaneSubs.verticalSpeed.set(vs); }), sub.on('radio_alt').atFrequency(freq).handle(alt => { this.ownAirplaneSubs.radarAltitude.set(alt); }));
+        }, true);
         this.ownAirplaneSubs.groundTrack.setConsumer(sub.on('track_deg_true'));
         this.ownAirplaneSubs.isOnGround.setConsumer(sub.on('on_ground'));
         // init sim time subject
@@ -33596,8 +34803,8 @@ class Tcas {
                 return;
         }
         const realTime = Date.now();
-        if (Math.abs(simTime - this.lastUpdateSimTime) < 1000 / this.simTimeUpdateFreq
-            || Math.abs(realTime - this.lastUpdateRealTime) < 1000 / this.realTimeUpdateFreq) {
+        if (Math.abs(simTime - this.lastUpdateSimTime) < 1000 / this.simTimeUpdateFreq.get()
+            || Math.abs(realTime - this.lastUpdateRealTime) < 1000 / this.realTimeUpdateFreq.get()) {
             return;
         }
         this.doUpdate(simTime);
@@ -33636,7 +34843,7 @@ class Tcas {
         const oldCulled = this.intrudersFiltered;
         this.intrudersFiltered = [];
         const len = this.intrudersSorted.length;
-        for (let i = 0; i < len && this.intrudersFiltered.length < this.maxIntruderCount; i++) {
+        for (let i = 0; i < len && this.intrudersFiltered.length < this.maxIntruderCount.get(); i++) {
             const intruder = this.intrudersSorted[i];
             if (intruder.isPredictionValid && this.filterIntruder(intruder)) {
                 this.intrudersFiltered.push(intruder);
@@ -36725,17 +37932,54 @@ class MapSystemUtils {
         return (nominalRelY * (height - deadZone[1] - deadZone[3]) + deadZone[1]) / height;
     }
     /**
-     * Converts nominal relative projected coordinates to a true relative projected coordinates. Nominal relative
+     * Converts nominal relative projected coordinates to true relative projected coordinates. Nominal relative
      * coordinates are expressed relative to the map's projected width and height, *excluding* dead zones. True relative
      * coordinates are expressed relative to the map's projected width and height, *including* dead zones.
      * @param nominal Nominal relative projected coordinates.
-     * @param size The size of the map's projected window, in pixels.
+     * @param size The size of the map's projected window, as `[width, height]` in pixels.
      * @param deadZone The map's dead zone, as `[left, top, right, bottom]` in pixels.
      * @param out The vector to which to write the result.
      * @returns The true relative projected coordinates that are equivalent to the specified nominal coordinates.
      */
     static nominalToTrueRelativeXY(nominal, size, deadZone, out) {
         return Vec2Math.set(MapSystemUtils.nominalToTrueRelativeX(nominal[0], size[0], deadZone), MapSystemUtils.nominalToTrueRelativeY(nominal[1], size[1], deadZone), out);
+    }
+/**
+     * Converts a true relative projected x coordinate to a nominal relative projected x coordinate. Nominal relative
+     * coordinates are expressed relative to the map's projected width and height, *excluding* dead zones. True relative
+     * coordinates are expressed relative to the map's projected width and height, *including* dead zones.
+     * @param trueRelX A true relative projected x coordinate.
+     * @param width The width of the map's projected window, in pixels.
+     * @param deadZone The map's dead zone, as `[left, top, right, bottom]` in pixels.
+     * @returns The nominal relative projected x coordinate that is equivalent to the specified true coordinate.
+     */
+    static trueToNominalRelativeX(trueRelX, width, deadZone) {
+        return (trueRelX * width - deadZone[0]) / (width - deadZone[0] - deadZone[2]);
+    }
+    /**
+     * Converts a true relative projected y coordinate to a nominal relative projected y coordinate. Nominal relative
+     * coordinates are expressed relative to the map's projected width and height, *excluding* dead zones. True relative
+     * coordinates are expressed relative to the map's projected width and height, *including* dead zones.
+     * @param trueRelY A true relative projected y coordinate.
+     * @param height The height of the map's projected window, in pixels.
+     * @param deadZone The map's dead zone, as `[left, top, right, bottom]` in pixels.
+     * @returns The nominal relative projected y coordinate that is equivalent to the specified true coordinate.
+     */
+    static trueToNominalRelativeY(trueRelY, height, deadZone) {
+        return (trueRelY * height - deadZone[1]) / (height - deadZone[1] - deadZone[3]);
+    }
+    /**
+     * Converts true relative projected coordinates to nominal relative projected coordinates. Nominal relative
+     * coordinates are expressed relative to the map's projected width and height, *excluding* dead zones. True relative
+     * coordinates are expressed relative to the map's projected width and height, *including* dead zones.
+     * @param nominal True relative projected coordinates.
+     * @param size The size of the map's projected window, as `[width, height]` in pixels.
+     * @param deadZone The map's dead zone, as `[left, top, right, bottom]` in pixels.
+     * @param out The vector to which to write the result.
+     * @returns The nominal relative projected coordinates that are equivalent to the specified true coordinates.
+     */
+    static trueToNominalRelativeXY(nominal, size, deadZone, out) {
+        return Vec2Math.set(MapSystemUtils.trueToNominalRelativeX(nominal[0], size[0], deadZone), MapSystemUtils.trueToNominalRelativeY(nominal[1], size[1], deadZone), out);
     }
 }
 
@@ -37002,6 +38246,7 @@ class MapSystemBuilder {
         this.controllerFactories = new Map();
         this.contextFactories = new Map();
         this.initCallbacks = new Map();
+        this.destroyCallbacks = new Map();
         this.projectedSize = Subject.create(Vec2Math.create(100, 100));
     }
     // eslint-disable-next-line jsdoc/require-returns
@@ -37143,6 +38388,17 @@ class MapSystemBuilder {
      */
     withInit(key, callback) {
         this.initCallbacks.set(key, callback);
+        return this;
+    }
+    /**
+     * Configures this builder to execute a callback function after a built map is destroyed. If an existing callback has
+     * been added to this builder with the same key, it will be replaced.
+     * @param key The key of the callback.
+     * @param callback The callback function to add.
+     * @returns This builder, after the callback has been added.
+     */
+    withDestroy(key, callback) {
+        this.destroyCallbacks.set(key, callback);
         return this;
     }
     /**
@@ -37770,6 +39026,17 @@ class MapSystemBuilder {
                     }
                 }
             }
+            for (const callback of this.destroyCallbacks.values()) {
+                try {
+                    callback(context);
+                }
+                catch (e) {
+                    console.error(`MapSystem: error in destroy callback: ${e}`);
+                    if (e instanceof Error) {
+                        console.error(e.stack);
+                    }
+                }
+            }
         };
         const map = (FSComponent.buildComponent(MapSystemComponent, { ref: ref, model: context.model, projection: context.projection, bus: context.bus, projectedSize: this.projectedSize, onAfterRender: onAfterRender, onDeadZoneChanged: onDeadZoneChanged, onMapProjectionChanged: onMapProjectionChanged, onBeforeUpdated: onBeforeUpdated, onAfterUpdated: onAfterUpdated, onWake: onWake, onSleep: onSleep, onDestroy: onDestroy, class: cssClass }, Array.from(this.layerFactories.values()).sort((a, b) => a.order - b.order).map(factory => {
             const node = factory.factory(context);
@@ -37783,7 +39050,15 @@ class MapSystemBuilder {
         }
         controllers.push(...controllerEntries.map(([, controller]) => controller));
         for (const callback of this.initCallbacks.values()) {
+        try {
             callback(context);
+        }
+        catch (e) {
+                console.error(`MapSystem: error in init callback: ${e}`);
+                if (e instanceof Error) {
+                    console.error(e.stack);
+                }
+            }
         }
         return { context, map, ref };
     }
@@ -42673,6 +43948,12 @@ var BoeingMsfsVBar;
     BoeingMsfsVBar[BoeingMsfsVBar["XPTR"] = 1] = "XPTR";
     BoeingMsfsVBar[BoeingMsfsVBar["VBAR"] = 0] = "VBAR";
 })(BoeingMsfsVBar || (BoeingMsfsVBar = {}));
+/** Type for whether ND is in HDG up or TRK up mode. */
+var BoeingFuelIndicatorStyle;
+(function (BoeingFuelIndicatorStyle) {
+    BoeingFuelIndicatorStyle[BoeingFuelIndicatorStyle["DIGITAL"] = 0] = "DIGITAL";
+    BoeingFuelIndicatorStyle[BoeingFuelIndicatorStyle["ANALOG"] = 1] = "ANALOG";
+})(BoeingFuelIndicatorStyle || (BoeingFuelIndicatorStyle = {}));
 /**
  * IRS alignment time modes.
  */
@@ -42702,6 +43983,10 @@ const boeingMsfsUserSettings = [
     {
         name: 'boeingMsfsNdHdgTrkUpMode',
         defaultValue: BoeingNdHdgTrkUpMode.TRK,
+    },
+    {
+        name: 'boeingMsfsFuelIndicatorStyle',
+        defaultValue: BoeingFuelIndicatorStyle.ANALOG,
     },
     {
         name: 'boeingMsfsIrsAlignTime',
@@ -42925,6 +44210,13 @@ var EFBTakeoffThrustMode;
     EFBTakeoffThrustMode["TO2"] = "TO 2 -20";
     EFBTakeoffThrustMode["WINDSHEAR"] = "WINDSHEAR";
 })(EFBTakeoffThrustMode || (EFBTakeoffThrustMode = {}));
+/** Modes of the take performance calculation result. */
+var EFBTakeoffCalculationMode;
+(function (EFBTakeoffCalculationMode) {
+    EFBTakeoffCalculationMode["ATM"] = "ATM";
+    EFBTakeoffCalculationMode["FULL"] = "FULL";
+    EFBTakeoffCalculationMode["RTOW"] = "RTOW";
+})(EFBTakeoffCalculationMode || (EFBTakeoffCalculationMode = {}));
 /** Climb thrust modes. */
 var ClimbThrustMode;
 (function (ClimbThrustMode) {
@@ -43027,6 +44319,7 @@ class FlapComputer {
      */
     constructor(bus, config) {
         this.bus = bus;
+        this.flapsHandleIndex = ConsumerSubject.create(null, 0);
         this.flapsLeftAngle = ConsumerSubject.create(null, 0);
         this.flapsRightAngle = ConsumerSubject.create(null, 0);
         this.slatsLeftAngle = ConsumerSubject.create(null, 0);
@@ -43045,6 +44338,10 @@ class FlapComputer {
         this.flapPositionConfig = [...config.flap_positions].sort((a, b) => a.flapAngle === b.flapAngle ? a.slatAngle - b.slatAngle : a.flapAngle - b.flapAngle);
         this.flapSpeedLimitLookup = new LerpLookupTable(this.flapPositionConfig.filter((c) => isFinite(c.speedLimit)).map((c) => [c.speedLimit, c.label]));
         this.speedData = config.speed_data;
+        this.flapsHandlePosition = this.flapsHandleIndex.map(index => this.flapPositionConfig[index]);
+        const leadingEdgeInTransit = MappedSubject.create(([slatsLeftAngle, flapsHandlePosition]) => {
+            return Math.abs(flapsHandlePosition.slatAngle - slatsLeftAngle) > 0.01;
+        }, this.slatsLeftAngle, this.flapsHandlePosition);
         const pub = this.bus.getPublisher();
         this.flapInterpolatedPosition.sub((pos) => pub.pub('flap_computer_interpolated_position', pos));
         this.flapInterpolatedLimitSpeed.sub((pos) => pub.pub('flap_computer_interpolated_limit_speed', pos));
@@ -43053,6 +44350,7 @@ class FlapComputer {
         this.flapLimitSpeed.sub((speed) => pub.pub('flap_computer_limit_speed', speed));
         this.flapManeuverSpeed.sub((speed) => pub.pub('flap_computer_maneuver_speed', speed));
         this.holdingSpeed.sub((speed) => pub.pub('flap_computer_holding_speed', speed));
+        leadingEdgeInTransit.sub((x) => pub.pub('flap_computer_leading_edge_in_transit', x));
         this.listenToEvents();
     }
     /** Update the flap setting from the flap and slat angles */
@@ -43110,6 +44408,7 @@ class FlapComputer {
     /** Setup event listeners */
     listenToEvents() {
         const sub = this.bus.getSubscriber();
+        this.flapsHandleIndex.setConsumer(sub.on('flaps_handle_index'));
         this.flapsLeftAngle.setConsumer(sub.on('flaps_left_angle').withPrecision(2));
         this.flapsRightAngle.setConsumer(sub.on('flaps_right_angle').withPrecision(2));
         this.slatsLeftAngle.setConsumer(sub.on('slats_left_angle').withPrecision(2));
@@ -51010,12 +52309,16 @@ class AltitudeCrewAlerts {
  */
 class AirspeedIndicator extends DisplayComponent {
     constructor() {
-        var _a;
+        var _a, _b, _c, _d, _e;
         super(...arguments);
         this.maxSpeedRangeRef = FSComponent.createRef();
         this.minManeuverSpeedRangeRef = FSComponent.createRef();
         this.minSpeedRangeRef = FSComponent.createRef();
         this.selectedSpeedBugRef = FSComponent.createRef();
+        this.v80ktsSpeedBugRef = FSComponent.createRef();
+        this.spareSpeedBugRef = FSComponent.createRef();
+        this.v2Plus15SpeedBugRef = FSComponent.createRef();
+        this.vrefPlus20SpeedBugRef = FSComponent.createRef();
         this.vnavSpeedBandRef = FSComponent.createRef();
         this.flapSpeedBugPositions = Array.from(this.props.flapSpeedBugDataProvider.data.keys());
         this.flapSpeedBugRefs = new Map(Array.from(this.props.flapSpeedBugDataProvider.data.keys(), position => [position, FSComponent.createRef()]));
@@ -51026,6 +52329,10 @@ class AirspeedIndicator extends DisplayComponent {
         this.vrefBugRef = FSComponent.createRef();
         this.vrefBugClampedRef = FSComponent.createRef();
         this.showManeuverSpeedBands = SubscribableUtils.toSubscribable((_a = this.props.showManeuverSpeedBands) !== null && _a !== void 0 ? _a : true, true);
+        this.show80ktsBug = SubscribableUtils.toSubscribable((_b = this.props.show80ktsBug) !== null && _b !== void 0 ? _b : false, true);
+        this.showSpareBug = SubscribableUtils.toSubscribable((_c = this.props.showSpareBug) !== null && _c !== void 0 ? _c : false, true);
+        this.showV2Plus15Bug = SubscribableUtils.toSubscribable((_d = this.props.showV2Plus15Bug) !== null && _d !== void 0 ? _d : false, true);
+        this.showVrefPlus20Bug = SubscribableUtils.toSubscribable((_e = this.props.showVrefPlus20Bug) !== null && _e !== void 0 ? _e : false, true);
         this.v1Setting = this.props.vSpeedSettings.getSettings(VSpeedType.V1).value;
         this.vrSetting = this.props.vSpeedSettings.getSettings(VSpeedType.Vr).value;
         this.v2Setting = this.props.vSpeedSettings.getSettings(VSpeedType.V2).value;
@@ -51063,7 +52370,14 @@ class AirspeedIndicator extends DisplayComponent {
         this.pauseableSubs.push(this.props.dataProvider.ias.sub(this.updateIas.bind(this), true, this.isPaused), this.props.dataProvider.maximumIas.sub(this.updateMaximumSpeed.bind(this), false, this.isPaused), this.props.dataProvider.minimumManeuveringIas.sub(updateMinimumManeuveringSpeed, false, this.isPaused), this.props.dataProvider.minimumIas.sub(this.updateMinimumSpeed.bind(this), false, this.isPaused), this.showManeuverSpeedBands.sub(updateMinimumManeuveringSpeed, false, this.isPaused), this.props.dataProvider.iasTrend.sub(this.onTrendChanged.bind(this), this.isPaused), this.isRadioAltAbove100.sub(this.onRadioAltAbove100Changed.bind(this), true, this.isPaused), this.props.flapRetractionDataProvider.isFirstFlapRetractionStarted.sub(this.updateMinimumManeuveringSpeedVisibility.bind(this), false, this.isPaused), this.props.dataProvider.selectedSpeedIas.sub(this.updateSelectedSpeedBug.bind(this), false, this.isPaused), this.props.vnavSpeedBandDataProvider.minimumIas.sub(updateVNavSpeedBand, false, this.isPaused), this.props.vnavSpeedBandDataProvider.maximumIas.sub(updateVNavSpeedBand, false, this.isPaused), ...Array.from(this.props.flapSpeedBugDataProvider.data, ([position, data]) => {
             // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
             return data.maneuverIas.sub(this.updateFlapSpeedBug.bind(this, this.flapSpeedBugRefs.get(position), data), true, this.isPaused);
-        }), this.vrSetting.sub(this.updateVSpeedBug.bind(this, this.vrBugRef, this.vrSetting), false, this.isPaused), this.v2Setting.sub(this.updateVSpeedBug.bind(this, this.v2BugRef, this.v2Setting), false, this.isPaused), this.v1Setting.sub(this.onV1Changed.bind(this), false, this.isPaused), this.vrefSetting.sub(this.onVrefChanged.bind(this), false, this.isPaused), this.v1Setting.pipe(this.v1ReadoutText, value => value.toFixed(0), this.isPaused), this.props.performancePlan.approachFlapSpeed.pipe(this.vrefReadoutText, data => {
+        }), this.vrSetting.sub(this.updateVSpeedBug.bind(this, this.vrBugRef, this.vrSetting), false, this.isPaused), MappedSubject.create(this.v2Setting, this.showV2Plus15Bug, this.show80ktsBug).sub(([v2Setting, showV2Plus15Bug, show80KtsBug]) => {
+            this.updateVSpeedBug(this.v2BugRef, this.v2Setting);
+            showV2Plus15Bug && this.updateWhiteSpeedBug(this.v2Plus15SpeedBugRef, v2Setting + 15);
+            show80KtsBug && this.updateWhiteSpeedBug(this.v80ktsSpeedBugRef, v2Setting !== 0 ? 80 : 0);
+        }, false, this.isPaused), this.v1Setting.sub(this.onV1Changed.bind(this), false, this.isPaused), this.vrefSetting.sub(() => {
+            this.updateVSpeedBug(this.vrefBugRef, this.vrefSetting);
+            this.props.showVrefPlus20Bug && this.updateWhiteSpeedBug(this.vrefPlus20SpeedBugRef, this.vrefSetting.value + 20);
+        }, false, this.isPaused), this.v1Setting.pipe(this.v1ReadoutText, value => value.toFixed(0), this.isPaused), this.props.performancePlan.approachFlapSpeed.pipe(this.vrefReadoutText, data => {
             var _a;
             if (data === null) {
                 return '';
@@ -51164,6 +52478,7 @@ class AirspeedIndicator extends DisplayComponent {
             this.updateFlapSpeedBug(this.flapSpeedBugRefs.get(position), this.props.flapSpeedBugDataProvider.data.get(position));
         }
         this.updateAllVSpeedBugs();
+        this.updateAllWhiteSpeedBugs();
     }
     /**
      * Updates this indicator's displayed maximum speed.
@@ -51274,18 +52589,41 @@ class AirspeedIndicator extends DisplayComponent {
         this.updateVSpeedReadoutVisibility(this.vrefReadoutHidden, this.vrefSetting, -Infinity, Infinity);
     }
     /**
+     * Updates the visibility and positions of all white speed bugs.
+     */
+    updateAllWhiteSpeedBugs() {
+        this.show80ktsBug.get() && this.updateWhiteSpeedBug(this.v80ktsSpeedBugRef, this.props.vSpeedSettings.getSettings(VSpeedType.V2).value.value !== 0 ? 80 : 0);
+        // this.showSpareBug.get() && this.updateWhiteSpeedBug(this.spareSpeedBugRef, 80);
+        this.showV2Plus15Bug.get() && this.updateWhiteSpeedBug(this.v2Plus15SpeedBugRef, this.props.vSpeedSettings.getSettings(VSpeedType.V2).value.value + 15);
+        this.showVrefPlus20Bug.get() && this.updateWhiteSpeedBug(this.vrefPlus20SpeedBugRef, this.props.vSpeedSettings.getSettings(VSpeedType.Vref).value.value + 20);
+    }
+    /**
      * Updates the visibility and position of a V-speed bug.
      * @param ref A reference to the speed bug to update.
      * @param setting The user setting that controls the value of the bug's V-speed.
      */
     updateVSpeedBug(ref, setting) {
-        const ias = setting.value;
-        if (ias <= 50) {
+        const speed = setting.value;
+        if (speed <= 50) {
             ref.instance.setIsVisible(false);
         }
         else {
             ref.instance.setIsVisible(true);
-            ref.instance.updatePosition(this.getTapeWindowPosition(ias));
+            ref.instance.updatePosition(this.getTapeWindowPosition(speed));
+        }
+    }
+    /**
+     * Updates the visibility and position of a white speed bug.
+     * @param ref A reference to the speed bug to update.
+     * @param speed The speed value for this speed bug.
+     */
+    updateWhiteSpeedBug(ref, speed) {
+        if (speed <= 50) {
+            ref.instance.setIsVisible(false);
+        }
+        else {
+            ref.instance.setIsVisible(true);
+            ref.instance.updatePosition(this.getTapeWindowPosition(speed));
         }
     }
     /**
@@ -51376,6 +52714,22 @@ class AirspeedIndicator extends DisplayComponent {
                                 FSComponent.buildComponent("line", { x1: '50%', y1: "0%", x2: "50%", y2: "100%", class: "airspeed-trend-vector-stroke" })),
                             FSComponent.buildComponent("svg", { class: "airspeed-trend-vector-svg airspeed-trend-vector-pointer", viewBox: "0 0 18 18", style: "position: absolute; top: 0px; overflow: visible;" },
                                 FSComponent.buildComponent("path", { d: "M 0 18 l 9 -18 l 9 18 z", class: "airspeed-trend-vector-stroke" })))),
+                    this.show80ktsBug && FSComponent.buildComponent(SpeedBug, { ref: this.v80ktsSpeedBugRef, tapeWindowHeight: this.props.windowHeight, class: "airspeed-bug-white hidden" },
+                        FSComponent.buildComponent("svg", { viewBox: "0 -14 56 28", preserveAspectRatio: "none", class: "airspeed-bug-white-symbol", style: "overflow: visible;" },
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke shadow" }),
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke" }))),
+                    this.showSpareBug && FSComponent.buildComponent(SpeedBug, { ref: this.spareSpeedBugRef, tapeWindowHeight: this.props.windowHeight, class: "airspeed-bug-white hidden" },
+                        FSComponent.buildComponent("svg", { viewBox: "0 -14 56 28", preserveAspectRatio: "none", class: "airspeed-bug-white-symbol", style: "overflow: visible;" },
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke shadow" }),
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke" }))),
+                    this.showV2Plus15Bug && FSComponent.buildComponent(SpeedBug, { ref: this.v2Plus15SpeedBugRef, tapeWindowHeight: this.props.windowHeight, class: "airspeed-bug-white hidden" },
+                        FSComponent.buildComponent("svg", { viewBox: "0 -14 56 28", preserveAspectRatio: "none", class: "airspeed-bug-white-symbol", style: "overflow: visible;" },
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke shadow" }),
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke" }))),
+                    this.showVrefPlus20Bug && FSComponent.buildComponent(SpeedBug, { ref: this.vrefPlus20SpeedBugRef, tapeWindowHeight: this.props.windowHeight, class: "airspeed-bug-white hidden" },
+                        FSComponent.buildComponent("svg", { viewBox: "0 -14 56 28", preserveAspectRatio: "none", class: "airspeed-bug-white-symbol", style: "overflow: visible;" },
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke shadow" }),
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke" }))),
                     FSComponent.buildComponent(SpeedBug, { ref: this.selectedSpeedBugRef, tapeWindowHeight: this.props.windowHeight, clamp: true, class: "airspeed-bug-selected" },
                         FSComponent.buildComponent("svg", { viewBox: "0 -14 56 28", preserveAspectRatio: "none", class: "airspeed-bug-selected-symbol", style: "overflow: visible;" },
                             FSComponent.buildComponent("path", { d: "M 0 0 L 22 -14 l 34 0 l 0 28 l -34 0 z", class: "airspeed-bug-selected-stroke shadow" }),
@@ -51384,13 +52738,13 @@ class AirspeedIndicator extends DisplayComponent {
                     Array.from(this.flapSpeedBugRefs).map(([position, ref]) => {
                         return (FSComponent.buildComponent(TickLabelSpeedBug, { ref: ref, tapeWindowHeight: this.props.windowHeight, tick: true, label: position === 0 ? 'UP' : position.toString().padStart(2, ' '), class: "airspeed-bug-flap" }));
                     }),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrBugRef, tapeWindowHeight: this.props.windowHeight, tick: true, label: this.truncateVrLabel.map(truncate => truncate ? '  R' : 'VR'), class: "airspeed-bug-vspeed" }),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v2BugRef, tapeWindowHeight: this.props.windowHeight, tick: true, label: "V2", class: "airspeed-bug-vspeed" }),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v1BugRef, tapeWindowHeight: this.props.windowHeight, tick: true, class: "airspeed-bug-vspeed airspeed-bug-vspeed-large" }),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v1BugClampedRef, tapeWindowHeight: this.props.windowHeight, label: "V1", clamp: Vec2Math.create(this.v1BugPositionClamp, Infinity), class: "airspeed-bug-vspeed" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrBugRef, tapeWindowHeight: this.props.windowHeight, tick: true, label: this.truncateVrLabel.map(truncate => truncate ? '  R' : 'VR'), class: "airspeed-bug-vspeed  airspeed-bug-vr" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v2BugRef, tapeWindowHeight: this.props.windowHeight, tick: true, label: "V2", class: "airspeed-bug-vspeed airspeed-bug-v2" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v1BugRef, tapeWindowHeight: this.props.windowHeight, tick: true, class: "airspeed-bug-vspeed airspeed-bug-vspeed-large  airspeed-bug-v1" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v1BugClampedRef, tapeWindowHeight: this.props.windowHeight, label: "V1", clamp: Vec2Math.create(this.v1BugPositionClamp, Infinity), class: "airspeed-bug-vspeed  airspeed-bug-v1-clamped" }),
                     FSComponent.buildComponent("div", { class: { 'airspeed-vspeed-readout': true, 'airspeed-v1-readout': true, 'hidden': this.v1ReadoutHidden } }, this.v1ReadoutText),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrefBugRef, tapeWindowHeight: this.props.windowHeight, tick: true, class: "airspeed-bug-vspeed airspeed-bug-vspeed-large" }),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrefBugClampedRef, tapeWindowHeight: this.props.windowHeight, label: "REF", clamp: Vec2Math.create(-Infinity, this.vrefBugPositionClamp), class: "airspeed-bug-vspeed" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrefBugRef, tapeWindowHeight: this.props.windowHeight, label: "REF", tick: true, class: "airspeed-bug-vspeed airspeed-bug-vspeed-large airspeed-bug-vref" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrefBugClampedRef, tapeWindowHeight: this.props.windowHeight, label: "REF", clamp: Vec2Math.create(-Infinity, this.vrefBugPositionClamp), class: "airspeed-bug-vspeed airspeed-bug-vref-clamped" }),
                     FSComponent.buildComponent("div", { class: { 'airspeed-vspeed-readout': true, 'airspeed-vref-readout': true, 'hidden': this.vrefReadoutHidden } }, this.vrefReadoutText)),
                 FSComponent.buildComponent("div", { class: "airspeed-readout" },
                     FSComponent.buildComponent("svg", { viewBox: "0 0 103 96", preserveAspectRatio: "none", "stroke-linejoin": "round", class: { 'airspeed-readout-box': true, 'warning': this.isReadoutAlertActive }, style: "overflow: visible;" },
@@ -54006,7 +55360,9 @@ class DefaultLateralDeviationDataProvider {
         this.facAvailable = ConsumerSubject.create(null, false).pause();
         this.locDeviationPipe = this.ilsNavIndicator.lateralDeviation.pipe(this._locDeviation, dev => dev === null ? 0 : dev * 2.5, true);
         this.apMaster = ConsumerSubject.create(null, false).pause();
-        this.fdActive = ConsumerSubject.create(null, false).pause();
+        this.fd1Active = ConsumerSubject.create(null, false).pause();
+        this.fd2Active = ConsumerSubject.create(null, false).pause();
+        this.fdActive = MappedSubject.create(SubscribableMapFunctions.or(), this.fd1Active, this.fd2Active);
         this.radioAltitude = ConsumerSubject.create(null, 0).pause();
         this.fmsPosSystemState = ConsumerSubject.create(null, undefined).pause();
         this.isFmsPosDataValid = this.fmsPosSystemState.map(state => {
@@ -54044,7 +55400,8 @@ class DefaultLateralDeviationDataProvider {
             this.lateralNavSource,
             this.fmaData,
             this.apMaster,
-            this.fdActive,
+            this.fd1Active,
+            this.fd2Active,
             this.radioAltitude,
             this.fmsPosSystemState,
             this.hasLocDeviation,
@@ -54077,7 +55434,8 @@ class DefaultLateralDeviationDataProvider {
         this.lateralNavSource.setConsumer(sub.on('lateral_nav_source'));
         this.fmaData.setConsumer(sub.on('fma_data'));
         this.apMaster.setConsumer(sub.on('ap_master_status'));
-        this.fdActive.setConsumer(sub.on('ap_boeing_flight_director_is_active_1'));
+        this.fd1Active.setConsumer(sub.on('ap_boeing_flight_director_is_active_1'));
+        this.fd2Active.setConsumer(sub.on('ap_boeing_flight_director_is_active_2'));
         this.radioAltitude.setConsumer(sub.on('ra_radio_alt_1'));
         this.fmsPosIndexSub = this.fmsPosIndex.sub(index => {
             this.fmsPosSystemState.setConsumer(sub.on(`fms_pos_state_${index}`));
@@ -54265,7 +55623,32 @@ class NavigationSourceDisplay extends DisplayComponent {
         this.isGpDeviationValid = this.props.verticalDeviationDataProvider.gpDeviation.map(NavigationSourceDisplay.isDeviationValid).pause();
         this.isGsDeviationValid = this.props.verticalDeviationDataProvider.gsDeviation.map(NavigationSourceDisplay.isDeviationValid).pause();
         this.isApTogaActive = MappedSubject.create(SubscribableMapFunctions.or(), this.props.lateralDeviationDataProvider.isApLateralTogaActive, this.props.isVerticalTogaNp ? this.props.lateralDeviationDataProvider.isApVerticalTogaActive : Subject.create(false)).pause();
-        this.text = MappedSubject.create(([isLateralNp, isFacDeviationValid, isLocDeviationValid, isVerticalNp, isGpDeviationValid, isGsDeviationValid, isApTogaActive]) => {
+        this.text = MappedSubject.create(this.getSourceText.bind(this), this.props.lateralDeviationDataProvider.isLateralNavSourceNp, this.isFacDeviationValid, this.isLocDeviationValid, this.props.verticalDeviationDataProvider.isVerticalNavSourceNp, this.isGpDeviationValid, this.isGsDeviationValid, this.isApTogaActive).pause();
+        this.isTextSmall = this.text.map(text => text.length > 3);
+        this.isTextHidden = this.text.map(text => text.length === 0);
+        this.isPaused = true;
+        this.pauseable = [
+            this.isFacDeviationValid,
+            this.isLocDeviationValid,
+            this.isGpDeviationValid,
+            this.isGsDeviationValid,
+            this.isApTogaActive,
+            this.text
+        ];
+    }
+    /**
+     * Formats the navigation source text to display on the PFD.
+     * @param root0 Params.
+     * @param root0."0" Is the lateral non-precision source active.
+     * @param root0."1" Is the FAC deviation valid.
+     * @param root0."2" Is the LOC deviation valid.
+     * @param root0."3" Is the vertical non-precision source active.
+     * @param root0."4" Is the GP deviation valid.
+     * @param root0."5" Is the GS deviation valid.
+     * @param root0."6" Is TO/GA active.
+     * @returns The text to display.
+     */
+    getSourceText([isLateralNp, isFacDeviationValid, isLocDeviationValid, isVerticalNp, isGpDeviationValid, isGsDeviationValid, isApTogaActive]) {
             // Sim doesn't have GLS, so we are not going to consider those cases.
             if (isVerticalNp || isGpDeviationValid || isApTogaActive) {
                 // Vertical source is FMC.
@@ -54297,19 +55680,7 @@ class NavigationSourceDisplay extends DisplayComponent {
                 }
             }
             return '';
-        }, this.props.lateralDeviationDataProvider.isLateralNavSourceNp, this.isFacDeviationValid, this.isLocDeviationValid, this.props.verticalDeviationDataProvider.isVerticalNavSourceNp, this.isGpDeviationValid, this.isGsDeviationValid, this.isApTogaActive).pause();
-        this.isTextSmall = this.text.map(text => text.length > 3);
-        this.isTextHidden = this.text.map(text => text.length === 0);
-        this.isPaused = true;
-        this.pauseable = [
-            this.isFacDeviationValid,
-            this.isLocDeviationValid,
-            this.isGpDeviationValid,
-            this.isGsDeviationValid,
-            this.isApTogaActive,
-            this.text
-        ];
-    }
+            }
     /**
      * Resumes this component. When the component is resumed, it will update its rendering.
      */
@@ -54424,7 +55795,9 @@ class DefaultVerticalDeviationDataProvider {
         this.gpAvailable = ConsumerSubject.create(null, false).pause();
         this.gsDeviationPipe = this.ilsNavIndicator.verticalDeviation.pipe(this._gsDeviation, dev => dev === null ? 0 : -dev * 2.5, true);
         this.apMaster = ConsumerSubject.create(null, false).pause();
-        this.fdActive = ConsumerSubject.create(null, false).pause();
+        this.fd1Active = ConsumerSubject.create(null, false).pause();
+        this.fd2Active = ConsumerSubject.create(null, false).pause();
+        this.fdActive = MappedSubject.create(SubscribableMapFunctions.or(), this.fd1Active, this.fd2Active);
         this.radioAltitude = ConsumerSubject.create(null, 0).pause();
         this.fmsPosSystemState = ConsumerSubject.create(null, undefined).pause();
         this.isFmsPosDataValid = this.fmsPosSystemState.map(state => {
@@ -54451,7 +55824,8 @@ class DefaultVerticalDeviationDataProvider {
             this.gpAvailable,
             this._gpDeviation,
             this.apMaster,
-            this.fdActive,
+            this.fd1Active,
+            this.fd2Active,
             this.radioAltitude,
             this.fmsPosSystemState,
             this.hasGsDeviation
@@ -54483,7 +55857,8 @@ class DefaultVerticalDeviationDataProvider {
         this.verticalNavSource.setConsumer(sub.on('vertical_nav_source'));
         this.fmaData.setConsumer(sub.on('fma_data'));
         this.apMaster.setConsumer(sub.on('ap_master_status'));
-        this.fdActive.setConsumer(sub.on('ap_boeing_flight_director_is_active_1'));
+        this.fd1Active.setConsumer(sub.on('ap_boeing_flight_director_is_active_1'));
+        this.fd2Active.setConsumer(sub.on('ap_boeing_flight_director_is_active_2'));
         this.radioAltitude.setConsumer(sub.on('ra_radio_alt_1'));
         this.fmsPosIndexSub = this.fmsPosIndex.sub(index => {
             this.fmsPosSystemState.setConsumer(sub.on(`fms_pos_state_${index}`));
@@ -55429,6 +56804,7 @@ BoeingMapKeys.MapStyles = 'MapStyles';
 BoeingMapKeys.VNavData = 'VNavData';
 BoeingMapKeys.TcasAdvisoryStatusLayer = 'tcas-advisory-status-layer';
 BoeingMapKeys.TerrainWeatherState = 'terrain-weather-state';
+BoeingMapKeys.ApproachFormatGlideslopeDeviation = 'app-glideslope';
 
 /**
  * Updates the properties in a {@link MapAutopilotPropsModule}.
@@ -57894,8 +59270,8 @@ class BoeingFmcFormatters {
     static Altitude(type, transitionAltSub, targetAltSub) {
         return (value) => {
             const altStr = (value < transitionAltSub.get()) ?
-                `${Math.round(value).toString().padStart(5, ' ')}` :
-                `FL${Math.round(value / 100).toString().padStart(3, '0').substring(0, 3)}`;
+                `${value.toFixed().padStart(5, ' ')}` :
+                `FL${(value / 100).toFixed().padStart(3, '0').substring(0, 3)}`;
             const altStrWithStyling = (targetAltSub === null || targetAltSub === void 0 ? void 0 : targetAltSub.get()) === value ? `${altStr}[magenta]` : altStr;
             return type === 'input' ? inputBox(altStrWithStyling) : altStrWithStyling;
         };
@@ -57907,7 +59283,7 @@ class BoeingFmcFormatters {
      */
     static AltitudeFeet(type) {
         return (alt) => {
-            const str = alt.toString().padStart(5, ' ');
+            const str = alt.toFixed().padStart(5, ' ');
             return type === 'input' ? inputBox(str) : str;
         };
     }
@@ -57936,10 +59312,11 @@ class BoeingFmcFormatters {
      * @param cruiseStepProvider A cruise step provider.
      * @param routePredictor A route predictor.
      * @param todEta The ETA at the top of descent.
+     * @param showStepPointHeader Whether to show the string STEP POINT in the header, optional.
      * @returns A formatted AT/TO field header.
      */
-    static AtToCruisePageHeader(nextStep, previousStep, todDistance, destDistance, primaryFlightPlan, cruiseStepProvider, routePredictor, todEta) {
-        return BoeingFmcFormatters.AtToHeaderAndFieldGenerator(nextStep, previousStep, todDistance, destDistance, primaryFlightPlan, cruiseStepProvider, routePredictor, todEta).crzHeader;
+    static AtToCruisePageHeader(nextStep, previousStep, todDistance, destDistance, primaryFlightPlan, cruiseStepProvider, routePredictor, todEta, showStepPointHeader) {
+        return BoeingFmcFormatters.AtToHeaderAndFieldGenerator(nextStep, previousStep, todDistance, destDistance, primaryFlightPlan, cruiseStepProvider, routePredictor, todEta, showStepPointHeader).crzHeader;
     }
     /**
      * A formatter for AT/TO data fields.
@@ -57966,9 +59343,10 @@ class BoeingFmcFormatters {
      * @param cruiseStepProvider A cruise step provider.
      * @param routePredictor A route predictor.
      * @param todEta The ETA at the top of descent.
+     * @param showStepPointHeader Whether to show the string STEP POINT in the header, optional.
      * @returns A formatted AT/TO field header.
      */
-    static AtToHeaderAndFieldGenerator(nextStep, previousStep, todDistanceMeters, destDistanceNm, primaryFlightPlan, cruiseStepProvider, routePredictor, todEta) {
+    static AtToHeaderAndFieldGenerator(nextStep, previousStep, todDistanceMeters, destDistanceNm, primaryFlightPlan, cruiseStepProvider, routePredictor, todEta, showStepPointHeader) {
         var _a;
         let cruiseHeaderText = '';
         let progHeaderText = '';
@@ -57976,11 +59354,16 @@ class BoeingFmcFormatters {
         const cruiseStep = previousStep !== null && previousStep !== void 0 ? previousStep : nextStep;
         const todDistanceNm = UnitType.NMILE.convertFrom(todDistanceMeters, UnitType.METER);
         const withinTodDistance = (0 <= todDistanceMeters && todDistanceNm < 200) || (0 <= destDistanceNm && destDistanceNm < 500);
-        if (cruiseStep !== null) {
+        // A ToD dist of 0 signifies none exists
+        if (cruiseStep !== null && (todDistanceNm > 100 || todDistanceNm === 0)) {
             // SHOW STEP INFO
             // If step is invalid
             if (BoeingCruiseStepSyncedProvider.IsInvalidStep(cruiseStep)) {
-                return { crzHeader: 'AVAIL AT', progHeader: 'TO STEP CLB', data: 'NONE' };
+                return {
+                    crzHeader: showStepPointHeader ? 'STEP POINT' : 'AVAIL AT',
+                    progHeader: 'TO STEP CLB',
+                    data: 'NONE',
+                };
             }
             // Header
             progHeaderText = 'TO STEP CLB';
@@ -58001,6 +59384,9 @@ class BoeingFmcFormatters {
                         cruiseHeaderText = `AT ${waypoint}`;
                     }
                 }
+            }
+            if (showStepPointHeader && cruiseHeaderText) {
+                cruiseHeaderText = 'STEP POINT';
             }
             // Field
             const nextStepLeg = primaryFlightPlan.tryGetLeg(cruiseStep.globalLegIndex);
@@ -58030,7 +59416,7 @@ class BoeingFmcFormatters {
             // Field
             if (todEta !== null && Number.isFinite(todEta)) {
                 const etaStr = BoeingFmcFormatters.EtaFormatterMs(todEta);
-                const distanceStr = Math.trunc(todDistanceNm).toString().padStart(4, ' ');
+                const distanceStr = Math.trunc(todDistanceNm).toFixed().padStart(4, ' ');
                 // TODO "NOW" logic for PROG page
                 dataText = `${etaStr}/[d-text]${distanceStr}[d-text]NM[s-text]`;
             }
@@ -58041,11 +59427,11 @@ class BoeingFmcFormatters {
         return { crzHeader: cruiseHeaderText, progHeader: progHeaderText, data: dataText };
     }
     /**
-     * A climb/descent waypoint constraint header formatter factory.
+     * A climb/descent waypoint altitude constraint header formatter.
      * @param leg The constraint's associated {@link LegDefinition}, if it exists.
-     * @returns A climb/descent waypoint constraint header formatter.
+     * @returns A formatted climb/descent waypoint constraint header.
      */
-    static ConstraintHeader(leg) {
+    static ConstraintAltHeader(leg) {
         var _a;
         if (leg) {
             const prefix = BoeingFmsUtils.isHoldAtLeg(leg.leg.type) ? 'HOLD ' : '';
@@ -58077,7 +59463,7 @@ class BoeingFmcFormatters {
      */
     static FlightLevel(type) {
         return (value) => {
-            const str = `FL${Math.round(value / 100).toString().padStart(3, '0').substring(0, 3)}`;
+            const str = `FL${(value / 100).toFixed().padStart(3, '0').substring(0, 3)}`;
             return type === 'input' ? inputBox(str) : str;
         };
     }
@@ -58089,7 +59475,7 @@ class BoeingFmcFormatters {
      * @returns A formatted string.
      */
     static FlapSpeed([flap, speed]) {
-        return `${inputBox(`${flap === null ? '--' : flap.toString().padStart(2, ' ')}°/${speed.toString().padStart(3, ' ')}[d-text]`)}KT[s-text]`;
+        return `${inputBox(`${flap === null ? '--' : flap.toFixed().padStart(2, ' ')}°/${speed.toFixed().padStart(3, ' ')}[d-text]`)}KT[s-text]`;
     }
     /**
      * A formatter for the Flight Path Angle/Vertical Bearing/Vertical Speed field.
@@ -58177,17 +59563,23 @@ class BoeingFmcFormatters {
      * A thrust reduction point formatter.
      * @param type The formatter type.
      * @param altitudeFontSize The altitude font size.
+     * @param heightUnit The height unit.
      * @returns The climb thrust mode and thrust reduction point as either a flap setting or altitude.
      */
-    static ThrustReduction(type, altitudeFontSize) {
-        const altitudeFormatter = BoeingFmcFormatters.Unit('FT', { padStart: 4, padString: ' ', spaceBetween: false, type, fontSize: altitudeFontSize });
+    static ThrustReduction(type, altitudeFontSize, heightUnit) {
         return ([climbThrust, thrustReduction]) => {
             const reductionStr = thrustReduction > 100 ?
                 // Thrust reduction point is an altitude
-                altitudeFormatter(thrustReduction) :
+                ' [s-text]' + BoeingFmcFormatters.Unit(heightUnit, {
+                    type,
+                    padStart: 4,
+                    padString: ' ',
+                    fontSize: thrustReduction === definitions.takeoffThrustReductionPoint.defaultValue ? 'small' : altitudeFontSize,
+                    spaceBetween: false,
+                })(thrustReduction) :
                 // Thrust reduction point is a single-digit flap setting
-                `FLAPS [s-text]${type !== 'display' ? inputBox(thrustReduction.toString()) : thrustReduction.toString()}`;
-            return `${climbThrust.padEnd(6, ' ')}[s-text]${reductionStr}`;
+                `FLAPS [s-text]${type !== 'display' ? inputBox(thrustReduction.toFixed()) : thrustReduction.toFixed()}`;
+            return `${climbThrust.padEnd(6, ' ')}${reductionStr}`;
         };
     }
     /**
@@ -58212,7 +59604,7 @@ class BoeingFmcFormatters {
         };
         const options = Object.assign(defaults, suppliedOptions);
         return (value) => {
-            const signString = options.forceSign && (value === null || value >= 0) ? '+[d-text]' : '';
+            const signString = options.forceSign && (value === null || value >= 0) ? '+' : '';
             let valueString = value === null
                 ? nullValueString.padStart(options.padStart, options.padString)
                 : (options.absoluteValue ? Math.abs(value) : value).toFixed(options.precision).padStart(options.padStart, options.padString);
@@ -58245,41 +59637,44 @@ class BoeingFmcFormatters {
     /**
      * A formatter for weights.
      * @param type Whether the field is an input or a display.
-     * @param unitSub A subscribable to unit to show the value in.
+     * @param unitSub A subscribable weight unit to show the value in, optional.
      * @param fontSize The font size. Defaults to `large`.
+     * @param wholeNumberDigits Number of whole-number digits to display. Defaults to 3.
      * @returns The formatted weight in kilo-units.
      */
-    static Weight(type, unitSub, fontSize) {
+    static Weight(type, unitSub, fontSize = 'large', wholeNumberDigits = 3) {
         const textStyle = fontSize === 'small' ? 's-text' : 'd-text';
         return (weight) => {
             var _a;
             const weightValue = weight === null || weight === void 0 ? void 0 : weight.asUnit((_a = unitSub === null || unitSub === void 0 ? void 0 : unitSub.get()) !== null && _a !== void 0 ? _a : weight.unit);
-            const str = weightValue === undefined ? `□□□.□[${textStyle}]` : `${(weightValue / 1000).toFixed(1).padStart(5, ' ')}[${textStyle}]`;
+            const str = weightValue === undefined ?
+                `${'□'.repeat(wholeNumberDigits)}.□[${textStyle}]` :
+                `${(weightValue / 1000).toFixed(1).padStart(wholeNumberDigits + 2, ' ')}[${textStyle}]`;
             return type === 'input' ? inputBox(str) : str;
         };
     }
     /**
      * A wind vector formatter.
      * @param windEntry A {@link WindEntry} input.
-     * @param showSpeedUnit whether to show KT at the end
+     * @param showSpeedUnit whether to show KT at the end, defaults to true.
      * @returns A formatted wind vector.
      */
     static WindVector(windEntry, showSpeedUnit = true) {
         const nonZeroDirection = windEntry.direction === 0 ? 360 : windEntry.direction;
-        const dirStr = nonZeroDirection.toString().padStart(3, '0');
-        const speedStr = windEntry.speed.toString().padStart(3, ' ');
+        const dirStr = nonZeroDirection.toFixed().padStart(3, '0');
+        const speedStr = windEntry.speed.toFixed().padStart(3, ' ');
         const degreesStr = windEntry.trueDegrees ? 'T' : '°';
         const formattedStr = `${dirStr}${degreesStr}/${speedStr}`;
         const speedUnitText = showSpeedUnit ? 'KT[s-text]' : '';
         return `${inputBox(`${formattedStr}[d-text]`)}${speedUnitText}`;
     }
     /** A wind component formatter factory for runway winds.
-     * @param runwaySub The runway to which the winds are to be displayed relative to.
+     * @param data The input.
+     * @param data."0" The wind value.
+     * @param data."1" The runway to which the winds are to be displayed relative to.
      * @returns A formatter for displaying wind components relative to the given runway's heading.
      */
-    static WindComponentsRunway(runwaySub) {
-        return (wind) => {
-            const runway = runwaySub.get();
+    static WindComponentsRunway([wind, runway]) {
             if (runway === null) {
                 return BoeingFmcFormatters.Unit('KT', { spaceBetween: false, type: 'input' }, '---')(null);
             }
@@ -58288,8 +59683,7 @@ class BoeingFmcFormatters {
             const headwindStr = BoeingFmcFormatters.Unit('KT', { spaceBetween: false, padStart: 2, padString: ' ', absoluteValue: true, type: 'input' })(headwind);
             const crosswindStr = BoeingFmcFormatters.Unit('KT', { spaceBetween: false, padStart: 2, padString: ' ', absoluteValue: true })(crosswind);
             return `${headwindStr}${(headwind >= 0 ? 'H' : 'T')} ${crosswindStr}${(crosswind >= 0 ? 'L' : 'R')}`;
-        };
-    }
+            }
     /**
      * A zulu time formatter.
      * @param suffix The suffix to include after the time digits.
@@ -61247,13 +62641,17 @@ class BoeingNdDataProvider {
      * Creates a new data provider.
      * @param bus The event bus.
      * @param navIndicators The nav indicators.
+     * @param ilsNavIndicatorName The indicator to use for ILS.
+     * @param ilsFrequencyEvent The topic to use for ILS frequency.
      * @param settings Boeing map settings.
      * @param boeingUserSettings Boeing user settings.
      * @param options The options.
      */
-    constructor(bus, navIndicators, settings, boeingUserSettings, options) {
+    constructor(bus, navIndicators, ilsNavIndicatorName, ilsFrequencyEvent, settings, boeingUserSettings, options) {
         this.bus = bus;
         this.navIndicators = navIndicators;
+        this.ilsNavIndicatorName = ilsNavIndicatorName;
+        this.ilsFrequencyEvent = ilsFrequencyEvent;
         this.settings = settings;
         this.boeingUserSettings = boeingUserSettings;
         this.options = options;
@@ -61275,17 +62673,17 @@ class BoeingNdDataProvider {
         this.isInertialHeadingDataValid = ConsumerSubject.create(this.irsEvents.on('irs_selector_inertial_heading_data_valid_1'), true);
         this.isPositionDataValid = ConsumerSubject.create(this.irsEvents.on('irs_selector_position_data_valid_1'), true);
         this.lnavEvents = this.bus.getSubscriber();
+        this.ilsNavIndicator = this.navIndicators.get(this.ilsNavIndicatorName);
         this.vorLeftNavIndicator = this.navIndicators.get('vorLeft');
         this.vorRightNavIndicator = this.navIndicators.get('vorRight');
-        this.ilsNavIndicator = this.navIndicators.get('ils');
-        // ------ VOR and APP modes ---------- //
+                // ------ VOR and APP modes ---------- //
         this.navComEvents = this.bus.getSubscriber();
-        this.ilsActiveFrequency = ConsumerSubject.create(this.navComEvents.on('nav_active_frequency_3'), 0);
+        this.ilsActiveFrequency = ConsumerSubject.create(this.navComEvents.on(this.ilsFrequencyEvent), 0);
         this.ilsIdent = this.ilsNavIndicator.ident;
-        /** ILS Approach course in degrees. */
+        /** @inheritdoc */
         this.ilsCourse = this.ilsNavIndicator.course;
         this.ilsDme = this.ilsNavIndicator.distance;
-        /** ILS Approach course deviation in degrees. */
+        /** @inheritdoc */
         this.ilsCourseDeviation = this.ilsNavIndicator.lateralDeviation;
         /** VOR courses in degrees. */
         this.vorLeftCourse = this.vorLeftNavIndicator.course;
@@ -61368,15 +62766,15 @@ class BoeingNdDataProvider {
         this.adfPointerRightIsVisible = MappedSubject.create(([bearing, state, isInertialHeadingDataValid, mapFormat]) => {
             return bearing !== null && state === 'ADF' && isInertialHeadingDataValid && mapFormat !== 'APP' && mapFormat !== 'APPCTR';
         }, this.navIndicators.get('adfRight').bearing, this.navAidRightState, this.isInertialHeadingDataValid, this.mapFormat);
-        this._vorCoursePointerLeftIsVisible = MappedSubject.create(([hasNav, mapFormat]) => {
-            return !!hasNav && ['VOR', 'VORCTR'].includes(mapFormat);
-        }, this.vorLeftNavIndicator.hasNav, this.mapFormat);
-        this._vorCoursePointerRightIsVisible = MappedSubject.create(([hasNav, mapFormat]) => {
-            return !!hasNav && ['VOR', 'VORCTR'].includes(mapFormat);
-        }, this.vorRightNavIndicator.hasNav, this.mapFormat);
-        this._ilsCoursePointerIsVisible = MappedSubject.create(([hasNav, mapFormat]) => {
-            return !!hasNav && ['APP', 'APPCTR'].includes(mapFormat);
-        }, this.ilsNavIndicator.hasNav, this.mapFormat);
+        this._vorCoursePointerLeftIsVisible = MappedSubject.create(([mapFormat]) => {
+            return ['VOR', 'VORCTR'].includes(mapFormat);
+        }, this.mapFormat);
+        this._vorCoursePointerRightIsVisible = MappedSubject.create(([mapFormat]) => {
+            return ['VOR', 'VORCTR'].includes(mapFormat);
+        }, this.mapFormat);
+        this._ilsCoursePointerIsVisible = MappedSubject.create(([mapFormat]) => {
+            return ['APP', 'APPCTR'].includes(mapFormat);
+        }, this.mapFormat);
         this.vorLeftAnimator = new MapCompassAnimator(undefined, this.vorPointerLeftIsVisible, this.vorLeftRotation);
         this.vorRightAnimator = new MapCompassAnimator(undefined, this.vorPointerRightIsVisible, this.vorRightRotation);
         this.adfLeftAnimator = new MapCompassAnimator(undefined, this.adfPointerLeftIsVisible, this.adfLeftRotation);
@@ -63474,7 +64872,7 @@ class PfdAirplaneSymbol extends HorizonLayer {
     render() {
         return (FSComponent.buildComponent(PfdVBarSymbol, { style: this.style, bus:this.props.bus}));
     }
-    /** @inheritdoc */
+        /** @inheritdoc */
     destroy() {
         var _a;
         super.destroy();
@@ -63943,7 +65341,7 @@ class PfdFlightDirector extends HorizonLayer {
         this.takeoffDeviationFactor = SubscribableUtils.toSubscribable(this.props.takeoffDeviationFactor, true);
         this.isTakeoffDeviationNull = this.props.fdTakeoffDeviation.map(deviation => deviation === null);
         this.pitchBarHidden = MappedSubject.create(([show, fmaData, isFdActive]) => {
-            if (!show || (fmaData && (fmaData.verticalDegraded || fmaData.verticalActive === APVerticalModes.NONE))) {
+            if (!show || (fmaData && (fmaData.verticalDegraded || (fmaData.verticalActive === APVerticalModes.NONE && fmaData.lateralActive === APLateralModes.NONE)))) {
                 return true;
             }
             return !isFdActive;
@@ -63951,7 +65349,7 @@ class PfdFlightDirector extends HorizonLayer {
         this.bankBarHidden = MappedSubject.create(([show, fmaData, isFdActive, isTakeoffDeviationNull]) => {
             if (!show
                 || (fmaData && (fmaData.lateralDegraded
-                    || fmaData.lateralActive === APLateralModes.NONE
+                    || (fmaData.lateralActive === APLateralModes.NONE && fmaData.verticalActive === APVerticalModes.NONE)
                     || (fmaData.lateralActive === APLateralModes.TO_LOC && isTakeoffDeviationNull)))) {
                 return true;
             }
@@ -64012,7 +65410,7 @@ class PfdFlightDirector extends HorizonLayer {
             this.bankErrorSmoother.reset();
             this.takeoffDeviationSmoother.reset();
             this.pitchErrorSmoother.reset();
-        }
+                    }
         else {
             let offset;
             if (this.isTakeoffLocModeActive.get()) {
@@ -64026,7 +65424,7 @@ class PfdFlightDirector extends HorizonLayer {
                 offset = bankError * this.bankErrorFactor.get();
             }
             const x = MathUtils.clamp(offset, bounds[0] - center[0], bounds[2] - center[0]);
-            const pitchError = this.pitchErrorSmoother.next(this.props.fdPitch.get() - this.props.projection.getPitch(), elapsed);
+                        const pitchError = this.pitchErrorSmoother.next(this.props.fdPitch.get() - this.props.projection.getPitch(), elapsed);
             const y = MathUtils.clamp(-pitchError * this.pitchErrorFactor.get(), bounds[1] - center[1], bounds[3] - center[1]);
             this.pitchTransform.transform.getChild(1).set(0, y, 0, 0.1, 0.1);
             this.pitchTransform.resolve();
@@ -65099,7 +66497,9 @@ class PfdHorizonDisplay extends DisplayComponent {
         this.flapsPosition = ConsumerSubject.create(null, 0);
         this.fmaData = ConsumerSubject.create(null, null);
         this.fmsOperatingPhase = ConsumerValue.create(null, FmsOperatingPhase.PREFLIGHT);
-        this.isFdActive = ConsumerSubject.create(null, false);
+        this.isFd1Active = ConsumerSubject.create(null, false);
+        this.isFd2Active = ConsumerSubject.create(null, false);
+        this.isFdActive = MappedSubject.create(SubscribableMapFunctions.or(), this.isFd1Active, this.isFd2Active);
         this.fdPitch = Subject.create(0);
         this.fdBank = Subject.create(0);
         this.fdTakeoffDeviation = ConsumerSubject.create(null, null);
@@ -65245,7 +66645,8 @@ class PfdHorizonDisplay extends DisplayComponent {
         this.flapsPosition.setConsumer(sub.on('flap_computer_interpolated_position'));
         this.fmaData.setConsumer(sub.on('fma_data'));
         this.fmsOperatingPhase.setConsumer(sub.on('fms_operating_phase'));
-        this.isFdActive.setConsumer(sub.on('ap_boeing_flight_director_is_active_1'));
+        this.isFd1Active.setConsumer(sub.on('ap_boeing_flight_director_is_active_1'));
+        this.isFd2Active.setConsumer(sub.on('ap_boeing_flight_director_is_active_2'));
         this.fdPitchSub = sub.on('fd_target_pitch').handle(pitch => { this.fdPitch.set(-pitch); });
         this.fdBankSub = sub.on('fd_target_bank').handle(bank => { this.fdBank.set(-bank); });
         this.fdTakeoffDeviation.setConsumer(sub.on('fd_takeoff_deviation'));
@@ -65477,7 +66878,8 @@ class PfdHorizonDisplay extends DisplayComponent {
         this.flapsPosition.destroy();
         this.fmaData.destroy();
         this.fmsOperatingPhase.destroy();
-        this.isFdActive.destroy();
+        this.isFd1Active.destroy();
+        this.isFd2Active.destroy();
         this.fdTakeoffDeviation.destroy();
         this.showFpv.destroy();
         (_a = this.showSelectedFpa) === null || _a === void 0 ? void 0 : _a.destroy();
@@ -67794,6 +69196,8 @@ class SpeedLimitPublisher extends BasePublisher {
         this.normAoa = ConsumerValue.create(null, 0).pause();
         this.ias = ConsumerValue.create(null, 0).pause();
         this.pressureAltitude = ConsumerValue.create(null, 0).pause();
+        /** Ambient air pressure in in.Hg. */
+        this.ambientPressure = ConsumerValue.create(null, 29.92).pause();
         this.machToKiasFactorSource = ConsumerValue.create(null, 1).pause();
         this.machToKiasFactorSmoother = new ExpSmoother(SpeedLimitPublisher.MACH_KIAS_SMOOTHING_TAU);
         this.aoaCoefSmoother = new ExpSmoother(SpeedLimitPublisher.AOA_COEF_SMOOTHING_TAU);
@@ -67810,6 +69214,7 @@ class SpeedLimitPublisher extends BasePublisher {
             this.normAoa,
             this.ias,
             this.pressureAltitude,
+            this.ambientPressure,
             this.machToKiasFactorSource,
             this.loadFactorSource,
             this.gearPosition,
@@ -67834,6 +69239,7 @@ class SpeedLimitPublisher extends BasePublisher {
             this.ias.setConsumer(sub.on(`adc_ias_${index}`));
             this.machToKiasFactorSource.setConsumer(sub.on(`adc_mach_to_kias_factor_${index}`));
             this.pressureAltitude.setConsumer(sub.on(`adc_pressure_alt_${index}`));
+            this.ambientPressure.setConsumer(sub.on(`adc_ambient_pressure_inhg_${index}`));
             this.adcSystemState.setConsumer(sub.on(`adc_state_${index}`));
         }, true);
         this.gearPosition.setConsumer(sub.on('gear_position_2'));
@@ -67867,13 +69273,14 @@ class SpeedLimitPublisher extends BasePublisher {
         const dt = this.lastUpdateTime === undefined ? 0 : Math.max(0, time - this.lastUpdateTime);
         this.lastUpdateTime = time;
         const pressureAlt = this.pressureAltitude.get();
+        const ambientPressure = this.ambientPressure.get();
         // ------- Maximum speed -------
         // Maximum speed is defined as the lowest of Vmo, Mmo, landing gear placard speed (if extended), and placard speed
         // for the current flaps setting.
         const vmo = this.speedProvider.getVmo(pressureAlt);
         const mmo = this.speedProvider.getMmo();
         const flapLimit = this.flapSpeedLimit.get();
-        const gearLimit = this.speedProvider.getGearLimitSpeed();
+        const gearLimit = this.speedProvider.getGearLimitSpeed(UnitType.HPA.convertFrom(ambientPressure, UnitType.IN_HG));
         let maxIas = Math.min(vmo, mmo * this.machToKiasFactorSmoother.next(this.machToKiasFactorSource.get(), dt), flapLimit < 0 ? Infinity : flapLimit);
         if (gearLimit < maxIas) {
             const gearPosition = this.gearPosition.get();
@@ -71105,7 +72512,7 @@ B787EngineData.lrc_mach = new LerpLookupTable([
 B787EngineData.alt_opt = new LerpLookupTable([
     [31800, 573201.2],
     [32600, 551155],
-    [35300, 529108.8],
+    [33500, 529108.8],
     [34400, 507062.6],
     [35300, 485016.4],
     [36300, 462970.2],
@@ -71184,7 +72591,7 @@ B787EngineData.n1_tpr_lookup = new LerpLookupTable([
 class B787PerformanceMath extends BoeingPerformanceDataProvider {
     /** @inheritDoc */
     get operatingEmptyWeight() {
-        return 250000; // 113,398 kg
+        return 284000; // 128,850 kg
     }
     /** @inheritDoc */
     get maxZeroFuelWeight() {
@@ -72609,7 +74016,7 @@ MapSystemCommon.planFullCompassRadius = _a.planFullCompassRadiusUnscaled * _a.ca
 class B787NdDataProvider extends BoeingNdDataProvider {
     /** @inheritdoc */
     constructor(bus, navIndicators, settings) {
-        super(bus, navIndicators, settings, BoeingMsfsUserSettings.getManager(bus));
+        super(bus, navIndicators, 'ils', 'nav_active_frequency_3', settings, BoeingMsfsUserSettings.getManager(bus));
         this.canvasScale = MapSystemCommon.canvasScale;
         this.cockpitVarEvents = this.bus.getSubscriber();
         this.b78_trk_mode = ConsumerSubject.create(this.cockpitVarEvents.on('b78_trk_mode').whenChanged(), false);
@@ -73747,7 +75154,9 @@ class AfdsStatus extends DisplayComponent {
         this.arrowCssClass = SetSubject.create(['afds-status-arrow', 'hidden']);
         this.alertTimer = new DebounceTimer();
         this.autopilotMaster = ConsumerSubject.create(null, false);
-        this.flightDirector = ConsumerSubject.create(null, false);
+        this.flightDirector1 = ConsumerSubject.create(null, false);
+        this.flightDirector2 = ConsumerSubject.create(null, false);
+        this.flightDirector = MappedSubject.create(SubscribableMapFunctions.or(), this.flightDirector1, this.flightDirector2);
         this.radioAlt = ConsumerSubject.create(null, 0);
         this.radioAltHealthy = Subject.create(false);
         this.approachActive = ConsumerSubject.create(null, false);
@@ -73759,8 +75168,8 @@ class AfdsStatus extends DisplayComponent {
     onAfterRender() {
         const ap = this.props.bus.getSubscriber();
         this.autopilotMaster.setConsumer(ap.on('ap_master_status'));
-        // TODO FD2? PFDs common for now..
-        this.flightDirector.setConsumer(ap.on('ap_boeing_flight_director_is_active_1'));
+        this.flightDirector1.setConsumer(ap.on('ap_boeing_flight_director_is_active_1'));
+        this.flightDirector2.setConsumer(ap.on('ap_boeing_flight_director_is_active_2'));
         this.approachActive.setConsumer(ap.on('ap_glideslope_hold'));
         const ra = this.props.bus.getSubscriber();
         this.radioAlt.setConsumer(ra.on('ra_radio_alt_1').atFrequency(1));
@@ -73856,6 +75265,8 @@ class AfdsStatus extends DisplayComponent {
         var _a;
         this.afdsActiveModeSub.destroy();
         (_a = this.cssClassSub) === null || _a === void 0 ? void 0 : _a.destroy();
+        this.flightDirector1.destroy();
+        this.flightDirector2.destroy();
         super.destroy();
     }
 }
@@ -75061,7 +76472,9 @@ class WTB78xPfdInstrument extends WTB78xFsInstrument {
             ['ils', new NavIndicator(this.navSources, 'ILS1')],
         ]));
         this.backplane.addInstrument('navIndicators', this.navIndicators);
-        this.doInit();
+        this.doInit().catch(e => {
+            console.error(e);
+        });
         this.xmlLogicHost = new CompositeLogicXMLHost(true);
         this.auralsConfig = new B78XmlAuralsConfig(this.instrument, this.xmlLogicHost, this.bus);
         this.aoaDataProvider = new DefaultAoaDataProvider(this.bus, this.aoaIndex, this.iauAdcIndex);

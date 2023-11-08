@@ -1,4 +1,833 @@
 /**
+ * A {@link Subscription} which executes a handler function every time it receives a notification.
+ */
+class HandlerSubscription {
+    /**
+     * Constructor.
+     * @param handler This subscription's handler. The handler will be called each time this subscription receives a
+     * notification from its source.
+     * @param initialNotifyFunc A function which sends initial notifications to this subscription. If not defined, this
+     * subscription will not support initial notifications.
+     * @param onDestroy A function which is called when this subscription is destroyed.
+     */
+    constructor(handler, initialNotifyFunc, onDestroy) {
+        this.handler = handler;
+        this.initialNotifyFunc = initialNotifyFunc;
+        this.onDestroy = onDestroy;
+        this._isAlive = true;
+        this._isPaused = false;
+        this.canInitialNotify = initialNotifyFunc !== undefined;
+    }
+    /** @inheritdoc */
+    get isAlive() {
+        return this._isAlive;
+    }
+    /** @inheritdoc */
+    get isPaused() {
+        return this._isPaused;
+    }
+    /**
+     * Sends an initial notification to this subscription.
+     * @throws Error if this subscription is not alive.
+     */
+    initialNotify() {
+        if (!this._isAlive) {
+            throw new Error('HandlerSubscription: cannot notify a dead Subscription.');
+        }
+        this.initialNotifyFunc && this.initialNotifyFunc(this);
+    }
+    /** @inheritdoc */
+    pause() {
+        if (!this._isAlive) {
+            throw new Error('Subscription: cannot pause a dead Subscription.');
+        }
+        this._isPaused = true;
+        return this;
+    }
+    /** @inheritdoc */
+    resume(initialNotify = false) {
+        if (!this._isAlive) {
+            throw new Error('Subscription: cannot resume a dead Subscription.');
+        }
+        if (!this._isPaused) {
+            return this;
+        }
+        this._isPaused = false;
+        if (initialNotify) {
+            this.initialNotify();
+        }
+        return this;
+    }
+    /** @inheritdoc */
+    destroy() {
+        if (!this._isAlive) {
+            return;
+        }
+        this._isAlive = false;
+        this.onDestroy && this.onDestroy(this);
+    }
+}
+
+/**
+ * A basic implementation of {@link Consumer}.
+ */
+class BasicConsumer {
+    /**
+     * Creates an instance of a Consumer.
+     * @param subscribe A function which subscribes a handler to the source of this consumer's events.
+     * @param state The state for the consumer to track.
+     * @param currentHandler The current build filter handler stack, if any.
+     */
+    constructor(subscribe, state = {}, currentHandler) {
+        this.subscribe = subscribe;
+        this.state = state;
+        this.currentHandler = currentHandler;
+        /** @inheritdoc */
+        this.isConsumer = true;
+        this.activeSubs = new Map();
+    }
+    /** @inheritdoc */
+    handle(handler, paused = false) {
+        let activeHandler;
+        if (this.currentHandler !== undefined) {
+            /**
+             * The handler reference to store.
+             * @param data The input data to the handler.
+             */
+            activeHandler = (data) => {
+                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                this.currentHandler(data, this.state, handler);
+            };
+        }
+        else {
+            activeHandler = handler;
+        }
+        let activeSubArray = this.activeSubs.get(handler);
+        if (!activeSubArray) {
+            activeSubArray = [];
+            this.activeSubs.set(handler, activeSubArray);
+        }
+        const onDestroyed = (destroyed) => {
+            const activeSubsArray = this.activeSubs.get(handler);
+            if (activeSubsArray) {
+                activeSubsArray.splice(activeSubsArray.indexOf(destroyed), 1);
+                if (activeSubsArray.length === 0) {
+                    this.activeSubs.delete(handler);
+                }
+            }
+        };
+        const sub = new ConsumerSubscription(this.subscribe(activeHandler, paused), onDestroyed);
+        // Need to handle the case where the subscription is destroyed immediately
+        if (sub.isAlive) {
+            activeSubArray.push(sub);
+        }
+        else if (activeSubArray.length === 0) {
+            this.activeSubs.delete(handler);
+        }
+        return sub;
+    }
+    /** @inheritdoc */
+    off(handler) {
+        var _a;
+        const activeSubArray = this.activeSubs.get(handler);
+        if (activeSubArray) {
+            (_a = activeSubArray.shift()) === null || _a === void 0 ? void 0 : _a.destroy();
+            if (activeSubArray.length === 0) {
+                this.activeSubs.delete(handler);
+            }
+        }
+    }
+    /** @inheritdoc */
+    atFrequency(frequency, immediateFirstPublish = true) {
+        const initialState = {
+            previousTime: Date.now(),
+            firstRun: immediateFirstPublish
+        };
+        return new BasicConsumer(this.subscribe, initialState, this.getAtFrequencyHandler(frequency));
+    }
+    /**
+     * Gets a handler function for a 'atFrequency' filter.
+     * @param frequency The frequency, in Hz, to cap to.
+     * @returns A handler function for a 'atFrequency' filter.
+     */
+    getAtFrequencyHandler(frequency) {
+        const deltaTimeTrigger = 1000 / frequency;
+        return (data, state, next) => {
+            const currentTime = Date.now();
+            const deltaTime = currentTime - state.previousTime;
+            if (deltaTimeTrigger <= deltaTime || state.firstRun) {
+                while ((state.previousTime + deltaTimeTrigger) < currentTime) {
+                    state.previousTime += deltaTimeTrigger;
+                }
+                if (state.firstRun) {
+                    state.firstRun = false;
+                }
+                this.with(data, next);
+            }
+        };
+    }
+    /** @inheritdoc */
+    withPrecision(precision) {
+        return new BasicConsumer(this.subscribe, { lastValue: 0, hasLastValue: false }, this.getWithPrecisionHandler(precision));
+    }
+    /**
+     * Gets a handler function for a 'withPrecision' filter.
+     * @param precision The decimal precision to snap to.
+     * @returns A handler function for a 'withPrecision' filter.
+     */
+    getWithPrecisionHandler(precision) {
+        return (data, state, next) => {
+            const dataValue = data;
+            const multiplier = Math.pow(10, precision);
+            const currentValueAtPrecision = Math.round(dataValue * multiplier) / multiplier;
+            if (!state.hasLastValue || currentValueAtPrecision !== state.lastValue) {
+                state.hasLastValue = true;
+                state.lastValue = currentValueAtPrecision;
+                this.with(currentValueAtPrecision, next);
+            }
+        };
+    }
+    /** @inheritdoc */
+    whenChangedBy(amount) {
+        return new BasicConsumer(this.subscribe, { lastValue: 0, hasLastValue: false }, this.getWhenChangedByHandler(amount));
+    }
+    /**
+     * Gets a handler function for a 'whenChangedBy' filter.
+     * @param amount The minimum amount threshold below which the consumer will not consume.
+     * @returns A handler function for a 'whenChangedBy' filter.
+     */
+    getWhenChangedByHandler(amount) {
+        return (data, state, next) => {
+            const dataValue = data;
+            const diff = Math.abs(dataValue - state.lastValue);
+            if (!state.hasLastValue || diff >= amount) {
+                state.hasLastValue = true;
+                state.lastValue = dataValue;
+                this.with(data, next);
+            }
+        };
+    }
+    /** @inheritdoc */
+    whenChanged() {
+        return new BasicConsumer(this.subscribe, { lastValue: '', hasLastValue: false }, this.getWhenChangedHandler());
+    }
+    /**
+     * Gets a handler function for a 'whenChanged' filter.
+     * @returns A handler function for a 'whenChanged' filter.
+     */
+    getWhenChangedHandler() {
+        return (data, state, next) => {
+            if (!state.hasLastValue || state.lastValue !== data) {
+                state.hasLastValue = true;
+                state.lastValue = data;
+                this.with(data, next);
+            }
+        };
+    }
+    /** @inheritdoc */
+    onlyAfter(deltaTime) {
+        return new BasicConsumer(this.subscribe, { previousTime: Date.now() }, this.getOnlyAfterHandler(deltaTime));
+    }
+    /**
+     * Gets a handler function for an 'onlyAfter' filter.
+     * @param deltaTime The minimum delta time between events.
+     * @returns A handler function for an 'onlyAfter' filter.
+     */
+    getOnlyAfterHandler(deltaTime) {
+        return (data, state, next) => {
+            const currentTime = Date.now();
+            const timeDiff = currentTime - state.previousTime;
+            if (timeDiff > deltaTime) {
+                state.previousTime += deltaTime;
+                this.with(data, next);
+            }
+        };
+    }
+    /**
+     * Builds a handler stack from the current handler.
+     * @param data The data to send in to the handler.
+     * @param handler The handler to use for processing.
+     */
+    with(data, handler) {
+        if (this.currentHandler !== undefined) {
+            this.currentHandler(data, this.state, handler);
+        }
+        else {
+            handler(data);
+        }
+    }
+}
+/**
+ * A {@link Subscription} for a {@link BasicConsumer}.
+ */
+class ConsumerSubscription {
+    /**
+     * Constructor.
+     * @param sub The event bus subscription backing this subscription.
+     * @param onDestroy A function which is called when this subscription is destroyed.
+     */
+    constructor(sub, onDestroy) {
+        this.sub = sub;
+        this.onDestroy = onDestroy;
+    }
+    /** @inheritdoc */
+    get isAlive() {
+        return this.sub.isAlive;
+    }
+    /** @inheritdoc */
+    get isPaused() {
+        return this.sub.isPaused;
+    }
+    /** @inheritdoc */
+    get canInitialNotify() {
+        return this.sub.canInitialNotify;
+    }
+    /** @inheritdoc */
+    pause() {
+        this.sub.pause();
+        return this;
+    }
+    /** @inheritdoc */
+    resume(initialNotify = false) {
+        this.sub.resume(initialNotify);
+        return this;
+    }
+    /** @inheritdoc */
+    destroy() {
+        this.sub.destroy();
+        this.onDestroy(this);
+    }
+}
+
+/**
+ * A typed container for subscribers interacting with the Event Bus.
+ */
+class EventSubscriber {
+    /**
+     * Creates an instance of an EventSubscriber.
+     * @param bus The EventBus that is the parent of this instance.
+     */
+    constructor(bus) {
+        this.bus = bus;
+    }
+    /**
+     * Subscribes to a topic on the bus.
+     * @param topic The topic to subscribe to.
+     * @returns A consumer to bind the event handler to.
+     */
+    on(topic) {
+        return new BasicConsumer((handler, paused) => {
+            return this.bus.on(topic, handler, paused);
+        });
+    }
+}
+
+/// <reference types="@microsoft/msfs-types/js/common" />
+/**
+ * An event bus that can be used to publish data from backend
+ * components and devices to consumers.
+ */
+class EventBus {
+    /**
+     * Creates an instance of an EventBus.
+     * @param useAlternativeEventSync Whether or not to use generic listener event sync (default false).
+     * If true, FlowEventSync will only work for gauges.
+     * @param shouldResync Whether the eventbus should ask for a resync of all previously cached events (default true)
+     */
+    constructor(useAlternativeEventSync = false, shouldResync = true) {
+        this._topicSubsMap = new Map();
+        this._wildcardSubs = new Array();
+        this._notifyDepthMap = new Map();
+        this._wildcardNotifyDepth = 0;
+        this._eventCache = new Map();
+        this.onWildcardSubDestroyedFunc = this.onWildcardSubDestroyed.bind(this);
+        this._busId = Math.floor(Math.random() * 2147483647);
+        // fallback to flowevent when genericdatalistener not avail (su9)
+        useAlternativeEventSync = (typeof RegisterGenericDataListener === 'undefined');
+        const syncFunc = useAlternativeEventSync ? EventBusFlowEventSync : EventBusListenerSync;
+        this._busSync = new syncFunc(this.pub.bind(this), this._busId);
+        if (shouldResync === true) {
+            this.syncEvent('event_bus', 'resync_request', false);
+            this.on('event_bus', (data) => {
+                if (data == 'resync_request') {
+                    this.resyncEvents();
+                }
+            });
+        }
+    }
+    /**
+     * Subscribes to a topic on the bus.
+     * @param topic The topic to subscribe to.
+     * @param handler The handler to be called when an event happens.
+     * @param paused Whether the new subscription should be initialized as paused. Defaults to `false`.
+     * @returns The new subscription.
+     */
+    on(topic, handler, paused = false) {
+        let subs = this._topicSubsMap.get(topic);
+        if (subs === undefined) {
+            this._topicSubsMap.set(topic, subs = []);
+            this.pub('event_bus_topic_first_sub', topic, false, false);
+        }
+        const initialNotifyFunc = (sub) => {
+            const lastState = this._eventCache.get(topic);
+            if (lastState !== undefined) {
+                sub.handler(lastState.data);
+            }
+        };
+        const onDestroyFunc = (sub) => {
+            var _a;
+            // If we are not in the middle of a notify operation, remove the subscription.
+            // Otherwise, do nothing and let the post-notify clean-up code handle it.
+            if (((_a = this._notifyDepthMap.get(topic)) !== null && _a !== void 0 ? _a : 0) === 0) {
+                const subsToSplice = this._topicSubsMap.get(topic);
+                if (subsToSplice) {
+                    subsToSplice.splice(subsToSplice.indexOf(sub), 1);
+                }
+            }
+        };
+        const sub = new HandlerSubscription(handler, initialNotifyFunc, onDestroyFunc);
+        subs.push(sub);
+        if (paused) {
+            sub.pause();
+        }
+        else {
+            sub.initialNotify();
+        }
+        return sub;
+    }
+    /**
+     * Unsubscribes a handler from the topic's events.
+     * @param topic The topic to unsubscribe from.
+     * @param handler The handler to unsubscribe from topic.
+     * @deprecated This method has been deprecated in favor of using the {@link Subscription} object returned by `.on()`
+     * to manage subscriptions.
+     */
+    off(topic, handler) {
+        const handlers = this._topicSubsMap.get(topic);
+        const toDestroy = handlers === null || handlers === void 0 ? void 0 : handlers.find(sub => sub.handler === handler);
+        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
+    }
+    /**
+     * Subscribes to all topics.
+     * @param handler The handler to subscribe to all events.
+     * @returns The new subscription.
+     */
+    onAll(handler) {
+        const sub = new HandlerSubscription(handler, undefined, this.onWildcardSubDestroyedFunc);
+        this._wildcardSubs.push(sub);
+        return sub;
+    }
+    /**
+     * Unsubscribe the handler from all topics.
+     * @param handler The handler to unsubscribe from all events.
+     * @deprecated This method has been deprecated in favor of using the {@link Subscription} object returned by
+     * `.onAll()` to manage subscriptions.
+     */
+    offAll(handler) {
+        const toDestroy = this._wildcardSubs.find(sub => sub.handler === handler);
+        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
+    }
+    /**
+     * Publishes an event to the topic on the bus.
+     * @param topic The topic to publish to.
+     * @param data The data portion of the event.
+     * @param sync Whether or not this message needs to be synced on local stoage.
+     * @param isCached Whether or not this message will be resync'd across the bus on load.
+     */
+    pub(topic, data, sync = false, isCached = true) {
+        var _a;
+        if (isCached) {
+            this._eventCache.set(topic, { data: data, synced: sync });
+        }
+        const subs = this._topicSubsMap.get(topic);
+        if (subs !== undefined) {
+            let needCleanUpSubs = false;
+            const notifyDepth = (_a = this._notifyDepthMap.get(topic)) !== null && _a !== void 0 ? _a : 0;
+            this._notifyDepthMap.set(topic, notifyDepth + 1);
+            const len = subs.length;
+            for (let i = 0; i < len; i++) {
+                try {
+                    const sub = subs[i];
+                    if (sub.isAlive && !sub.isPaused) {
+                        sub.handler(data);
+                    }
+                    needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
+                }
+                catch (error) {
+                    console.error(`EventBus: error in handler: ${error}. topic: ${topic}. data: ${data}. sync: ${sync}. isCached: ${isCached}`, { error, topic, data, sync, isCached, subs });
+                    if (error instanceof Error) {
+                        console.error(error.stack);
+                    }
+                }
+            }
+            this._notifyDepthMap.set(topic, notifyDepth);
+            if (needCleanUpSubs && notifyDepth === 0) {
+                const filteredSubs = subs.filter(sub => sub.isAlive);
+                this._topicSubsMap.set(topic, filteredSubs);
+            }
+        }
+        // We don't know if anything is subscribed on busses in other instruments,
+        // so we'll unconditionally sync if sync is true and trust that the
+        // publisher knows what it's doing.
+        if (sync) {
+            this.syncEvent(topic, data, isCached);
+        }
+        // always push to wildcard handlers
+        let needCleanUpSubs = false;
+        this._wildcardNotifyDepth++;
+        const wcLen = this._wildcardSubs.length;
+        for (let i = 0; i < wcLen; i++) {
+            const sub = this._wildcardSubs[i];
+            if (sub.isAlive && !sub.isPaused) {
+                sub.handler(topic, data);
+            }
+            needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
+        }
+        this._wildcardNotifyDepth--;
+        if (needCleanUpSubs && this._wildcardNotifyDepth === 0) {
+            this._wildcardSubs = this._wildcardSubs.filter(sub => sub.isAlive);
+        }
+    }
+    /**
+     * Responds to when a wildcard subscription is destroyed.
+     * @param sub The destroyed subscription.
+     */
+    onWildcardSubDestroyed(sub) {
+        // If we are not in the middle of a notify operation, remove the subscription.
+        // Otherwise, do nothing and let the post-notify clean-up code handle it.
+        if (this._wildcardNotifyDepth === 0) {
+            this._wildcardSubs.splice(this._wildcardSubs.indexOf(sub), 1);
+        }
+    }
+    /**
+     * Re-sync all synced events
+     */
+    resyncEvents() {
+        for (const [topic, event] of this._eventCache) {
+            if (event.synced) {
+                this.syncEvent(topic, event.data, true);
+            }
+        }
+    }
+    /**
+     * Publish an event to the sync bus.
+     * @param topic The topic to publish to.
+     * @param data The data to publish.
+     * @param isCached Whether or not this message will be resync'd across the bus on load.
+     */
+    syncEvent(topic, data, isCached) {
+        this._busSync.sendEvent(topic, data, isCached);
+    }
+    /**
+     * Gets a typed publisher from the event bus..
+     * @returns The typed publisher.
+     */
+    getPublisher() {
+        return this;
+    }
+    /**
+     * Gets a typed subscriber from the event bus.
+     * @returns The typed subscriber.
+     */
+    getSubscriber() {
+        return new EventSubscriber(this);
+    }
+    /**
+     * Get the number of subscribes for a given topic.
+     * @param topic The name of the topic.
+     * @returns The number of subscribers.
+     **/
+    getTopicSubscriberCount(topic) {
+        var _a, _b;
+        return (_b = (_a = this._topicSubsMap.get(topic)) === null || _a === void 0 ? void 0 : _a.length) !== null && _b !== void 0 ? _b : 0;
+    }
+    /**
+     * Executes a function once for each topic with at least one subscriber.
+     * @param fn The function to execute.
+     */
+    forEachSubscribedTopic(fn) {
+        this._topicSubsMap.forEach((subs, topic) => { subs.length > 0 && fn(topic, subs.length); });
+    }
+}
+/**
+ * An abstract class for bus sync implementations.
+ */
+class EventBusSyncBase {
+    /**
+     * Creates an instance of EventBusFlowEventSync.
+     * @param recvEventCb A callback to execute when an event is received on the bus.
+     * @param busId The ID of the bus.
+     */
+    constructor(recvEventCb, busId) {
+        this.isPaused = false;
+        this.lastEventSynced = -1;
+        this.dataPackageQueue = [];
+        this.recvEventCb = recvEventCb;
+        this.busId = busId;
+        this.hookReceiveEvent();
+        /** Sends the queued up data packages */
+        const sendFn = () => {
+            if (!this.isPaused && this.dataPackageQueue.length > 0) {
+                // console.log(`Sending ${this.dataPackageQueue.length} packages`);
+                const syncDataPackage = {
+                    busId: this.busId,
+                    packagedId: Math.floor(Math.random() * 1000000000),
+                    data: this.dataPackageQueue
+                };
+                if (this.executeSync(syncDataPackage)) {
+                    this.dataPackageQueue.length = 0;
+                }
+                else {
+                    console.warn('Failed to send sync data package');
+                }
+            }
+            requestAnimationFrame(sendFn);
+        };
+        requestAnimationFrame(sendFn);
+    }
+    /**
+     * Processes events received and sends them onto the local bus.
+     * @param syncData The data package to process.
+     */
+    processEventsReceived(syncData) {
+        if (this.busId !== syncData.busId) {
+            // HINT: coherent events are still received twice, so check for this
+            if (this.lastEventSynced !== syncData.packagedId) {
+                this.lastEventSynced = syncData.packagedId;
+                syncData.data.forEach((data) => {
+                    try {
+                        this.recvEventCb(data.topic, data.data !== undefined ? data.data : undefined, false, data.isCached);
+                    }
+                    catch (e) {
+                        console.error(e);
+                        if (e instanceof Error) {
+                            console.error(e.stack);
+                        }
+                    }
+                });
+            }
+        }
+    }
+    /**
+     * Sends an event via flow events.
+     * @param topic The topic to send data on.
+     * @param data The data to send.
+     * @param isCached Whether or not this event is cached.
+     */
+    sendEvent(topic, data, isCached) {
+        // stringify data
+        const dataObj = data;
+        // build a data package
+        const dataPackage = {
+            topic: topic,
+            data: dataObj,
+            isCached: isCached
+        };
+        // queue data package
+        this.dataPackageQueue.push(dataPackage);
+    }
+}
+/**
+ * A class that manages event bus synchronization via Flow Event Triggers.
+ * DON'T USE this, it has bad performance implications.
+ * @deprecated
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+class EventBusCoherentSync extends EventBusSyncBase {
+    /** @inheritdoc */
+    executeSync(syncDataPackage) {
+        // HINT: Stringifying the data again to circumvent the bad perf on Coherent interop
+        try {
+            this.listener.triggerToAllSubscribers(EventBusCoherentSync.EB_KEY, JSON.stringify(syncDataPackage));
+            return true;
+        }
+        catch (error) {
+            return false;
+        }
+    }
+    /** @inheritdoc */
+    hookReceiveEvent() {
+        this.listener = RegisterViewListener(EventBusCoherentSync.EB_LISTENER_KEY, undefined, true);
+        this.listener.on(EventBusCoherentSync.EB_KEY, (e) => {
+            try {
+                const evt = JSON.parse(e);
+                this.processEventsReceived(evt);
+            }
+            catch (error) {
+                console.error(error);
+            }
+        });
+    }
+}
+EventBusCoherentSync.EB_KEY = 'eb.evt';
+EventBusCoherentSync.EB_LISTENER_KEY = 'JS_LISTENER_SIMVARS';
+/**
+ * A class that manages event bus synchronization via Flow Event Triggers.
+ */
+class EventBusFlowEventSync extends EventBusSyncBase {
+    /** @inheritdoc */
+    executeSync(syncDataPackage) {
+        // console.log('Sending sync package: ' + syncDataPackage.packagedId);
+        try {
+            LaunchFlowEvent('ON_MOUSERECT_HTMLEVENT', EventBusFlowEventSync.EB_LISTENER_KEY, this.busId.toString(), JSON.stringify(syncDataPackage));
+            return true;
+        }
+        catch (error) {
+            return false;
+        }
+    }
+    /** @inheritdoc */
+    hookReceiveEvent() {
+        Coherent.on('OnInteractionEvent', (target, args) => {
+            // identify if its a busevent
+            if (args.length === 0 || args[0] !== EventBusFlowEventSync.EB_LISTENER_KEY || !args[2]) {
+                return;
+            }
+            this.processEventsReceived(JSON.parse(args[2]));
+        });
+    }
+}
+EventBusFlowEventSync.EB_LISTENER_KEY = 'EB_EVENTS';
+//// END GLOBALS DECLARATION
+/**
+ * A class that manages event bus synchronization via the Generic Data Listener.
+ */
+class EventBusListenerSync extends EventBusSyncBase {
+    /** @inheritdoc */
+    executeSync(syncDataPackage) {
+        try {
+            this.listener.send(EventBusListenerSync.EB_KEY, syncDataPackage);
+            return true;
+        }
+        catch (error) {
+            return false;
+        }
+    }
+    /** @inheritdoc */
+    hookReceiveEvent() {
+        // pause the sync until the listener is ready
+        this.isPaused = true;
+        this.listener = RegisterGenericDataListener(() => {
+            this.listener.onDataReceived(EventBusListenerSync.EB_KEY, (data) => {
+                try {
+                    this.processEventsReceived(data);
+                }
+                catch (error) {
+                    console.error(error);
+                }
+            });
+            this.isPaused = false;
+        });
+    }
+}
+EventBusListenerSync.EB_KEY = 'wt.eb.evt';
+EventBusListenerSync.EB_LISTENER_KEY = 'JS_LISTENER_GENERICDATA';
+
+/**
+ * Captures the state of a value from a consumer.
+ */
+class ConsumerValue {
+    /**
+     * Creates an instance of a ConsumerValue.
+     * @param consumer The consumer to track.
+     * @param initialValue The initial value.
+     */
+    constructor(consumer, initialValue) {
+        /** @inheritdoc */
+        this.canInitialNotify = true;
+        this.consumerHandler = (v) => { this.value = v; };
+        this._isAlive = true;
+        this._isPaused = false;
+        this.value = initialValue;
+        this.sub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler);
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * Whether this object is alive. While alive, this object will update its value from its event consumer unless it
+     * is paused. Once dead, this object will no longer update its value and cannot be resumed again.
+     */
+    get isAlive() {
+        return this._isAlive;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * Whether event consumption is currently paused. While paused, this object's value will not update.
+     */
+    get isPaused() {
+        return this._isPaused;
+    }
+    /**
+     * Gets the current value.
+     * @returns The current value.
+     */
+    get() {
+        return this.value;
+    }
+    /**
+     * Sets the consumer from which this object derives its value. If the consumer is null, this object's value will
+     * not be updated until a non-null consumer is set.
+     * @param consumer An event consumer.
+     * @returns This object, after its consumer has been set.
+     */
+    setConsumer(consumer) {
+        var _a;
+        if (!this._isAlive) {
+            return this;
+        }
+        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.destroy();
+        this.sub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler, this._isPaused);
+        return this;
+    }
+    /**
+     * Pauses consuming events for this object. Once paused, this object's value will not be updated.
+     * @returns This object, after it has been paused.
+     */
+    pause() {
+        var _a;
+        if (this._isPaused) {
+            return this;
+        }
+        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.pause();
+        this._isPaused = true;
+        return this;
+    }
+    /**
+     * Resumes consuming events for this object. Once resumed, this object's value will be updated from consumed
+     * events.
+     *
+     * Any `initialNotify` argument passed to this method is ignored. This object is always immediately notified of its
+     * event consumer's value when resumed.
+     * @returns This object, after it has been resumed.
+     */
+    resume() {
+        var _a;
+        if (!this._isPaused) {
+            return this;
+        }
+        this._isPaused = false;
+        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.resume(true);
+        return this;
+    }
+    /**
+     * Destroys this object. Once destroyed, it will no longer consume events to update its value.
+     */
+    destroy() {
+        var _a;
+        this._isAlive = false;
+        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.destroy();
+    }
+    /**
+     * Creates a new ConsumerValue.
+     * @param consumer The consumer to track.
+     * @param initialValue The initial value.
+     * @returns The created ConsumerValue.
+     */
+    static create(consumer, initialValue) {
+        return new ConsumerValue(consumer, initialValue);
+    }
+}
+
+/**
  * Valid type arguments for Set/GetSimVarValue
  */
 var SimVarValueType;
@@ -7,6 +836,7 @@ var SimVarValueType;
     SimVarValueType["Bool"] = "bool";
     SimVarValueType["Celsius"] = "celsius";
     SimVarValueType["Degree"] = "degrees";
+    SimVarValueType["DegreesPerSecond"] = "degrees per second";
     SimVarValueType["Enum"] = "enum";
     SimVarValueType["Farenheit"] = "farenheit";
     SimVarValueType["Feet"] = "feet";
@@ -35,12 +865,14 @@ var SimVarValueType;
     SimVarValueType["PPH"] = "Pounds per hour";
     SimVarValueType["PSI"] = "psi";
     SimVarValueType["Radians"] = "radians";
+    SimVarValueType["RadiansPerSecond"] = "radians per second";
     SimVarValueType["Rankine"] = "rankine";
     SimVarValueType["RPM"] = "Rpm";
     SimVarValueType["Seconds"] = "seconds";
     SimVarValueType["SlugsPerCubicFoot"] = "slug per cubic foot";
     SimVarValueType["String"] = "string";
     SimVarValueType["Volts"] = "Volts";
+    SimVarValueType["FtLb"] = "Foot pounds";
 })(SimVarValueType || (SimVarValueType = {}));
 const latlonaltRegEx = new RegExp(/latlonalt/i);
 const latlonaltpbhRegex = new RegExp(/latlonaltpbh/i);
@@ -141,6 +973,930 @@ SimVar.SetSimVarValue = (name, unit, value, dataSource = defaultSource) => {
     }
     return Promise.resolve();
 };
+
+/**
+ * A basic event-bus publisher.
+ */
+class BasePublisher {
+    /**
+     * Creates an instance of BasePublisher.
+     * @param bus The common event bus.
+     * @param pacer An optional pacer to control the rate of publishing.
+     */
+    constructor(bus, pacer = undefined) {
+        this.bus = bus;
+        this.publisher = this.bus.getPublisher();
+        this.publishActive = false;
+        this.pacer = pacer;
+    }
+    /**
+     * Start publishing.
+     */
+    startPublish() {
+        this.publishActive = true;
+    }
+    /**
+     * Stop publishing.
+     */
+    stopPublish() {
+        this.publishActive = false;
+    }
+    /**
+     * Tells whether or not the publisher is currently active.
+     * @returns True if the publisher is active, false otherwise.
+     */
+    isPublishing() {
+        return this.publishActive;
+    }
+    /**
+     * A callback called when the publisher receives an update cycle.
+     */
+    onUpdate() {
+        return;
+    }
+    /**
+     * Publish a message if publishing is acpive
+     * @param topic The topic key to publish to.
+     * @param data The data type for chosen topic.
+     * @param sync Whether or not the event should be synced to other instruments. Defaults to `false`.
+     * @param isCached Whether or not the event should be cached. Defaults to `true`.
+     */
+    publish(topic, data, sync = false, isCached = true) {
+        if (this.publishActive && (!this.pacer || this.pacer.canPublish(topic, data))) {
+            this.publisher.pub(topic, data, sync, isCached);
+        }
+    }
+}
+/**
+ * A base class for publishers that need to handle simvars with built-in
+ * support for pacing callbacks.
+ */
+class SimVarPublisher extends BasePublisher {
+    /**
+     * Create a SimVarPublisher
+     * @param simVarMap A map of simvar event type keys to a SimVarDefinition.
+     * @param bus The EventBus to use for publishing.
+     * @param pacer An optional pacer to control the rate of publishing.
+     */
+    constructor(simVarMap, bus, pacer) {
+        super(bus, pacer);
+        this.resolvedSimVars = new Map();
+        this.indexedSimVars = new Map();
+        this.subscribed = new Set();
+        for (const [topic, entry] of simVarMap) {
+            if (entry.indexed) {
+                this.indexedSimVars.set(topic, {
+                    name: entry.name,
+                    type: entry.type,
+                    map: entry.map,
+                    indexes: entry.indexed === true ? undefined : new Set(entry.indexed),
+                    defaultIndex: entry.defaultIndex,
+                });
+            }
+            else {
+                this.resolvedSimVars.set(topic, Object.assign({}, entry));
+            }
+        }
+        const handleSubscribedTopic = this.handleSubscribedTopic.bind(this);
+        // Iterate over each subscribed topic on the bus to see if it matches any of our topics. If so, start publishing.
+        this.bus.forEachSubscribedTopic(handleSubscribedTopic);
+        // Listen to first-time topic subscriptions. If any of them match our topics, start publishing.
+        this.bus.getSubscriber().on('event_bus_topic_first_sub').handle(handleSubscribedTopic);
+    }
+    /**
+     * Handles when an event bus topic is subscribed to for the first time.
+     * @param topic The subscribed topic.
+     */
+    handleSubscribedTopic(topic) {
+        if (this.resolvedSimVars.has(topic)) {
+            // If topic matches an already resolved topic -> start publishing.
+            this.onTopicSubscribed(topic);
+        }
+        else {
+            // Check if topic matches indexed topic.
+            this.tryMatchIndexedSubscribedTopic(topic);
+        }
+    }
+    /**
+     * Checks if a subscribed topic matches one of this publisher's indexed topics, and if so resolves and starts
+     * publishing the indexed topic.
+     * @param topic The subscribed topic to check.
+     */
+    tryMatchIndexedSubscribedTopic(topic) {
+        var _a;
+        if (this.indexedSimVars.size === 0) {
+            return;
+        }
+        let entry = this.indexedSimVars.get(topic);
+        if (entry) {
+            // The subscribed topic matches an unsuffixed topic -> check if the unsuffixed topic should be published and if
+            // so, resolve the default index.
+            if (entry.defaultIndex !== null) {
+                const resolved = this.resolveIndexedSimVar(topic, entry, (_a = entry.defaultIndex) !== null && _a !== void 0 ? _a : 1);
+                if (resolved !== undefined) {
+                    this.onTopicSubscribed(resolved);
+                }
+            }
+            return;
+        }
+        if (!SimVarPublisher.INDEXED_REGEX.test(topic)) { // Don't generate an array if we don't have to.
+            return;
+        }
+        const match = topic.match(SimVarPublisher.INDEXED_REGEX);
+        const [, matchedTopic, index] = match;
+        entry = this.indexedSimVars.get(matchedTopic);
+        if (entry) {
+            const resolved = this.resolveIndexedSimVar(matchedTopic, entry, parseInt(index));
+            if (resolved !== undefined) {
+                this.onTopicSubscribed(resolved);
+            }
+        }
+    }
+    /**
+     * Attempts to resolve an indexed topic with an index, generating a version of the topic which is mapped to an
+     * indexed simvar. The resolved indexed topic can then be published.
+     * @param topic The topic to resolve.
+     * @param entry The entry of the topic to resolve.
+     * @param index The index with which to resolve the topic. If not defined, the topic will resolve to itself (without
+     * a suffix) and will be mapped the index-1 version of its simvar.
+     * @returns The resolved indexed topic, or `undefined` if the topic could not be resolved with the specified index.
+     */
+    resolveIndexedSimVar(topic, entry, index) {
+        index !== null && index !== void 0 ? index : (index = 1);
+        const resolvedTopic = `${topic}_${index}`;
+        if (this.resolvedSimVars.has(resolvedTopic)) {
+            return resolvedTopic;
+        }
+        const defaultIndex = entry.defaultIndex === undefined ? 1 : entry.defaultIndex;
+        // Ensure that the index we are trying to resolve is a valid index for the topic.
+        if (entry.indexes !== undefined && !entry.indexes.has(index)) {
+            return undefined;
+        }
+        this.resolvedSimVars.set(resolvedTopic, {
+            name: entry.name.replace('#index#', `${index !== null && index !== void 0 ? index : 1}`),
+            type: entry.type,
+            map: entry.map,
+            unsuffixedTopic: defaultIndex === index ? topic : undefined
+        });
+        return resolvedTopic;
+    }
+    /**
+     * Responds to when one of this publisher's topics is subscribed to for the first time.
+     * @param topic The topic that was subscribed to.
+     */
+    onTopicSubscribed(topic) {
+        if (this.subscribed.has(topic)) {
+            return;
+        }
+        this.subscribed.add(topic);
+        // Immediately publish the current value if publishing is active.
+        if (this.publishActive) {
+            this.publishTopic(topic);
+        }
+    }
+    /**
+     * NOOP - For backwards compatibility.
+     * @deprecated
+     * @param data Key of the event type in the simVarMap
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    subscribe(data) {
+        return;
+    }
+    /**
+     * NOOP - For backwards compatibility.
+     * @deprecated
+     * @param data Key of the event type in the simVarMap
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    unsubscribe(data) {
+        return;
+    }
+    /**
+     * Publish all subscribed data points to the bus.
+     */
+    onUpdate() {
+        for (const topic of this.subscribed.values()) {
+            this.publishTopic(topic);
+        }
+    }
+    /**
+     * Publishes data to the event bus for a topic.
+     * @param topic The topic to publish.
+     */
+    publishTopic(topic) {
+        const entry = this.resolvedSimVars.get(topic);
+        if (entry !== undefined) {
+            const value = this.getValueFromEntry(entry);
+            this.publish(topic, value);
+            // Check if we need to publish the same value to the unsuffixed version of the topic.
+            if (entry.unsuffixedTopic) {
+                this.publish(entry.unsuffixedTopic, value);
+            }
+        }
+    }
+    /**
+     * Gets the current value for a topic.
+     * @param topic A topic.
+     * @returns The current value for the specified topic.
+     */
+    getValue(topic) {
+        const entry = this.resolvedSimVars.get(topic);
+        if (entry === undefined) {
+            return undefined;
+        }
+        return this.getValueFromEntry(entry);
+    }
+    /**
+     * Gets the current value for a resolved topic entry.
+     * @param entry An entry for a resolved topic.
+     * @returns The current value for the specified entry.
+     */
+    getValueFromEntry(entry) {
+        return entry.map === undefined
+            ? this.getSimVarValue(entry)
+            : entry.map(this.getSimVarValue(entry));
+    }
+    /**
+     * Gets the value of the SimVar
+     * @param entry The SimVar definition entry
+     * @returns The value of the SimVar
+     */
+    getSimVarValue(entry) {
+        const svValue = SimVar.GetSimVarValue(entry.name, entry.type);
+        if (entry.type === SimVarValueType.Bool) {
+            return svValue === 1;
+        }
+        return svValue;
+    }
+}
+SimVarPublisher.INDEXED_REGEX = /(.*)_(0|[1-9]\d*)$/;
+/**
+ * A base class for publishers that need to handle simvars with built-in
+ * support for pacing callbacks.
+ */
+class GameVarPublisher extends BasePublisher {
+    /**
+     * Create a SimVarPublisher
+     * @param simVarMap A map of simvar event type keys to a SimVarDefinition.
+     * @param bus The EventBus to use for publishing.
+     * @param pacer An optional pacer to control the rate of publishing.
+     */
+    constructor(simVarMap, bus, pacer) {
+        super(bus, pacer);
+        this.simvars = simVarMap;
+        this.subscribed = new Set();
+        // Start polling all simvars for which there are existing subscriptions.
+        for (const topic of this.simvars.keys()) {
+            if (bus.getTopicSubscriberCount(topic) > 0) {
+                this.onTopicSubscribed(topic);
+            }
+        }
+        bus.getSubscriber().on('event_bus_topic_first_sub').handle((topic) => {
+            if (this.simvars.has(topic)) {
+                this.onTopicSubscribed(topic);
+            }
+        });
+    }
+    /**
+     * Responds to when one of this publisher's topics is subscribed to for the first time.
+     * @param topic The topic that was subscribed to.
+     */
+    onTopicSubscribed(topic) {
+        if (this.subscribed.has(topic)) {
+            return;
+        }
+        this.subscribed.add(topic);
+        // Immediately publish the current value if publishing is active.
+        if (this.publishActive) {
+            this.publishTopic(topic);
+        }
+    }
+    /**
+     * NOOP - For backwards compatibility.
+     * @deprecated
+     * @param data Key of the event type in the simVarMap
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    subscribe(data) {
+        return;
+    }
+    /**
+     * NOOP - For backwards compatibility.
+     * @deprecated
+     * @param data Key of the event type in the simVarMap
+     */
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    unsubscribe(data) {
+        return;
+    }
+    /**
+     * Publish all subscribed data points to the bus.
+     */
+    onUpdate() {
+        for (const topic of this.subscribed.values()) {
+            this.publishTopic(topic);
+        }
+    }
+    /**
+     * Publishes data to the event bus for a topic.
+     * @param topic The topic to publish.
+     */
+    publishTopic(topic) {
+        const value = this.getValue(topic);
+        if (value !== undefined) {
+            this.publish(topic, value);
+        }
+    }
+    /**
+     * Gets the current value for a topic.
+     * @param topic A topic.
+     * @returns The current value for the specified topic.
+     */
+    getValue(topic) {
+        const entry = this.simvars.get(topic);
+        if (entry === undefined) {
+            return undefined;
+        }
+        return entry.map === undefined
+            ? this.getGameVarValue(entry)
+            : entry.map(this.getGameVarValue(entry));
+    }
+    /**
+     * Gets the value of the SimVar
+     * @param entry The SimVar definition entry
+     * @returns The value of the SimVar
+     */
+    getGameVarValue(entry) {
+        const svValue = SimVar.GetGameVarValue(entry.name, entry.type);
+        if (entry.type === SimVarValueType.Bool) {
+            return svValue === 1;
+        }
+        return svValue;
+    }
+}
+
+/**
+ * A publisher for publishing H:Events on the bus.
+ */
+class HEventPublisher extends BasePublisher {
+    /**
+     * Dispatches an H:Event to the event bus.
+     * @param hEvent The H:Event to dispatch.
+     * @param sync Whether this event should be synced (optional, default false)
+     */
+    dispatchHEvent(hEvent, sync = false) {
+        // console.log(`dispaching hevent:  ${hEvent}`);
+        this.publish('hEvent', hEvent, sync, false);
+    }
+}
+
+/**
+ * A pipe from an input subscribable to an output mutable subscribable. Each notification received by the pipe is used
+ * to change the state of the output subscribable.
+ */
+class SubscribablePipe extends HandlerSubscription {
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    constructor(from, to, arg3, arg4) {
+        let handler;
+        let onDestroy;
+        if (typeof arg4 === 'function') {
+            handler = (fromVal) => {
+                to.set(arg3(fromVal, to.get()));
+            };
+            onDestroy = arg4;
+        }
+        else {
+            handler = (fromVal) => {
+                to.set(fromVal);
+            };
+            onDestroy = arg3;
+        }
+        super(handler, (sub) => { sub.handler(from.get()); }, onDestroy);
+    }
+}
+
+/**
+ * An abstract implementation of a subscribable which allows adding, removing, and notifying subscribers.
+ */
+class AbstractSubscribable {
+    constructor() {
+        this.isSubscribable = true;
+        this.notifyDepth = 0;
+        /** A function which sends initial notifications to subscriptions. */
+        this.initialNotifyFunc = this.notifySubscription.bind(this);
+        /** A function which responds to when a subscription to this subscribable is destroyed. */
+        this.onSubDestroyedFunc = this.onSubDestroyed.bind(this);
+    }
+    /**
+     * Adds a subscription to this subscribable.
+     * @param sub The subscription to add.
+     */
+    addSubscription(sub) {
+        if (this.subs) {
+            this.subs.push(sub);
+        }
+        else if (this.singletonSub) {
+            this.subs = [this.singletonSub, sub];
+            delete this.singletonSub;
+        }
+        else {
+            this.singletonSub = sub;
+        }
+    }
+    /** @inheritdoc */
+    sub(handler, initialNotify = false, paused = false) {
+        const sub = new HandlerSubscription(handler, this.initialNotifyFunc, this.onSubDestroyedFunc);
+        this.addSubscription(sub);
+        if (paused) {
+            sub.pause();
+        }
+        else if (initialNotify) {
+            sub.initialNotify();
+        }
+        return sub;
+    }
+    /** @inheritdoc */
+    unsub(handler) {
+        let toDestroy = undefined;
+        if (this.singletonSub && this.singletonSub.handler === handler) {
+            toDestroy = this.singletonSub;
+        }
+        else if (this.subs) {
+            toDestroy = this.subs.find(sub => sub.handler === handler);
+        }
+        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
+    }
+    /**
+     * Notifies subscriptions that this subscribable's value has changed.
+     */
+    notify() {
+        const canCleanUpSubs = this.notifyDepth === 0;
+        let needCleanUpSubs = false;
+        this.notifyDepth++;
+        if (this.singletonSub) {
+            try {
+                if (this.singletonSub.isAlive && !this.singletonSub.isPaused) {
+                    this.notifySubscription(this.singletonSub);
+                }
+            }
+            catch (error) {
+                console.error(`AbstractSubscribable: error in handler: ${error}`);
+                if (error instanceof Error) {
+                    console.error(error.stack);
+                }
+            }
+            if (canCleanUpSubs) {
+                // If subscriptions were added during the notification, then singletonSub would be deleted and replaced with
+                // the subs array.
+                if (this.singletonSub) {
+                    needCleanUpSubs = !this.singletonSub.isAlive;
+                }
+                else if (this.subs) {
+                    for (let i = 0; i < this.subs.length; i++) {
+                        if (!this.subs[i].isAlive) {
+                            needCleanUpSubs = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        else if (this.subs) {
+            const subLen = this.subs.length;
+            for (let i = 0; i < subLen; i++) {
+                try {
+                    const sub = this.subs[i];
+                    if (sub.isAlive && !sub.isPaused) {
+                        this.notifySubscription(sub);
+                    }
+                    needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
+                }
+                catch (error) {
+                    console.error(`AbstractSubscribable: error in handler: ${error}`);
+                    if (error instanceof Error) {
+                        console.error(error.stack);
+                    }
+                }
+            }
+            // If subscriptions were added during the notification and a cleanup operation is not already pending, then we
+            // need to check if any of the new subscriptions are already dead and if so, pend a cleanup operation.
+            if (canCleanUpSubs && !needCleanUpSubs) {
+                for (let i = subLen; i < this.subs.length; i++) {
+                    if (!this.subs[i].isAlive) {
+                        needCleanUpSubs = true;
+                        break;
+                    }
+                }
+            }
+        }
+        this.notifyDepth--;
+        if (needCleanUpSubs) {
+            if (this.singletonSub) {
+                delete this.singletonSub;
+            }
+            else if (this.subs) {
+                this.subs = this.subs.filter(sub => sub.isAlive);
+            }
+        }
+    }
+    /**
+     * Notifies a subscription of this subscribable's current state.
+     * @param sub The subscription to notify.
+     */
+    notifySubscription(sub) {
+        sub.handler(this.get());
+    }
+    /**
+     * Responds to when a subscription to this subscribable is destroyed.
+     * @param sub The destroyed subscription.
+     */
+    onSubDestroyed(sub) {
+        // If we are not in the middle of a notify operation, remove the subscription.
+        // Otherwise, do nothing and let the post-notify clean-up code handle it.
+        if (this.notifyDepth === 0) {
+            if (this.singletonSub === sub) {
+                delete this.singletonSub;
+            }
+            else if (this.subs) {
+                const index = this.subs.indexOf(sub);
+                if (index >= 0) {
+                    this.subs.splice(index, 1);
+                }
+            }
+        }
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    map(fn, equalityFunc, mutateFunc, initialVal) {
+        return new MappedSubscribableClass(this, fn, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : AbstractSubscribable.DEFAULT_EQUALITY_FUNC, mutateFunc, initialVal);
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    pipe(to, arg2, arg3) {
+        let sub;
+        let paused;
+        if (typeof arg2 === 'function') {
+            sub = new SubscribablePipe(this, to, arg2, this.onSubDestroyedFunc);
+            paused = arg3 !== null && arg3 !== void 0 ? arg3 : false;
+        }
+        else {
+            sub = new SubscribablePipe(this, to, this.onSubDestroyedFunc);
+            paused = arg2 !== null && arg2 !== void 0 ? arg2 : false;
+        }
+        this.addSubscription(sub);
+        if (paused) {
+            sub.pause();
+        }
+        else {
+            sub.initialNotify();
+        }
+        return sub;
+    }
+}
+/**
+ * Checks if two values are equal using the strict equality operator.
+ * @param a The first value.
+ * @param b The second value.
+ * @returns whether a and b are equal.
+ */
+AbstractSubscribable.DEFAULT_EQUALITY_FUNC = (a, b) => a === b;
+/**
+ * An implementation of {@link MappedSubscribable}.
+ */
+class MappedSubscribableClass extends AbstractSubscribable {
+    /**
+     * Constructor.
+     * @param input This subscribable's input.
+     * @param mapFunc The function which maps this subject's inputs to a value.
+     * @param equalityFunc The function which this subject uses to check for equality between values.
+     * @param mutateFunc The function which this subject uses to change its value.
+     * @param initialVal The initial value of this subject.
+     */
+    constructor(input, mapFunc, equalityFunc, mutateFunc, initialVal) {
+        super();
+        this.input = input;
+        this.mapFunc = mapFunc;
+        this.equalityFunc = equalityFunc;
+        this.canInitialNotify = true;
+        this._isAlive = true;
+        this._isPaused = false;
+        if (initialVal && mutateFunc) {
+            this.value = initialVal;
+            mutateFunc(this.value, this.mapFunc(this.input.get()));
+            this.mutateFunc = (newVal) => { mutateFunc(this.value, newVal); };
+        }
+        else {
+            this.value = this.mapFunc(this.input.get());
+            this.mutateFunc = (newVal) => { this.value = newVal; };
+        }
+        this.inputSub = this.input.sub(inputValue => {
+            this.updateValue(inputValue);
+        }, true);
+    }
+    /** @inheritdoc */
+    get isAlive() {
+        return this._isAlive;
+    }
+    /** @inheritdoc */
+    get isPaused() {
+        return this._isPaused;
+    }
+    /**
+     * Re-maps this subject's value from its input, and notifies subscribers if this results in a change to the mapped
+     * value according to this subject's equality function.
+     * @param inputValue The input value.
+     */
+    updateValue(inputValue) {
+        const value = this.mapFunc(inputValue, this.value);
+        if (!this.equalityFunc(this.value, value)) {
+            this.mutateFunc(value);
+            this.notify();
+        }
+    }
+    /** @inheritdoc */
+    get() {
+        return this.value;
+    }
+    /** @inheritdoc */
+    pause() {
+        if (!this._isAlive) {
+            throw new Error('MappedSubscribable: cannot pause a dead subscribable');
+        }
+        if (this._isPaused) {
+            return this;
+        }
+        this.inputSub.pause();
+        this._isPaused = true;
+        return this;
+    }
+    /** @inheritdoc */
+    resume() {
+        if (!this._isAlive) {
+            throw new Error('MappedSubscribable: cannot resume a dead subscribable');
+        }
+        if (!this._isPaused) {
+            return this;
+        }
+        this._isPaused = false;
+        this.inputSub.resume(true);
+        return this;
+    }
+    /** @inheritdoc */
+    destroy() {
+        this._isAlive = false;
+        this.inputSub.destroy();
+    }
+}
+
+/**
+ * A subscribable subject which derives its value from an event consumer.
+ */
+class ConsumerSubject extends AbstractSubscribable {
+    /**
+     * Constructor.
+     * @param consumer The event consumer from which this subject obtains its value. If null, this subject's value will
+     * not be updated until its consumer is set to a non-null value.
+     * @param initialVal This subject's initial value.
+     * @param equalityFunc The function this subject uses check for equality between values.
+     * @param mutateFunc The function this subject uses to change its value. If not defined, variable assignment is used
+     * instead.
+     */
+    constructor(consumer, initialVal, equalityFunc, mutateFunc) {
+        super();
+        this.equalityFunc = equalityFunc;
+        this.mutateFunc = mutateFunc;
+        /** @inheritdoc */
+        this.canInitialNotify = true;
+        this.consumerHandler = this.onEventConsumed.bind(this);
+        this._isAlive = true;
+        this._isPaused = false;
+        this.value = initialVal;
+        this.consumerSub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler);
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * Whether this subject is alive. While alive, this subject will update its value from its event consumer unless it
+     * is paused. Once dead, this subject will no longer update its value and cannot be resumed again.
+     */
+    get isAlive() {
+        return this._isAlive;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * Whether event consumption is currently paused for this subject. While paused, this subject's value will not
+     * update.
+     */
+    get isPaused() {
+        return this._isPaused;
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    static create(consumer, initialVal, equalityFunc, mutateFunc) {
+        return new ConsumerSubject(consumer, initialVal, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : AbstractSubscribable.DEFAULT_EQUALITY_FUNC, mutateFunc);
+    }
+    /**
+     * Consumes an event.
+     * @param value The value of the event.
+     */
+    onEventConsumed(value) {
+        if (!this.equalityFunc(this.value, value)) {
+            if (this.mutateFunc) {
+                this.mutateFunc(this.value, value);
+            }
+            else {
+                this.value = value;
+            }
+            this.notify();
+        }
+    }
+    /**
+     * Sets the consumer from which this subject derives its value. If the consumer is null, this subject's value will
+     * not be updated until a non-null consumer is set.
+     * @param consumer An event consumer.
+     * @returns This subject, after its consumer has been set.
+     */
+    setConsumer(consumer) {
+        var _a;
+        if (!this._isAlive) {
+            return this;
+        }
+        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.destroy();
+        this.consumerSub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler, this._isPaused);
+        return this;
+    }
+    /**
+     * Pauses consuming events for this subject. Once paused, this subject's value will not be updated.
+     * @returns This subject, after it has been paused.
+     */
+    pause() {
+        var _a;
+        if (this._isPaused) {
+            return this;
+        }
+        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.pause();
+        this._isPaused = true;
+        return this;
+    }
+    /**
+     * Resumes consuming events for this subject. Once resumed, this subject's value will be updated from consumed
+     * events. When this subject is resumed, it immediately updates its value from its event consumer, if one exists.
+     *
+     * Any `initialNotify` argument passed to this method is ignored. This subject is always immediately notified of its
+     * event consumer's value when resumed.
+     * @returns This subject, after it has been resumed.
+     */
+    resume() {
+        var _a;
+        if (!this._isPaused) {
+            return this;
+        }
+        this._isPaused = false;
+        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.resume(true);
+        return this;
+    }
+    /** @inheritdoc */
+    get() {
+        return this.value;
+    }
+    /**
+     * Destroys this subject. Once destroyed, it will no longer consume events to update its value.
+     */
+    destroy() {
+        var _a;
+        this._isAlive = false;
+        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.destroy();
+    }
+}
+
+/**
+ * A subscribable subject whose value can be freely manipulated.
+ */
+class Subject extends AbstractSubscribable {
+    /**
+     * Constructs an observable Subject.
+     * @param value The initial value.
+     * @param equalityFunc The function to use to check for equality.
+     * @param mutateFunc The function to use to mutate the subject's value.
+     */
+    constructor(value, equalityFunc, mutateFunc) {
+        super();
+        this.value = value;
+        this.equalityFunc = equalityFunc;
+        this.mutateFunc = mutateFunc;
+        this.isMutableSubscribable = true;
+    }
+    /**
+     * Creates and returns a new Subject.
+     * @param v The initial value of the subject.
+     * @param equalityFunc The function to use to check for equality between subject values. Defaults to the strict
+     * equality comparison (`===`).
+     * @param mutateFunc The function to use to change the subject's value. If not defined, new values will replace
+     * old values by variable assignment.
+     * @returns A Subject instance.
+     */
+    static create(v, equalityFunc, mutateFunc) {
+        return new Subject(v, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : Subject.DEFAULT_EQUALITY_FUNC, mutateFunc);
+    }
+    /** @inheritdoc */
+    notifySub(sub) {
+        sub(this.value);
+    }
+    /**
+     * Sets the value of this subject and notifies subscribers if the value changed.
+     * @param value The new value.
+     */
+    set(value) {
+        if (!this.equalityFunc(value, this.value)) {
+            if (this.mutateFunc) {
+                this.mutateFunc(this.value, value);
+            }
+            else {
+                this.value = value;
+            }
+            this.notify();
+        }
+    }
+    /**
+     * Applies a partial set of properties to this subject's value and notifies subscribers if the value changed as a
+     * result.
+     * @param value The properties to apply.
+     */
+    apply(value) {
+        if (typeof this.value !== 'object' || this.value === null) {
+            return;
+        }
+        let changed = false;
+        for (const prop in value) {
+            changed = value[prop] !== this.value[prop];
+            if (changed) {
+                break;
+            }
+        }
+        Object.assign(this.value, value);
+        changed && this.notify();
+    }
+    /** @inheritdoc */
+    notify() {
+        super.notify();
+    }
+    /**
+     * Gets the value of this subject.
+     * @returns The value of this subject.
+     */
+    get() {
+        return this.value;
+    }
+}
+
+/**
+ * A utility class which provides the current game state.
+ */
+class GameStateProvider {
+    /**
+     * Constructor.
+     */
+    constructor() {
+        this.gameState = Subject.create(undefined);
+        window.document.addEventListener('OnVCockpitPanelAttributesChanged', this.onAttributesChanged.bind(this));
+        this.onAttributesChanged();
+    }
+    /**
+     * Responds to changes in document attributes.
+     */
+    onAttributesChanged() {
+        var _a;
+        if ((_a = window.parent) === null || _a === void 0 ? void 0 : _a.document.body.hasAttribute('gamestate')) {
+            const attribute = window.parent.document.body.getAttribute('gamestate');
+            if (attribute !== null) {
+                const state = GameState[attribute];
+                // The game state is set briefly to ingame after loading is finished before changing to briefing. In order to
+                // not notify subscribers of this erroneous ingame state, we will debounce any state changes into ingame by two
+                // frames.
+                if (state === GameState.ingame && this.gameState.get() !== GameState.ingame) {
+                    setTimeout(() => {
+                        setTimeout(() => {
+                            const newAttribute = window.parent.document.body.getAttribute('gamestate');
+                            if (newAttribute !== null) {
+                                this.gameState.set(GameState[newAttribute]);
+                            }
+                        });
+                    });
+                }
+                else {
+                    this.gameState.set(state);
+                }
+                return;
+            }
+        }
+        this.gameState.set(undefined);
+    }
+    /**
+     * Gets a subscribable which provides the current game state.
+     * @returns A subscribable which provides the current game state.
+     */
+    static get() {
+        var _a;
+        return ((_a = GameStateProvider.INSTANCE) !== null && _a !== void 0 ? _a : (GameStateProvider.INSTANCE = new GameStateProvider())).gameState;
+    }
+}
 
 /**
  * A utility class for working with common aeronautical constants and calculations.
@@ -715,6 +2471,415 @@ AeroMath.dragCoefficient = AeroMath.flowCoefFromForce;
 AeroMath.drag = AeroMath.flowForceFromCoef;
 
 /**
+ * Utility class for manipulating bit flags.
+ */
+class BitFlags {
+    /**
+     * Generates a bit flag with a boolean value of true at a specified index.
+     * @param index The index of the flag. Must be between 0 and 32, inclusive.
+     * @returns a bit flag.
+     * @throws Error if index is out of bounds.
+     */
+    static createFlag(index) {
+        if (index < 0 || index > 32) {
+            throw new Error(`Invalid index ${index} for bit flag. Index must be between 0 and 32.`);
+        }
+        return 1 << index;
+    }
+    /**
+     * Gets the inverse of some bit flags.
+     * @param flags The bit flag group containing the flags to invert.
+     * @param mask An optional bit mask to use when applying the inverse operation. The operation will only be performed
+     * at the indexes where the mask has a value of 1 (true). If a mask is not specified, the operation will be performed
+     * at all indexes.
+     * @returns the inverse
+     */
+    static not(flags, mask = ~0) {
+        return flags ^ mask;
+    }
+    /**
+     * Gets the union of zero or more bit flags.
+     * @param flags A list of bit flags.
+     * @returns the union of the bit flags.
+     */
+    static union(...flags) {
+        let result = 0;
+        const len = flags.length;
+        for (let i = 0; i < len; i++) {
+            result |= flags[i];
+        }
+        return result;
+    }
+    /**
+     * Gets the intersection of zero or more bit flags.
+     * @param flags A list of bit flags.
+     * @returns the intersection of the bit flags.
+     */
+    static intersection(...flags) {
+        const len = flags.length;
+        if (len === 0) {
+            return 0;
+        }
+        let result = flags[0];
+        for (let i = 1; i < len; i++) {
+            result &= flags[i];
+        }
+        return result;
+    }
+    /**
+     * Changes a bit flag group by setting values at specific indexes.
+     * @param flags The bit flag group to change.
+     * @param valuesToSet A bit flag group containing the values to set.
+     * @param mask A mask defining the indexes to set. Only indexes at which the mask has a value of `1` (`true`) will
+     * be set.
+     * @returns The result of changing `flags` using the specified values and indexes.
+     */
+    static set(flags, valuesToSet, mask) {
+        return (flags & ~mask) | (valuesToSet & mask);
+    }
+    /**
+     * Checks if a bit flag group meets at least one condition from a list of conditions.
+     * @param flags A bit flag group.
+     * @param conditions The conditions to meet, as a bit flag group.
+     * @returns whether the bit flag group meets at least one condition.
+     */
+    static isAny(flags, conditions) {
+        return (flags & conditions) !== 0;
+    }
+    /**
+     * Checks if a bit flag group meets all the conditions from a list of conditions.
+     * @param flags A bit flag group.
+     * @param conditions The conditions to meet, as a bit flag group.
+     * @returns whether the bit flag group meets all the conditions.
+     */
+    static isAll(flags, conditions) {
+        return (flags & conditions) === conditions;
+    }
+    /**
+     * Iterates through a bit flag group and executes a callback function once for each flag.
+     * @param flags A bit flag group.
+     * @param callback A function which will be called once for each flag.
+     * @param valueFilter The value on which to filter. If defined, only flags with values equal to the filter will be
+     * iterated, otherwise all flags will be iterated regardless of their values.
+     * @param startIndex The index of the flag at which to start (inclusive). Defaults to 0.
+     * @param endIndex The index of the flag at which to end (exclusive). Defaults to 32.
+     */
+    static forEach(flags, callback, valueFilter, startIndex, endIndex) {
+        startIndex = Utils.Clamp(startIndex !== null && startIndex !== void 0 ? startIndex : (startIndex = 0), 0, 32);
+        endIndex = Utils.Clamp(endIndex !== null && endIndex !== void 0 ? endIndex : (endIndex = 32), 0, 32);
+        for (let i = startIndex; i < endIndex; i++) {
+            const value = (flags & (1 << i)) !== 0;
+            if (valueFilter === undefined || valueFilter === value) {
+                callback(value, i, flags);
+            }
+        }
+    }
+}
+
+/**
+ * Applies time-weighted exponential smoothing (i.e. an exponential moving average) to a sequence of raw values.
+ *
+ * When a new raw value is added to the sequence, it and the last smoothed value are weighted according to the time
+ * elapsed since the last smoothed value was calculated (i.e. since the last raw value was added) and averaged. The
+ * calculation of the weighting is such that the weight of each raw value in the sequence decays exponentially with the
+ * "age" (i.e. time elapsed between when that value was added to the sequence and when the latest value was added to
+ * the sequence) of the value.
+ */
+class ExpSmoother {
+    /**
+     * Creates a new instance of ExpSmoother.
+     * @param tau This smoother's time constant. The larger the constant, the greater the smoothing effect. A value less
+     * than or equal to 0 is equivalent to no smoothing.
+     * @param initial The initial smoothed value of this smoother. Defaults to null.
+     * @param dtThreshold The elapsed time threshold, in seconds, above which this smoother will not smooth a new raw
+     * value. Defaults to infinity.
+     */
+    constructor(tau, initial = null, dtThreshold = Infinity) {
+        this.tau = tau;
+        this.dtThreshold = dtThreshold;
+        this.lastValue = initial;
+    }
+    /**
+     * Gets the last smoothed value.
+     * @returns The last smoothed value, or null if none exists.
+     */
+    last() {
+        return this.lastValue;
+    }
+    /**
+     * Adds a new raw value and gets the next smoothed value. If the new raw value is the first to be added since this
+     * smoother was created or reset with no initial smoothed value, the returned smoothed value will be equal to the
+     * raw value.
+     * @param raw The new raw value.
+     * @param dt The elapsed time since the last raw value was added.
+     * @returns The next smoothed value.
+     */
+    next(raw, dt) {
+        let next;
+        if (this.tau > 0 && this.lastValue !== null) {
+            const factor = this.calculateFactor(dt);
+            next = ExpSmoother.smooth(raw, this.lastValue, factor);
+        }
+        else {
+            next = raw;
+        }
+        this.lastValue = next;
+        return next;
+    }
+    /**
+     * Calculates the smoothing factor for a given time interval.
+     * @param dt A time interval, in seconds.
+     * @returns the smoothing factor for the given time interval.
+     */
+    calculateFactor(dt) {
+        if (dt > this.dtThreshold) {
+            return 0;
+        }
+        else {
+            return Math.exp(-dt / this.tau);
+        }
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    reset(value) {
+        return this.lastValue = (value !== null && value !== void 0 ? value : null);
+    }
+    /**
+     * Applies exponential smoothing.
+     * @param value The value to smooth.
+     * @param last The last smoothed value.
+     * @param factor The smoothing factor.
+     * @returns A smoothed value.
+     */
+    static smooth(value, last, factor) {
+        return value * (1 - factor) + last * factor;
+    }
+}
+
+/**
+ * A calculator for lookahead values based on past trends. The calculator accepts a series of input values separated
+ * by discrete time intervals, computes a rate of change at each time step, and uses this rate of change to predict
+ * what the input value will be at some arbitrary length of time in the future assuming the rate of change remains
+ * constant.
+ */
+class Lookahead {
+    /**
+     * Constructor.
+     * @param lookahead This calculator's lookahead time.
+     * @param valueSmoothingTau The smoothing time constant to apply to the calculator's input values before rate of
+     * change is computed. A value of `0` is equivalent to no smoothing. Defaults to `0`.
+     * @param trendSmoothingTau The smoothing time constant to apply to the calculator's computed trend values. A value
+     * of `0` is equivalent to no smoothing. Defaults to `0`.
+     */
+    constructor(lookahead, valueSmoothingTau = 0, trendSmoothingTau = 0) {
+        this.lookahead = lookahead;
+        this.lastSmoothedValue = null;
+        this.lastTrendValue = 0;
+        this.lastLookaheadValue = null;
+        this.lastSmoothedLookaheadValue = null;
+        this.valueSmoother = new ExpSmoother(valueSmoothingTau);
+        this.trendSmoother = new ExpSmoother(trendSmoothingTau);
+    }
+    /**
+     * Gets this calculator's last computed lookahead value. The lookahead value is the predicted value of this
+     * calculator's input when projected into the future by an amount equal to the lookahead time assuming the current
+     * rate of change of the input remains constant.
+     * @param smoothed Whether to retrieve the lookahead value computed using the last smoothed input value instead of
+     * the raw input value as the present (`t = 0`) value. Defaults to `false`.
+     * @returns This calculator's last computed lookahead value.
+     */
+    last(smoothed = false) {
+        return smoothed ? this.lastSmoothedLookaheadValue : this.lastLookaheadValue;
+    }
+    /**
+     * Gets this calculator's last computed trend value. The trend value is the equal to the rate of change of this
+     * calculator's input values multiplied by the lookahead time.
+     * @returns This calculator's last computed trend value.
+     */
+    lastTrend() {
+        return this.lastTrendValue;
+    }
+    /**
+     * Adds a new input value and gets the next lookahead value. The lookahead value is the predicted value of this
+     * calculator's input when projected into the future by an amount equal to the lookahead time assuming the current
+     * rate of change of the input remains constant.
+     * @param value The new input value.
+     * @param dt The elapsed time since the last input value was added.
+     * @param smoothed Whether to return the lookahead value computed using the smoothed input value instead of the raw
+     * input value as the present (`t = 0`) value. Note that this argument does not determine whether smoothing is
+     * applied for the purposes of calculating rate of change (smoothing is always applied for this purpose if a positive
+     * time constant is defined). Defaults to `false`.
+     * @returns The next lookahead value.
+     */
+    next(value, dt, smoothed = false) {
+        const oldSmoothedValue = this.lastSmoothedValue;
+        let trend;
+        if (dt < 0) {
+            return this.reset(value);
+        }
+        else if (dt > 0) {
+            this.lastSmoothedValue = this.valueSmoother.next(value, dt);
+            if (oldSmoothedValue === null) {
+                this.trendSmoother.reset();
+                trend = 0;
+            }
+            else {
+                trend = this.trendSmoother.next((this.lastSmoothedValue - oldSmoothedValue) / dt * this.lookahead, dt);
+            }
+        }
+        else {
+            trend = this.lastTrendValue;
+            this.lastSmoothedValue = this.valueSmoother.next(value, dt);
+        }
+        this.lastTrendValue = trend;
+        this.lastLookaheadValue = value + trend;
+        this.lastSmoothedLookaheadValue = this.lastSmoothedValue + trend;
+        return smoothed ? this.lastSmoothedLookaheadValue : this.lastLookaheadValue;
+    }
+    /**
+     * Adds a new input value and gets the next trend value. The trend value is the equal to the rate of change of this
+     * calculator's input values multiplied by the lookahead time.
+     * @param value The new input value.
+     * @param dt The elapsed time since the last input value was added.
+     * @returns The next trend value.
+     */
+    nextTrend(value, dt) {
+        this.next(value, dt);
+        return this.lastTrendValue;
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    reset(value) {
+        this.lastSmoothedValue = this.valueSmoother.reset(value);
+        this.trendSmoother.reset();
+        this.lastTrendValue = 0;
+        this.lastLookaheadValue = this.lastSmoothedValue;
+        this.lastSmoothedLookaheadValue = this.lastSmoothedValue;
+        return this.lastLookaheadValue;
+    }
+}
+
+/**
+ * A utitlity class for basic math.
+ */
+class MathUtils {
+    /**
+     * Clamps a numerical value to the min/max range.
+     * @param value The value to be clamped.
+     * @param min The minimum.
+     * @param max The maximum.
+     *
+     * @returns The clamped numerical value..
+     */
+    static clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+    }
+    /**
+     * Rounds a number.
+     * @param value The number to round.
+     * @param precision The precision with which to round. Defaults to `1`.
+     * @returns The rounded number.
+     */
+    static round(value, precision = 1) {
+        return Math.round(value / precision) * precision;
+    }
+    /**
+     * Ceils a number.
+     * @param value The number to ceil.
+     * @param precision The precision with which to ceil. Defaults to `1`.
+     * @returns The ceiled number.
+     */
+    static ceil(value, precision = 1) {
+        return Math.ceil(value / precision) * precision;
+    }
+    /**
+     * Floors a number.
+     * @param value The number to floor.
+     * @param precision The precision with which to floor. Defaults to `1`.
+     * @returns The floored number.
+     */
+    static floor(value, precision = 1) {
+        return Math.floor(value / precision) * precision;
+    }
+    /**
+     * Calculates the angular difference between two angles in the range `[0, 2 * pi)`. The calculation supports both
+     * directional and non-directional differences. The directional difference is the angle swept from the start angle
+     * to the end angle proceeding in the direction of increasing angle. The non-directional difference is the smaller
+     * of the two angles swept from the start angle to the end angle proceeding in either direction.
+     * @param start The starting angle, in radians.
+     * @param end The ending angle, in radians.
+     * @param directional Whether to calculate the directional difference. Defaults to `true`.
+     * @returns The angular difference between the two angles, in radians, in the range `[0, 2 * pi)`.
+     */
+    static diffAngle(start, end, directional = true) {
+        const diff = ((end - start) % MathUtils.TWO_PI + MathUtils.TWO_PI) % MathUtils.TWO_PI;
+        return directional ? diff : Math.min(diff, MathUtils.TWO_PI - diff);
+    }
+    /**
+     * Calculates the angular difference between two angles in the range `[0, 360)`. The calculation supports both
+     * directional and non-directional differences. The directional difference is the angle swept from the start angle
+     * to the end angle proceeding in the direction of increasing angle. The non-directional difference is the smaller
+     * of the two angles swept from the start angle to the end angle proceeding in either direction.
+     * @param start The starting angle, in degrees.
+     * @param end The ending angle, in degrees.
+     * @param directional Whether to calculate the directional difference. Defaults to `true`.
+     * @returns The angular difference between the two angles, in degrees, in the range `[0, 360)`.
+     */
+    static diffAngleDeg(start, end, directional = true) {
+        const diff = ((end - start) % 360 + 360) % 360;
+        return directional ? diff : Math.min(diff, 360 - diff);
+    }
+    /**
+     * Linearly interpolates a keyed value along one dimension.
+     * @param x The key of the value to interpolate.
+     * @param x0 The key of the first known value.
+     * @param x1 The key of the second known value.
+     * @param y0 The first known value.
+     * @param y1 The second known value.
+     * @param clampStart Whether to clamp the interpolated value to the first known value. Defaults to false.
+     * @param clampEnd Whether to clamp the interpolated value to the second known value. Defaults to false.
+     * @returns The interpolated value corresponding to the specified key.
+     */
+    static lerp(x, x0, x1, y0, y1, clampStart = false, clampEnd = false) {
+        if (x0 !== x1 && y0 !== y1) {
+            const fraction = MathUtils.clamp((x - x0) / (x1 - x0), clampStart ? 0 : -Infinity, clampEnd ? 1 : Infinity);
+            return fraction * (y1 - y0) + y0;
+        }
+        else {
+            return y0;
+        }
+    }
+    /**
+     * Linearly interpolates a keyed vector along one dimension. If the known vectors and the result vector have unequal
+     * lengths, then only the components shared by all vectors are interpolated in the result.
+     * @param out The object to which to write the result.
+     * @param x The key of the vector to interpolate.
+     * @param x0 The key of the first known vector.
+     * @param x1 The key of the second known vector.
+     * @param y0 The first known vector.
+     * @param y1 The second known vector.
+     * @param clampStart Whether to clamp the components of the interpolated vector to those of the first known vector.
+     * Defaults to false.
+     * @param clampEnd Whether to clamp the components of the interpolated vector to those of the second known vector.
+     * Defaults to false.
+     * @returns The interpolated vector corresponding to the specified key.
+     */
+    static lerpVector(out, x, x0, x1, y0, y1, clampStart = false, clampEnd = false) {
+        const length = Math.min(y0.length, y1.length, out.length);
+        for (let i = 0; i < length; i++) {
+            out[i] = MathUtils.lerp(x, x0, x1, y0[i], y1[i], clampStart, clampEnd);
+        }
+        return out;
+    }
+}
+/** Twice the value of pi. */
+MathUtils.TWO_PI = Math.PI * 2;
+/** Half the value of pi. */
+MathUtils.HALF_PI = Math.PI / 2;
+/** Square root of 3. */
+MathUtils.SQRT3 = Math.sqrt(3);
+/** Square root of 1/3. */
+MathUtils.SQRT1_3 = 1 / Math.sqrt(3);
+
+/**
  * A number with an associated unit. Each NumberUnit is created with a reference unit type,
  * which cannot be changed after instantiation. The reference unit type determines how the
  * value of the NumberUnit is internally represented. Each NumberUnit also maintains an
@@ -1144,6 +3309,8 @@ var UnitFamily;
     UnitFamily["VolumeFlux"] = "volume_flux";
     UnitFamily["Density"] = "density";
     UnitFamily["Force"] = "force";
+    UnitFamily["DistancePerWeight"] = "distance_per_weight";
+    UnitFamily["DistanceRatio"] = "distance_ratio";
 })(UnitFamily || (UnitFamily = {}));
 /**
  * Predefined unit types.
@@ -1184,6 +3351,8 @@ UnitType.LITER = new SimpleUnit(UnitFamily.Volume, 'liter', 1);
 UnitType.GALLON = new SimpleUnit(UnitFamily.Volume, 'gallon', 3.78541);
 /** Hectopascal. */
 UnitType.HPA = new SimpleUnit(UnitFamily.Pressure, 'hectopascal', 1);
+/** Millibar. */
+UnitType.MB = new SimpleUnit(UnitFamily.Pressure, 'millibar', 1);
 /** Atmosphere. */
 UnitType.ATM = new SimpleUnit(UnitFamily.Pressure, 'atmosphere', 1013.25);
 /** Inch of mercury. */
@@ -1243,1293 +3412,12 @@ UnitType.KG_PER_M3 = new CompoundUnit(UnitFamily.Density, [UnitType.KILOGRAM], [
 UnitType.NEWTON = new CompoundUnit(UnitFamily.Force, [UnitType.KILOGRAM, UnitType.METER], [UnitType.SECOND, UnitType.SECOND]);
 /** Pound (force). */
 UnitType.POUND_FORCE = new CompoundUnit(UnitFamily.Force, [UnitType.POUND, UnitType.G_METER], [UnitType.SECOND, UnitType.SECOND]);
-
-/**
- * A basic event-bus publisher.
- */
-class BasePublisher {
-    /**
-     * Creates an instance of BasePublisher.
-     * @param bus The common event bus.
-     * @param pacer An optional pacer to control the rate of publishing.
-     */
-    constructor(bus, pacer = undefined) {
-        this.bus = bus;
-        this.publisher = this.bus.getPublisher();
-        this.publishActive = false;
-        this.pacer = pacer;
-    }
-    /**
-     * Start publishing.
-     */
-    startPublish() {
-        this.publishActive = true;
-    }
-    /**
-     * Stop publishing.
-     */
-    stopPublish() {
-        this.publishActive = false;
-    }
-    /**
-     * Tells whether or not the publisher is currently active.
-     * @returns True if the publisher is active, false otherwise.
-     */
-    isPublishing() {
-        return this.publishActive;
-    }
-    /**
-     * A callback called when the publisher receives an update cycle.
-     */
-    onUpdate() {
-        return;
-    }
-    /**
-     * Publish a message if publishing is acpive
-     * @param topic The topic key to publish to.
-     * @param data The data type for chosen topic.
-     * @param sync Whether or not the event should be synced to other instruments. Defaults to `false`.
-     * @param isCached Whether or not the event should be cached. Defaults to `true`.
-     */
-    publish(topic, data, sync = false, isCached = true) {
-        if (this.publishActive && (!this.pacer || this.pacer.canPublish(topic, data))) {
-            this.publisher.pub(topic, data, sync, isCached);
-        }
-    }
-}
-/**
- * A base class for publishers that need to handle simvars with built-in
- * support for pacing callbacks.
- */
-class SimVarPublisher extends BasePublisher {
-    /**
-     * Create a SimVarPublisher
-     * @param simVarMap A map of simvar event type keys to a SimVarDefinition.
-     * @param bus The EventBus to use for publishing.
-     * @param pacer An optional pacer to control the rate of publishing.
-     */
-    constructor(simVarMap, bus, pacer) {
-        super(bus, pacer);
-        this.resolvedSimVars = new Map();
-        this.indexedSimVars = new Map();
-        this.subscribed = new Set();
-        for (const [topic, entry] of simVarMap) {
-            if (entry.indexed) {
-                this.indexedSimVars.set(topic, {
-                    name: entry.name,
-                    type: entry.type,
-                    map: entry.map,
-                    indexes: entry.indexed === true ? undefined : new Set(entry.indexed),
-                    defaultIndex: entry.defaultIndex,
-                });
-            }
-            else {
-                this.resolvedSimVars.set(topic, Object.assign({}, entry));
-            }
-        }
-        const handleSubscribedTopic = (topic) => {
-            if (this.resolvedSimVars.has(topic)) {
-                // If topic matches an already resolved topic -> start publishing.
-                this.onTopicSubscribed(topic);
-            }
-            else {
-                // Check if topic matches indexed topic.
-                this.tryMatchIndexedSubscribedTopic(topic);
-            }
-        };
-        // Iterate over each subscribed topic on the bus to see if it matches any of our topics. If so, start publishing.
-        this.bus.forEachSubscribedTopic(handleSubscribedTopic);
-        // Listen to first-time topic subscriptions. If any of them match our topics, start publishing.
-        this.bus.getSubscriber().on('event_bus_topic_first_sub').handle(handleSubscribedTopic);
-    }
-    /**
-     * Checks if a subscribed topic matches one of this publisher's indexed topics, and if so resolves and starts
-     * publishing the indexed topic.
-     * @param topic The subscribed topic to check.
-     */
-    tryMatchIndexedSubscribedTopic(topic) {
-        var _a;
-        if (this.indexedSimVars.size === 0) {
-            return;
-        }
-        let entry = this.indexedSimVars.get(topic);
-        if (entry) {
-            // The subscribed topic matches an unsuffixed topic -> check if the unsuffixed topic should be published and if
-            // so, resolve the default index.
-            if (entry.defaultIndex !== null) {
-                const resolved = this.resolveIndexedSimVar(topic, entry, (_a = entry.defaultIndex) !== null && _a !== void 0 ? _a : 1);
-                if (resolved !== undefined) {
-                    this.onTopicSubscribed(resolved);
-                }
-            }
-            return;
-        }
-        if (!SimVarPublisher.INDEXED_REGEX.test(topic)) { // Don't generate an array if we don't have to.
-            return;
-        }
-        const match = topic.match(SimVarPublisher.INDEXED_REGEX);
-        const [, matchedTopic, index] = match;
-        entry = this.indexedSimVars.get(matchedTopic);
-        if (entry) {
-            const resolved = this.resolveIndexedSimVar(matchedTopic, entry, parseInt(index));
-            if (resolved !== undefined) {
-                this.onTopicSubscribed(resolved);
-            }
-        }
-    }
-    /**
-     * Attempts to resolve an indexed topic with an index, generating a version of the topic which is mapped to an
-     * indexed simvar. The resolved indexed topic can then be published.
-     * @param topic The topic to resolve.
-     * @param entry The entry of the topic to resolve.
-     * @param index The index with which to resolve the topic. If not defined, the topic will resolve to itself (without
-     * a suffix) and will be mapped the index-1 version of its simvar.
-     * @returns The resolved indexed topic, or `undefined` if the topic could not be resolved with the specified index.
-     */
-    resolveIndexedSimVar(topic, entry, index) {
-        index !== null && index !== void 0 ? index : (index = 1);
-        const resolvedTopic = `${topic}_${index}`;
-        if (this.resolvedSimVars.has(resolvedTopic)) {
-            return resolvedTopic;
-        }
-        const defaultIndex = entry.defaultIndex === undefined ? 1 : entry.defaultIndex;
-        // Ensure that the index we are trying to resolve is a valid index for the topic.
-        if (entry.indexes !== undefined && !entry.indexes.has(index)) {
-            return undefined;
-        }
-        this.resolvedSimVars.set(resolvedTopic, {
-            name: entry.name.replace('#index#', `${index !== null && index !== void 0 ? index : 1}`),
-            type: entry.type,
-            map: entry.map,
-            unsuffixedTopic: defaultIndex === index ? topic : undefined
-        });
-        return resolvedTopic;
-    }
-    /**
-     * Responds to when one of this publisher's topics is subscribed to for the first time.
-     * @param topic The topic that was subscribed to.
-     */
-    onTopicSubscribed(topic) {
-        if (this.subscribed.has(topic)) {
-            return;
-        }
-        this.subscribed.add(topic);
-        // Immediately publish the current value if publishing is active.
-        if (this.publishActive) {
-            this.publishTopic(topic);
-        }
-    }
-    /**
-     * NOOP - For backwards compatibility.
-     * @deprecated
-     * @param data Key of the event type in the simVarMap
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    subscribe(data) {
-        return;
-    }
-    /**
-     * NOOP - For backwards compatibility.
-     * @deprecated
-     * @param data Key of the event type in the simVarMap
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    unsubscribe(data) {
-        return;
-    }
-    /**
-     * Publish all subscribed data points to the bus.
-     */
-    onUpdate() {
-        for (const topic of this.subscribed.values()) {
-            this.publishTopic(topic);
-        }
-    }
-    /**
-     * Publishes data to the event bus for a topic.
-     * @param topic The topic to publish.
-     */
-    publishTopic(topic) {
-        const entry = this.resolvedSimVars.get(topic);
-        if (entry !== undefined) {
-            const value = this.getValueFromEntry(entry);
-            this.publish(topic, value);
-            // Check if we need to publish the same value to the unsuffixed version of the topic.
-            if (entry.unsuffixedTopic) {
-                this.publish(entry.unsuffixedTopic, value);
-            }
-        }
-    }
-    /**
-     * Gets the current value for a topic.
-     * @param topic A topic.
-     * @returns The current value for the specified topic.
-     */
-    getValue(topic) {
-        const entry = this.resolvedSimVars.get(topic);
-        if (entry === undefined) {
-            return undefined;
-        }
-        return this.getValueFromEntry(entry);
-    }
-    /**
-     * Gets the current value for a resolved topic entry.
-     * @param entry An entry for a resolved topic.
-     * @returns The current value for the specified entry.
-     */
-    getValueFromEntry(entry) {
-        return entry.map === undefined
-            ? this.getSimVarValue(entry)
-            : entry.map(this.getSimVarValue(entry));
-    }
-    /**
-     * Gets the value of the SimVar
-     * @param entry The SimVar definition entry
-     * @returns The value of the SimVar
-     */
-    getSimVarValue(entry) {
-        const svValue = SimVar.GetSimVarValue(entry.name, entry.type);
-        if (entry.type === SimVarValueType.Bool) {
-            return svValue === 1;
-        }
-        return svValue;
-    }
-}
-SimVarPublisher.INDEXED_REGEX = /(.*)_(0|[1-9]\d*)$/;
-/**
- * A base class for publishers that need to handle simvars with built-in
- * support for pacing callbacks.
- */
-class GameVarPublisher extends BasePublisher {
-    /**
-     * Create a SimVarPublisher
-     * @param simVarMap A map of simvar event type keys to a SimVarDefinition.
-     * @param bus The EventBus to use for publishing.
-     * @param pacer An optional pacer to control the rate of publishing.
-     */
-    constructor(simVarMap, bus, pacer) {
-        super(bus, pacer);
-        this.simvars = simVarMap;
-        this.subscribed = new Set();
-        // Start polling all simvars for which there are existing subscriptions.
-        for (const topic of this.simvars.keys()) {
-            if (bus.getTopicSubscriberCount(topic) > 0) {
-                this.onTopicSubscribed(topic);
-            }
-        }
-        bus.getSubscriber().on('event_bus_topic_first_sub').handle((topic) => {
-            if (this.simvars.has(topic)) {
-                this.onTopicSubscribed(topic);
-            }
-        });
-    }
-    /**
-     * Responds to when one of this publisher's topics is subscribed to for the first time.
-     * @param topic The topic that was subscribed to.
-     */
-    onTopicSubscribed(topic) {
-        if (this.subscribed.has(topic)) {
-            return;
-        }
-        this.subscribed.add(topic);
-        // Immediately publish the current value if publishing is active.
-        if (this.publishActive) {
-            this.publishTopic(topic);
-        }
-    }
-    /**
-     * NOOP - For backwards compatibility.
-     * @deprecated
-     * @param data Key of the event type in the simVarMap
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    subscribe(data) {
-        return;
-    }
-    /**
-     * NOOP - For backwards compatibility.
-     * @deprecated
-     * @param data Key of the event type in the simVarMap
-     */
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    unsubscribe(data) {
-        return;
-    }
-    /**
-     * Publish all subscribed data points to the bus.
-     */
-    onUpdate() {
-        for (const topic of this.subscribed.values()) {
-            this.publishTopic(topic);
-        }
-    }
-    /**
-     * Publishes data to the event bus for a topic.
-     * @param topic The topic to publish.
-     */
-    publishTopic(topic) {
-        const value = this.getValue(topic);
-        if (value !== undefined) {
-            this.publish(topic, value);
-        }
-    }
-    /**
-     * Gets the current value for a topic.
-     * @param topic A topic.
-     * @returns The current value for the specified topic.
-     */
-    getValue(topic) {
-        const entry = this.simvars.get(topic);
-        if (entry === undefined) {
-            return undefined;
-        }
-        return entry.map === undefined
-            ? this.getGameVarValue(entry)
-            : entry.map(this.getGameVarValue(entry));
-    }
-    /**
-     * Gets the value of the SimVar
-     * @param entry The SimVar definition entry
-     * @returns The value of the SimVar
-     */
-    getGameVarValue(entry) {
-        const svValue = SimVar.GetGameVarValue(entry.name, entry.type);
-        if (entry.type === SimVarValueType.Bool) {
-            return svValue === 1;
-        }
-        return svValue;
-    }
-}
-
-/// <reference types="@microsoft/msfs-types/js/simvar" />
-/**
- * A publisher for air data computer information.
- */
-class AdcPublisher extends SimVarPublisher {
-    /**
-     * Creates an AdcPublisher.
-     * @param bus The event bus to which to publish.
-     * @param pacer An optional pacer to use to control the rate of publishing.
-     */
-    constructor(bus, pacer) {
-        var _a;
-        const simvars = new Map([
-            ['ias', { name: 'AIRSPEED INDICATED:#index#', type: SimVarValueType.Knots, indexed: true }],
-            ['tas', { name: 'AIRSPEED TRUE:#index#', type: SimVarValueType.Knots, indexed: true }],
-            [
-                'mach_to_kias_factor',
-                {
-                    name: 'AIRSPEED INDICATED:#index#',
-                    type: SimVarValueType.Knots,
-                    map: (kias) => {
-                        const factor = kias < 1 || this.mach === 0 ? AeroMath.machToCas(1, this.pressure) : kias / this.mach;
-                        return isFinite(factor) ? factor : 1;
-                    },
-                    indexed: true
-                }
-            ],
-            ['indicated_alt', { name: 'INDICATED ALTITUDE:#index#', type: SimVarValueType.Feet, indexed: true }],
-            ['altimeter_baro_setting_inhg', { name: 'KOHLSMAN SETTING HG:#index#', type: SimVarValueType.InHG, indexed: true }],
-            ['altimeter_baro_setting_mb', { name: 'KOHLSMAN SETTING MB:#index#', type: SimVarValueType.MB, indexed: true }],
-            ['altimeter_baro_preselect_raw', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, indexed: true }],
-            ['altimeter_baro_preselect_inhg', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, map: raw => UnitType.HPA.convertTo(raw / 16, UnitType.IN_HG), indexed: true }],
-            ['altimeter_baro_preselect_mb', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, map: raw => raw / 16, indexed: true }],
-            ['altimeter_baro_is_std', { name: 'L:XMLVAR_Baro#index#_ForcedToSTD', type: SimVarValueType.Bool, indexed: true }],
-            ['radio_alt', { name: 'RADIO HEIGHT', type: SimVarValueType.Feet }],
-            ['pressure_alt', { name: 'PRESSURE ALTITUDE', type: SimVarValueType.Feet }],
-            ['vertical_speed', { name: 'VERTICAL SPEED', type: SimVarValueType.FPM }],
-            ['ambient_density', { name: 'AMBIENT DENSITY', type: SimVarValueType.SlugsPerCubicFoot }],
-            ['ambient_temp_c', { name: 'AMBIENT TEMPERATURE', type: SimVarValueType.Celsius }],
-            ['ambient_pressure_inhg', { name: 'AMBIENT PRESSURE', type: SimVarValueType.InHG }],
-            ['isa_temp_c', { name: 'STANDARD ATM TEMPERATURE', type: SimVarValueType.Celsius }],
-            ['ram_air_temp_c', { name: 'TOTAL AIR TEMPERATURE', type: SimVarValueType.Celsius }],
-            ['ambient_wind_velocity', { name: 'AMBIENT WIND VELOCITY', type: SimVarValueType.Knots }],
-            ['ambient_wind_direction', { name: 'AMBIENT WIND DIRECTION', type: SimVarValueType.Degree }],
-            ['on_ground', { name: 'SIM ON GROUND', type: SimVarValueType.Bool }],
-            ['aoa', { name: 'INCIDENCE ALPHA', type: SimVarValueType.Degree }],
-            ['stall_aoa', { name: 'STALL ALPHA', type: SimVarValueType.Degree }],
-            ['zero_lift_aoa', { name: 'ZERO LIFT ALPHA', type: SimVarValueType.Degree }],
-            ['mach_number', { name: 'AIRSPEED MACH', type: SimVarValueType.Mach }],
-        ]);
-        super(simvars, bus, pacer);
-        this.mach = 0;
-        this.pressure = 1013.25;
-        (_a = this.needUpdateMachToKiasData) !== null && _a !== void 0 ? _a : (this.needUpdateMachToKiasData = false);
-    }
-    /** @inheritdoc */
-    onTopicSubscribed(topic) {
-        super.onTopicSubscribed(topic);
-        if (topic.startsWith('mach_to_kias_factor')) {
-            this.needUpdateMachToKiasData = true;
-        }
-    }
-    /** @inheritdoc */
-    onUpdate() {
-        const isSlewing = SimVar.GetSimVarValue('IS SLEW ACTIVE', 'bool');
-        if (!isSlewing) {
-            if (this.needUpdateMachToKiasData) {
-                this.mach = SimVar.GetSimVarValue('AIRSPEED MACH', SimVarValueType.Number);
-                this.pressure = SimVar.GetSimVarValue('AMBIENT PRESSURE', SimVarValueType.HPA);
-            }
-            super.onUpdate();
-        }
-    }
-}
-
-/**
- * Utility class for manipulating bit flags.
- */
-class BitFlags {
-    /**
-     * Generates a bit flag with a boolean value of true at a specified index.
-     * @param index The index of the flag. Must be between 0 and 32, inclusive.
-     * @returns a bit flag.
-     * @throws Error if index is out of bounds.
-     */
-    static createFlag(index) {
-        if (index < 0 || index > 32) {
-            throw new Error(`Invalid index ${index} for bit flag. Index must be between 0 and 32.`);
-        }
-        return 1 << index;
-    }
-    /**
-     * Gets the inverse of some bit flags.
-     * @param flags The bit flag group containing the flags to invert.
-     * @param mask An optional bit mask to use when applying the inverse operation. The operation will only be performed
-     * at the indexes where the mask has a value of 1 (true). If a mask is not specified, the operation will be performed
-     * at all indexes.
-     * @returns the inverse
-     */
-    static not(flags, mask = ~0) {
-        return flags ^ mask;
-    }
-    /**
-     * Gets the union of zero or more bit flags.
-     * @param flags A list of bit flags.
-     * @returns the union of the bit flags.
-     */
-    static union(...flags) {
-        let result = 0;
-        const len = flags.length;
-        for (let i = 0; i < len; i++) {
-            result |= flags[i];
-        }
-        return result;
-    }
-    /**
-     * Gets the intersection of zero or more bit flags.
-     * @param flags A list of bit flags.
-     * @returns the intersection of the bit flags.
-     */
-    static intersection(...flags) {
-        const len = flags.length;
-        if (len === 0) {
-            return 0;
-        }
-        let result = flags[0];
-        for (let i = 1; i < len; i++) {
-            result &= flags[i];
-        }
-        return result;
-    }
-    /**
-     * Changes a bit flag group by setting values at specific indexes.
-     * @param flags The bit flag group to change.
-     * @param valuesToSet A bit flag group containing the values to set.
-     * @param mask A mask defining the indexes to set. Only indexes at which the mask has a value of `1` (`true`) will
-     * be set.
-     * @returns The result of changing `flags` using the specified values and indexes.
-     */
-    static set(flags, valuesToSet, mask) {
-        return (flags & ~mask) | (valuesToSet & mask);
-    }
-    /**
-     * Checks if a bit flag group meets at least one condition from a list of conditions.
-     * @param flags A bit flag group.
-     * @param conditions The conditions to meet, as a bit flag group.
-     * @returns whether the bit flag group meets at least one condition.
-     */
-    static isAny(flags, conditions) {
-        return (flags & conditions) !== 0;
-    }
-    /**
-     * Checks if a bit flag group meets all the conditions from a list of conditions.
-     * @param flags A bit flag group.
-     * @param conditions The conditions to meet, as a bit flag group.
-     * @returns whether the bit flag group meets all the conditions.
-     */
-    static isAll(flags, conditions) {
-        return (flags & conditions) === conditions;
-    }
-    /**
-     * Iterates through a bit flag group and executes a callback function once for each flag.
-     * @param flags A bit flag group.
-     * @param callback A function which will be called once for each flag.
-     * @param valueFilter The value on which to filter. If defined, only flags with values equal to the filter will be
-     * iterated, otherwise all flags will be iterated regardless of their values.
-     * @param startIndex The index of the flag at which to start (inclusive). Defaults to 0.
-     * @param endIndex The index of the flag at which to end (exclusive). Defaults to 32.
-     */
-    static forEach(flags, callback, valueFilter, startIndex, endIndex) {
-        startIndex = Utils.Clamp(startIndex !== null && startIndex !== void 0 ? startIndex : (startIndex = 0), 0, 32);
-        endIndex = Utils.Clamp(endIndex !== null && endIndex !== void 0 ? endIndex : (endIndex = 32), 0, 32);
-        for (let i = startIndex; i < endIndex; i++) {
-            const value = (flags & (1 << i)) !== 0;
-            if (valueFilter === undefined || valueFilter === value) {
-                callback(value, i, flags);
-            }
-        }
-    }
-}
-
-/**
- * Applies time-weighted exponential smoothing (i.e. an exponential moving average) to a sequence of raw values.
- *
- * When a new raw value is added to the sequence, it and the last smoothed value are weighted according to the time
- * elapsed since the last smoothed value was calculated (i.e. since the last raw value was added) and averaged. The
- * calculation of the weighting is such that the weight of each raw value in the sequence decays exponentially with the
- * "age" (i.e. time elapsed between when that value was added to the sequence and when the latest value was added to
- * the sequence) of the value.
- */
-class ExpSmoother {
-    /**
-     * Creates a new instance of ExpSmoother.
-     * @param tau This smoother's time constant. The larger the constant, the greater the smoothing effect. A value less
-     * than or equal to 0 is equivalent to no smoothing.
-     * @param initial The initial smoothed value of this smoother. Defaults to null.
-     * @param dtThreshold The elapsed time threshold, in seconds, above which this smoother will not smooth a new raw
-     * value. Defaults to infinity.
-     */
-    constructor(tau, initial = null, dtThreshold = Infinity) {
-        this.tau = tau;
-        this.dtThreshold = dtThreshold;
-        this.lastValue = initial;
-    }
-    /**
-     * Gets the last smoothed value.
-     * @returns The last smoothed value, or null if none exists.
-     */
-    last() {
-        return this.lastValue;
-    }
-    /**
-     * Adds a new raw value and gets the next smoothed value. If the new raw value is the first to be added since this
-     * smoother was created or reset with no initial smoothed value, the returned smoothed value will be equal to the
-     * raw value.
-     * @param raw The new raw value.
-     * @param dt The elapsed time since the last raw value was added.
-     * @returns The next smoothed value.
-     */
-    next(raw, dt) {
-        let next;
-        if (this.tau > 0 && this.lastValue !== null) {
-            const factor = this.calculateFactor(dt);
-            next = ExpSmoother.smooth(raw, this.lastValue, factor);
-        }
-        else {
-            next = raw;
-        }
-        this.lastValue = next;
-        return next;
-    }
-    /**
-     * Calculates the smoothing factor for a given time interval.
-     * @param dt A time interval, in seconds.
-     * @returns the smoothing factor for the given time interval.
-     */
-    calculateFactor(dt) {
-        if (dt > this.dtThreshold) {
-            return 0;
-        }
-        else {
-            return Math.exp(-dt / this.tau);
-        }
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    reset(value) {
-        return this.lastValue = (value !== null && value !== void 0 ? value : null);
-    }
-    /**
-     * Applies exponential smoothing.
-     * @param value The value to smooth.
-     * @param last The last smoothed value.
-     * @param factor The smoothing factor.
-     * @returns A smoothed value.
-     */
-    static smooth(value, last, factor) {
-        return value * (1 - factor) + last * factor;
-    }
-}
-
-/**
- * A calculator for lookahead values based on past trends. The calculator accepts a series of input values separated
- * by discrete time intervals, computes a rate of change at each time step, and uses this rate of change to predict
- * what the input value will be at some arbitrary length of time in the future assuming the rate of change remains
- * constant.
- */
-class Lookahead {
-    /**
-     * Constructor.
-     * @param lookahead This calculator's lookahead time.
-     * @param valueSmoothingTau The smoothing time constant to apply to the calculator's input values before rate of
-     * change is computed. A value of `0` is equivalent to no smoothing. Defaults to `0`.
-     * @param trendSmoothingTau The smoothing time constant to apply to the calculator's computed trend values. A value
-     * of `0` is equivalent to no smoothing. Defaults to `0`.
-     */
-    constructor(lookahead, valueSmoothingTau = 0, trendSmoothingTau = 0) {
-        this.lookahead = lookahead;
-        this.lastSmoothedValue = null;
-        this.lastTrendValue = 0;
-        this.lastLookaheadValue = null;
-        this.lastSmoothedLookaheadValue = null;
-        this.valueSmoother = new ExpSmoother(valueSmoothingTau);
-        this.trendSmoother = new ExpSmoother(trendSmoothingTau);
-    }
-    /**
-     * Gets this calculator's last computed lookahead value. The lookahead value is the predicted value of this
-     * calculator's input when projected into the future by an amount equal to the lookahead time assuming the current
-     * rate of change of the input remains constant.
-     * @param smoothed Whether to retrieve the lookahead value computed using the last smoothed input value instead of
-     * the raw input value as the present (`t = 0`) value. Defaults to `false`.
-     * @returns This calculator's last computed lookahead value.
-     */
-    last(smoothed = false) {
-        return smoothed ? this.lastSmoothedLookaheadValue : this.lastLookaheadValue;
-    }
-    /**
-     * Gets this calculator's last computed trend value. The trend value is the equal to the rate of change of this
-     * calculator's input values multiplied by the lookahead time.
-     * @returns This calculator's last computed trend value.
-     */
-    lastTrend() {
-        return this.lastTrendValue;
-    }
-    /**
-     * Adds a new input value and gets the next lookahead value. The lookahead value is the predicted value of this
-     * calculator's input when projected into the future by an amount equal to the lookahead time assuming the current
-     * rate of change of the input remains constant.
-     * @param value The new input value.
-     * @param dt The elapsed time since the last input value was added.
-     * @param smoothed Whether to return the lookahead value computed using the smoothed input value instead of the raw
-     * input value as the present (`t = 0`) value. Note that this argument does not determine whether smoothing is
-     * applied for the purposes of calculating rate of change (smoothing is always applied for this purpose if a positive
-     * time constant is defined). Defaults to `false`.
-     * @returns The next lookahead value.
-     */
-    next(value, dt, smoothed = false) {
-        const oldSmoothedValue = this.lastSmoothedValue;
-        let trend;
-        if (dt < 0) {
-            return this.reset(value);
-        }
-        else if (dt > 0) {
-            this.lastSmoothedValue = this.valueSmoother.next(value, dt);
-            if (oldSmoothedValue === null) {
-                this.trendSmoother.reset();
-                trend = 0;
-            }
-            else {
-                trend = this.trendSmoother.next((this.lastSmoothedValue - oldSmoothedValue) / dt * this.lookahead, dt);
-            }
-        }
-        else {
-            trend = this.lastTrendValue;
-            this.lastSmoothedValue = this.valueSmoother.next(value, dt);
-        }
-        this.lastTrendValue = trend;
-        this.lastLookaheadValue = value + trend;
-        this.lastSmoothedLookaheadValue = this.lastSmoothedValue + trend;
-        return smoothed ? this.lastSmoothedLookaheadValue : this.lastLookaheadValue;
-    }
-    /**
-     * Adds a new input value and gets the next trend value. The trend value is the equal to the rate of change of this
-     * calculator's input values multiplied by the lookahead time.
-     * @param value The new input value.
-     * @param dt The elapsed time since the last input value was added.
-     * @returns The next trend value.
-     */
-    nextTrend(value, dt) {
-        this.next(value, dt);
-        return this.lastTrendValue;
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    reset(value) {
-        this.lastSmoothedValue = this.valueSmoother.reset(value);
-        this.trendSmoother.reset();
-        this.lastTrendValue = 0;
-        this.lastLookaheadValue = this.lastSmoothedValue;
-        this.lastSmoothedLookaheadValue = this.lastSmoothedValue;
-        return this.lastLookaheadValue;
-    }
-}
-
-/**
- * A utitlity class for basic math.
- */
-class MathUtils {
-    /**
-     * Clamps a numerical value to the min/max range.
-     * @param value The value to be clamped.
-     * @param min The minimum.
-     * @param max The maximum.
-     *
-     * @returns The clamped numerical value..
-     */
-    static clamp(value, min, max) {
-        return Math.max(min, Math.min(max, value));
-    }
-    /**
-     * Rounds a number.
-     * @param value The number to round.
-     * @param precision The precision with which to round. Defaults to `1`.
-     * @returns The rounded number.
-     */
-    static round(value, precision = 1) {
-        return Math.round(value / precision) * precision;
-    }
-    /**
-     * Ceils a number.
-     * @param value The number to ceil.
-     * @param precision The precision with which to ceil. Defaults to `1`.
-     * @returns The ceiled number.
-     */
-    static ceil(value, precision = 1) {
-        return Math.ceil(value / precision) * precision;
-    }
-    /**
-     * Floors a number.
-     * @param value The number to floor.
-     * @param precision The precision with which to floor. Defaults to `1`.
-     * @returns The floored number.
-     */
-    static floor(value, precision = 1) {
-        return Math.floor(value / precision) * precision;
-    }
-    /**
-     * Calculates the angular difference between two angles in the range `[0, 2 * pi)`. The calculation supports both
-     * directional and non-directional differences. The directional difference is the angle swept from the start angle
-     * to the end angle proceeding in the direction of increasing angle. The non-directional difference is the smaller
-     * of the two angles swept from the start angle to the end angle proceeding in either direction.
-     * @param start The starting angle, in radians.
-     * @param end The ending angle, in radians.
-     * @param directional Whether to calculate the directional difference. Defaults to `true`.
-     * @returns The angular difference between the two angles, in radians, in the range `[0, 2 * pi)`.
-     */
-    static diffAngle(start, end, directional = true) {
-        const diff = ((end - start) % MathUtils.TWO_PI + MathUtils.TWO_PI) % MathUtils.TWO_PI;
-        return directional ? diff : Math.min(diff, MathUtils.TWO_PI - diff);
-    }
-    /**
-     * Calculates the angular difference between two angles in the range `[0, 360)`. The calculation supports both
-     * directional and non-directional differences. The directional difference is the angle swept from the start angle
-     * to the end angle proceeding in the direction of increasing angle. The non-directional difference is the smaller
-     * of the two angles swept from the start angle to the end angle proceeding in either direction.
-     * @param start The starting angle, in degrees.
-     * @param end The ending angle, in degrees.
-     * @param directional Whether to calculate the directional difference. Defaults to `true`.
-     * @returns The angular difference between the two angles, in degrees, in the range `[0, 360)`.
-     */
-    static diffAngleDeg(start, end, directional = true) {
-        const diff = ((end - start) % 360 + 360) % 360;
-        return directional ? diff : Math.min(diff, 360 - diff);
-    }
-    /**
-     * Linearly interpolates a keyed value along one dimension.
-     * @param x The key of the value to interpolate.
-     * @param x0 The key of the first known value.
-     * @param x1 The key of the second known value.
-     * @param y0 The first known value.
-     * @param y1 The second known value.
-     * @param clampStart Whether to clamp the interpolated value to the first known value. Defaults to false.
-     * @param clampEnd Whether to clamp the interpolated value to the second known value. Defaults to false.
-     * @returns The interpolated value corresponding to the specified key.
-     */
-    static lerp(x, x0, x1, y0, y1, clampStart = false, clampEnd = false) {
-        if (x0 !== x1 && y0 !== y1) {
-            const fraction = MathUtils.clamp((x - x0) / (x1 - x0), clampStart ? 0 : -Infinity, clampEnd ? 1 : Infinity);
-            return fraction * (y1 - y0) + y0;
-        }
-        else {
-            return y0;
-        }
-    }
-    /**
-     * Linearly interpolates a keyed vector along one dimension. If the known vectors and the result vector have unequal
-     * lengths, then only the components shared by all vectors are interpolated in the result.
-     * @param out The object to which to write the result.
-     * @param x The key of the vector to interpolate.
-     * @param x0 The key of the first known vector.
-     * @param x1 The key of the second known vector.
-     * @param y0 The first known vector.
-     * @param y1 The second known vector.
-     * @param clampStart Whether to clamp the components of the interpolated vector to those of the first known vector.
-     * Defaults to false.
-     * @param clampEnd Whether to clamp the components of the interpolated vector to those of the second known vector.
-     * Defaults to false.
-     * @returns The interpolated vector corresponding to the specified key.
-     */
-    static lerpVector(out, x, x0, x1, y0, y1, clampStart = false, clampEnd = false) {
-        const length = Math.min(y0.length, y1.length, out.length);
-        for (let i = 0; i < length; i++) {
-            out[i] = MathUtils.lerp(x, x0, x1, y0[i], y1[i], clampStart, clampEnd);
-        }
-        return out;
-    }
-}
-/** Twice the value of pi. */
-MathUtils.TWO_PI = Math.PI * 2;
-/** Half the value of pi. */
-MathUtils.HALF_PI = Math.PI / 2;
-/** Square root of 3. */
-MathUtils.SQRT3 = Math.sqrt(3);
-/** Square root of 1/3. */
-MathUtils.SQRT1_3 = 1 / Math.sqrt(3);
-
-/**
- * A {@link Subscription} which executes a handler function every time it receives a notification.
- */
-class HandlerSubscription {
-    /**
-     * Constructor.
-     * @param handler This subscription's handler. The handler will be called each time this subscription receives a
-     * notification from its source.
-     * @param initialNotifyFunc A function which sends initial notifications to this subscription. If not defined, this
-     * subscription will not support initial notifications.
-     * @param onDestroy A function which is called when this subscription is destroyed.
-     */
-    constructor(handler, initialNotifyFunc, onDestroy) {
-        this.handler = handler;
-        this.initialNotifyFunc = initialNotifyFunc;
-        this.onDestroy = onDestroy;
-        this._isAlive = true;
-        this._isPaused = false;
-        this.canInitialNotify = initialNotifyFunc !== undefined;
-    }
-    /** @inheritdoc */
-    get isAlive() {
-        return this._isAlive;
-    }
-    /** @inheritdoc */
-    get isPaused() {
-        return this._isPaused;
-    }
-    /**
-     * Sends an initial notification to this subscription.
-     * @throws Error if this subscription is not alive.
-     */
-    initialNotify() {
-        if (!this._isAlive) {
-            throw new Error('HandlerSubscription: cannot notify a dead Subscription.');
-        }
-        this.initialNotifyFunc && this.initialNotifyFunc(this);
-    }
-    /** @inheritdoc */
-    pause() {
-        if (!this._isAlive) {
-            throw new Error('Subscription: cannot pause a dead Subscription.');
-        }
-        this._isPaused = true;
-        return this;
-    }
-    /** @inheritdoc */
-    resume(initialNotify = false) {
-        if (!this._isAlive) {
-            throw new Error('Subscription: cannot resume a dead Subscription.');
-        }
-        if (!this._isPaused) {
-            return this;
-        }
-        this._isPaused = false;
-        if (initialNotify) {
-            this.initialNotify();
-        }
-        return this;
-    }
-    /** @inheritdoc */
-    destroy() {
-        if (!this._isAlive) {
-            return;
-        }
-        this._isAlive = false;
-        this.onDestroy && this.onDestroy(this);
-    }
-}
-
-/**
- * A pipe from an input subscribable to an output mutable subscribable. Each notification received by the pipe is used
- * to change the state of the output subscribable.
- */
-class SubscribablePipe extends HandlerSubscription {
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    constructor(from, to, arg3, arg4) {
-        let handler;
-        let onDestroy;
-        if (typeof arg4 === 'function') {
-            handler = (fromVal) => {
-                to.set(arg3(fromVal, to.get()));
-            };
-            onDestroy = arg4;
-        }
-        else {
-            handler = (fromVal) => {
-                to.set(fromVal);
-            };
-            onDestroy = arg3;
-        }
-        super(handler, (sub) => { sub.handler(from.get()); }, onDestroy);
-    }
-}
-
-/**
- * An abstract implementation of a subscribable which allows adding, removing, and notifying subscribers.
- */
-class AbstractSubscribable {
-    constructor() {
-        this.isSubscribable = true;
-        this.notifyDepth = 0;
-        /** A function which sends initial notifications to subscriptions. */
-        this.initialNotifyFunc = this.notifySubscription.bind(this);
-        /** A function which responds to when a subscription to this subscribable is destroyed. */
-        this.onSubDestroyedFunc = this.onSubDestroyed.bind(this);
-    }
-    /**
-     * Adds a subscription to this subscribable.
-     * @param sub The subscription to add.
-     */
-    addSubscription(sub) {
-        if (this.subs) {
-            this.subs.push(sub);
-        }
-        else if (this.singletonSub) {
-            this.subs = [this.singletonSub, sub];
-            delete this.singletonSub;
-        }
-        else {
-            this.singletonSub = sub;
-        }
-    }
-    /** @inheritdoc */
-    sub(handler, initialNotify = false, paused = false) {
-        const sub = new HandlerSubscription(handler, this.initialNotifyFunc, this.onSubDestroyedFunc);
-        this.addSubscription(sub);
-        if (paused) {
-            sub.pause();
-        }
-        else if (initialNotify) {
-            sub.initialNotify();
-        }
-        return sub;
-    }
-    /** @inheritdoc */
-    unsub(handler) {
-        let toDestroy = undefined;
-        if (this.singletonSub && this.singletonSub.handler === handler) {
-            toDestroy = this.singletonSub;
-        }
-        else if (this.subs) {
-            toDestroy = this.subs.find(sub => sub.handler === handler);
-        }
-        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
-    }
-    /**
-     * Notifies subscriptions that this subscribable's value has changed.
-     */
-    notify() {
-        const canCleanUpSubs = this.notifyDepth === 0;
-        let needCleanUpSubs = false;
-        this.notifyDepth++;
-        if (this.singletonSub) {
-            try {
-                if (this.singletonSub.isAlive && !this.singletonSub.isPaused) {
-                    this.notifySubscription(this.singletonSub);
-                }
-            }
-            catch (error) {
-                console.error(`AbstractSubscribable: error in handler: ${error}`);
-                if (error instanceof Error) {
-                    console.error(error.stack);
-                }
-            }
-            if (canCleanUpSubs) {
-                // If subscriptions were added during the notification, then singletonSub would be deleted and replaced with
-                // the subs array.
-                if (this.singletonSub) {
-                    needCleanUpSubs = !this.singletonSub.isAlive;
-                }
-                else if (this.subs) {
-                    for (let i = 0; i < this.subs.length; i++) {
-                        if (!this.subs[i].isAlive) {
-                            needCleanUpSubs = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        else if (this.subs) {
-            const subLen = this.subs.length;
-            for (let i = 0; i < subLen; i++) {
-                try {
-                    const sub = this.subs[i];
-                    if (sub.isAlive && !sub.isPaused) {
-                        this.notifySubscription(sub);
-                    }
-                    needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
-                }
-                catch (error) {
-                    console.error(`AbstractSubscribable: error in handler: ${error}`);
-                    if (error instanceof Error) {
-                        console.error(error.stack);
-                    }
-                }
-            }
-            // If subscriptions were added during the notification and a cleanup operation is not already pending, then we
-            // need to check if any of the new subscriptions are already dead and if so, pend a cleanup operation.
-            if (canCleanUpSubs && !needCleanUpSubs) {
-                for (let i = subLen; i < this.subs.length; i++) {
-                    if (!this.subs[i].isAlive) {
-                        needCleanUpSubs = true;
-                        break;
-                    }
-                }
-            }
-        }
-        this.notifyDepth--;
-        if (needCleanUpSubs) {
-            if (this.singletonSub) {
-                delete this.singletonSub;
-            }
-            else if (this.subs) {
-                this.subs = this.subs.filter(sub => sub.isAlive);
-            }
-        }
-    }
-    /**
-     * Notifies a subscription of this subscribable's current state.
-     * @param sub The subscription to notify.
-     */
-    notifySubscription(sub) {
-        sub.handler(this.get());
-    }
-    /**
-     * Responds to when a subscription to this subscribable is destroyed.
-     * @param sub The destroyed subscription.
-     */
-    onSubDestroyed(sub) {
-        // If we are not in the middle of a notify operation, remove the subscription.
-        // Otherwise, do nothing and let the post-notify clean-up code handle it.
-        if (this.notifyDepth === 0) {
-            if (this.singletonSub === sub) {
-                delete this.singletonSub;
-            }
-            else if (this.subs) {
-                const index = this.subs.indexOf(sub);
-                if (index >= 0) {
-                    this.subs.splice(index, 1);
-                }
-            }
-        }
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    map(fn, equalityFunc, mutateFunc, initialVal) {
-        return new MappedSubscribableClass(this, fn, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : AbstractSubscribable.DEFAULT_EQUALITY_FUNC, mutateFunc, initialVal);
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    pipe(to, arg2, arg3) {
-        let sub;
-        let paused;
-        if (typeof arg2 === 'function') {
-            sub = new SubscribablePipe(this, to, arg2, this.onSubDestroyedFunc);
-            paused = arg3 !== null && arg3 !== void 0 ? arg3 : false;
-        }
-        else {
-            sub = new SubscribablePipe(this, to, this.onSubDestroyedFunc);
-            paused = arg2 !== null && arg2 !== void 0 ? arg2 : false;
-        }
-        this.addSubscription(sub);
-        if (paused) {
-            sub.pause();
-        }
-        else {
-            sub.initialNotify();
-        }
-        return sub;
-    }
-}
-/**
- * Checks if two values are equal using the strict equality operator.
- * @param a The first value.
- * @param b The second value.
- * @returns whether a and b are equal.
- */
-AbstractSubscribable.DEFAULT_EQUALITY_FUNC = (a, b) => a === b;
-/**
- * An implementation of {@link MappedSubscribable}.
- */
-class MappedSubscribableClass extends AbstractSubscribable {
-    /**
-     * Constructor.
-     * @param input This subscribable's input.
-     * @param mapFunc The function which maps this subject's inputs to a value.
-     * @param equalityFunc The function which this subject uses to check for equality between values.
-     * @param mutateFunc The function which this subject uses to change its value.
-     * @param initialVal The initial value of this subject.
-     */
-    constructor(input, mapFunc, equalityFunc, mutateFunc, initialVal) {
-        super();
-        this.input = input;
-        this.mapFunc = mapFunc;
-        this.equalityFunc = equalityFunc;
-        this.isSubscribable = true;
-        this._isAlive = true;
-        this._isPaused = false;
-        if (initialVal && mutateFunc) {
-            this.value = initialVal;
-            mutateFunc(this.value, this.mapFunc(this.input.get()));
-            this.mutateFunc = (newVal) => { mutateFunc(this.value, newVal); };
-        }
-        else {
-            this.value = this.mapFunc(this.input.get());
-            this.mutateFunc = (newVal) => { this.value = newVal; };
-        }
-        this.inputSub = this.input.sub(inputValue => {
-            this.updateValue(inputValue);
-        }, true);
-    }
-    /** @inheritdoc */
-    get isAlive() {
-        return this._isAlive;
-    }
-    /** @inheritdoc */
-    get isPaused() {
-        return this._isPaused;
-    }
-    /**
-     * Re-maps this subject's value from its input, and notifies subscribers if this results in a change to the mapped
-     * value according to this subject's equality function.
-     * @param inputValue The input value.
-     */
-    updateValue(inputValue) {
-        const value = this.mapFunc(inputValue, this.value);
-        if (!this.equalityFunc(this.value, value)) {
-            this.mutateFunc(value);
-            this.notify();
-        }
-    }
-    /** @inheritdoc */
-    get() {
-        return this.value;
-    }
-    /** @inheritdoc */
-    pause() {
-        if (!this._isAlive) {
-            throw new Error('MappedSubscribable: cannot pause a dead subscribable');
-        }
-        if (this._isPaused) {
-            return this;
-        }
-        this.inputSub.pause();
-        this._isPaused = true;
-        return this;
-    }
-    /** @inheritdoc */
-    resume() {
-        if (!this._isAlive) {
-            throw new Error('MappedSubscribable: cannot resume a dead subscribable');
-        }
-        if (!this._isPaused) {
-            return this;
-        }
-        this._isPaused = false;
-        this.inputSub.resume(true);
-        return this;
-    }
-    /** @inheritdoc */
-    destroy() {
-        this._isAlive = false;
-        this.inputSub.destroy();
-    }
-}
-
-/**
- * A subscribable subject whose value can be freely manipulated.
- */
-class Subject extends AbstractSubscribable {
-    /**
-     * Constructs an observable Subject.
-     * @param value The initial value.
-     * @param equalityFunc The function to use to check for equality.
-     * @param mutateFunc The function to use to mutate the subject's value.
-     */
-    constructor(value, equalityFunc, mutateFunc) {
-        super();
-        this.value = value;
-        this.equalityFunc = equalityFunc;
-        this.mutateFunc = mutateFunc;
-        this.isMutableSubscribable = true;
-    }
-    /**
-     * Creates and returns a new Subject.
-     * @param v The initial value of the subject.
-     * @param equalityFunc The function to use to check for equality between subject values. Defaults to the strict
-     * equality comparison (`===`).
-     * @param mutateFunc The function to use to change the subject's value. If not defined, new values will replace
-     * old values by variable assignment.
-     * @returns A Subject instance.
-     */
-    static create(v, equalityFunc, mutateFunc) {
-        return new Subject(v, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : Subject.DEFAULT_EQUALITY_FUNC, mutateFunc);
-    }
-    /** @inheritdoc */
-    notifySub(sub) {
-        sub(this.value);
-    }
-    /**
-     * Sets the value of this subject and notifies subscribers if the value changed.
-     * @param value The new value.
-     */
-    set(value) {
-        if (!this.equalityFunc(value, this.value)) {
-            if (this.mutateFunc) {
-                this.mutateFunc(this.value, value);
-            }
-            else {
-                this.value = value;
-            }
-            this.notify();
-        }
-    }
-    /**
-     * Applies a partial set of properties to this subject's value and notifies subscribers if the value changed as a
-     * result.
-     * @param value The properties to apply.
-     */
-    apply(value) {
-        if (typeof this.value !== 'object' || this.value === null) {
-            return;
-        }
-        let changed = false;
-        for (const prop in value) {
-            changed = value[prop] !== this.value[prop];
-            if (changed) {
-                break;
-            }
-        }
-        Object.assign(this.value, value);
-        changed && this.notify();
-    }
-    /** @inheritdoc */
-    notify() {
-        super.notify();
-    }
-    /**
-     * Gets the value of this subject.
-     * @returns The value of this subject.
-     */
-    get() {
-        return this.value;
-    }
-}
+/** One statute mile per weight equivalent of one gallon of fuel, using the generic conversion 1 gallon = 6.7 pounds. */
+UnitType.MILE_PER_GALLON_FUEL = new CompoundUnit(UnitFamily.DistancePerWeight, [UnitType.MILE], [UnitType.GALLON_FUEL]);
+/** One nautical mile per weight equivalent of one gallon of fuel, using the generic conversion 1 gallon = 6.7 pounds. */
+UnitType.NMILE_PER_GALLON_FUEL = new CompoundUnit(UnitFamily.DistancePerWeight, [UnitType.NMILE], [UnitType.GALLON_FUEL]);
+/** One foot per nautical mile. */
+UnitType.FOOT_PER_NMILE = new CompoundUnit(UnitFamily.DistanceRatio, [UnitType.FOOT], [UnitType.NMILE]);
 
 /**
  * Utility methods for working with Subscribables.
@@ -2649,6 +3537,24 @@ class SubscribableMapFunctions {
         return Math.abs;
     }
     /**
+* Generates a function which maps an input tuple to a count of the number of items in the tuple that satisfy a
+     * given condition.
+     * @param predicate A function which evaluates whether an item should be counted.
+     * @returns A function which maps an input tuple to a count of the number of items in the tuple that satisfy the
+     * condition specified by the predicate.
+     */
+    static count(predicate) {
+        const reduceFunc = (sum, curr) => {
+            if (predicate(curr)) {
+                return sum + 1;
+            }
+            else {
+                return sum;
+            }
+        };
+        return (input) => input.reduce(reduceFunc, 0);
+    }
+    /**
      * Generates a function which maps an input number to a rounded version of itself at a certain precision.
      * @param precision The precision to which to round the input.
      * @returns A function which maps an input number to a rounded version of itself at the specified precision.
@@ -2736,7 +3642,8 @@ class MappedSubject extends AbstractSubscribable {
         super();
         this.mapFunc = mapFunc;
         this.equalityFunc = equalityFunc;
-        this.isSubscribable = true;
+        /** @inheritdoc */
+        this.canInitialNotify = true;
         this._isAlive = true;
         this._isPaused = false;
         this.inputs = inputs;
@@ -5951,2470 +6858,6 @@ class MagVar {
     }
 }
 
-/**
- * A Subject which provides a {@link GeoPointInterface} value.
- */
-class GeoPointSubject extends AbstractSubscribable {
-    /**
-     * Constructor.
-     * @param value The value of this subject.
-     * @param tolerance The tolerance of this subject's equality check, defined as the maximum allowed great-circle
-     * distance between two equal points in great-arc radians. Defaults to {@link GeoPoint.EQUALITY_TOLERANCE}.
-     */
-    constructor(value, tolerance) {
-        super();
-        this.value = value;
-        this.tolerance = tolerance;
-        /** @inheritdoc */
-        this.isMutableSubscribable = true;
-    }
-    /**
-     * Creates a GeoPointSubject.
-     * @param initialVal The initial value.
-     * @param tolerance The tolerance of the subject's equality check, defined as the maximum allowed great-circle
-     * distance between two equal points in great-arc radians. Defaults to {@link GeoPoint.EQUALITY_TOLERANCE}.
-     * @returns A GeoPointSubject.
-     */
-    static create(initialVal, tolerance) {
-        return new GeoPointSubject(initialVal, tolerance);
-    }
-    /**
-     * Creates a GeoPointSubject.
-     * @param initialVal The initial value.
-     * @returns A GeoPointSubject.
-     * @deprecated Use `GeoPointSubject.create()` instead.
-     */
-    static createFromGeoPoint(initialVal) {
-        return new GeoPointSubject(initialVal);
-    }
-    /** @inheritdoc */
-    get() {
-        return this.value.readonly;
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    set(arg1, arg2) {
-        const isArg1Number = typeof arg1 === 'number';
-        const equals = isArg1Number ? this.value.equals(arg1, arg2, this.tolerance) : this.value.equals(arg1, this.tolerance);
-        if (!equals) {
-            isArg1Number ? this.value.set(arg1, arg2) : this.value.set(arg1);
-            this.notify();
-        }
-    }
-}
-
-/**
- * A publisher for AHRS information.
- */
-class AhrsPublisher extends SimVarPublisher {
-    /**
-     * Creates an AhrsPublisher.
-     * @param bus The event bus to which to publish.
-     * @param pacer An optional pacer to use to control the rate of publishing.
-     */
-    constructor(bus, pacer) {
-        var _a;
-        const simvars = new Map([
-            ['pitch_deg', { name: 'ATTITUDE INDICATOR PITCH DEGREES:#index#', type: SimVarValueType.Degree, indexed: true }],
-            ['roll_deg', { name: 'ATTITUDE INDICATOR BANK DEGREES:#index#', type: SimVarValueType.Degree, indexed: true }],
-            ['hdg_deg', { name: 'HEADING INDICATOR:#index#', type: SimVarValueType.Degree, indexed: true }],
-            ['hdg_deg_true', { name: 'HEADING INDICATOR:#index#', type: SimVarValueType.Degree, map: (heading) => MagVar.magneticToTrue(heading, this.magVar), indexed: true }],
-            ['delta_heading_rate', { name: 'DELTA HEADING RATE:#index#', type: SimVarValueType.Degree, indexed: true }],
-            ['turn_coordinator_ball', { name: 'TURN COORDINATOR BALL', type: SimVarValueType.Number }],
-            ['actual_hdg_deg', { name: 'PLANE HEADING DEGREES MAGNETIC', type: SimVarValueType.Degree }],
-            ['actual_hdg_deg_true', { name: 'PLANE HEADING DEGREES TRUE', type: SimVarValueType.Degree }],
-            ['actual_pitch_deg', { name: 'PLANE PITCH DEGREES', type: SimVarValueType.Degree }],
-            ['actual_roll_deg', { name: 'PLANE BANK DEGREES', type: SimVarValueType.Degree }],
-        ]);
-        super(simvars, bus, pacer);
-        this.magVar = 0;
-        (_a = this.needUpdateMagVar) !== null && _a !== void 0 ? _a : (this.needUpdateMagVar = false);
-    }
-    /** @inheritdoc */
-    onTopicSubscribed(topic) {
-        super.onTopicSubscribed(topic);
-        if (topic.startsWith('hdg_deg_true')) {
-            this.needUpdateMagVar = true;
-        }
-    }
-    /** @inheritdoc */
-    onUpdate() {
-        if (this.needUpdateMagVar) {
-            this.magVar = SimVar.GetSimVarValue('MAGVAR', SimVarValueType.Degree);
-        }
-        super.onUpdate();
-    }
-}
-
-/**
- * A publisher for events related to the sim's AI piloting feature.
- */
-class AiPilotPublisher extends SimVarPublisher {
-    /**
-     * Creates a new instance of AiPilotPublisher.
-     * @param bus The event bus to which to publish.
-     */
-    constructor(bus) {
-        super(new Map([
-            ['ai_delegate_controls_active', { name: 'DELEGATE CONTROLS TO AI', type: SimVarValueType.Bool }],
-            ['ai_auto_rudder_active', { name: 'AUTO COORDINATION', type: SimVarValueType.Bool }]
-        ]), bus);
-    }
-}
-
-/**
- * Ambient precipitation states.
- */
-var AmbientPrecipState;
-(function (AmbientPrecipState) {
-    AmbientPrecipState[AmbientPrecipState["None"] = 2] = "None";
-    AmbientPrecipState[AmbientPrecipState["Rain"] = 4] = "Rain";
-    AmbientPrecipState[AmbientPrecipState["Snow"] = 8] = "Snow";
-})(AmbientPrecipState || (AmbientPrecipState = {}));
-/**
- * A publisher for ambient environment information.
- */
-class AmbientPublisher extends SimVarPublisher {
-    /**
-     * Creates an AmbientPublisher.
-     * @param bus The event bus to which to publish.
-     * @param pacer An optional pacer to use to control the rate of publishing.
-     */
-    constructor(bus, pacer) {
-        const simvars = new Map([
-            ['ambient_precip_state', { name: 'AMBIENT PRECIP STATE', type: SimVarValueType.Number }],
-            ['ambient_precip_rate', { name: 'AMBIENT PRECIP RATE', type: SimVarValueType.MillimetersWater }],
-            ['ambient_visibility', { name: 'AMBIENT VISIBILITY', type: SimVarValueType.Meters }],
-            ['ambient_in_cloud', { name: 'AMBIENT IN CLOUD', type: SimVarValueType.Bool }],
-            ['ambient_qnh_inhg', { name: 'SEA LEVEL PRESSURE', type: SimVarValueType.InHG }],
-            ['ambient_qnh_mb', { name: 'SEA LEVEL PRESSURE', type: SimVarValueType.MB }],
-        ]);
-        super(simvars, bus, pacer);
-    }
-}
-
-/**
- * A basic implementation of {@link Consumer}.
- */
-class BasicConsumer {
-    /**
-     * Creates an instance of a Consumer.
-     * @param subscribe A function which subscribes a handler to the source of this consumer's events.
-     * @param state The state for the consumer to track.
-     * @param currentHandler The current build filter handler stack, if any.
-     */
-    constructor(subscribe, state = {}, currentHandler) {
-        this.subscribe = subscribe;
-        this.state = state;
-        this.currentHandler = currentHandler;
-        /** @inheritdoc */
-        this.isConsumer = true;
-        this.activeSubs = new Map();
-    }
-    /** @inheritdoc */
-    handle(handler, paused = false) {
-        let activeHandler;
-        if (this.currentHandler !== undefined) {
-            /**
-             * The handler reference to store.
-             * @param data The input data to the handler.
-             */
-            activeHandler = (data) => {
-                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                this.currentHandler(data, this.state, handler);
-            };
-        }
-        else {
-            activeHandler = handler;
-        }
-        let activeSubArray = this.activeSubs.get(handler);
-        if (!activeSubArray) {
-            activeSubArray = [];
-            this.activeSubs.set(handler, activeSubArray);
-        }
-        const onDestroyed = (destroyed) => {
-            const activeSubsArray = this.activeSubs.get(handler);
-            if (activeSubsArray) {
-                activeSubsArray.splice(activeSubsArray.indexOf(destroyed), 1);
-                if (activeSubsArray.length === 0) {
-                    this.activeSubs.delete(handler);
-                }
-            }
-        };
-        const sub = new ConsumerSubscription(this.subscribe(activeHandler, paused), onDestroyed);
-        // Need to handle the case where the subscription is destroyed immediately
-        if (sub.isAlive) {
-            activeSubArray.push(sub);
-        }
-        else if (activeSubArray.length === 0) {
-            this.activeSubs.delete(handler);
-        }
-        return sub;
-    }
-    /** @inheritdoc */
-    off(handler) {
-        var _a;
-        const activeSubArray = this.activeSubs.get(handler);
-        if (activeSubArray) {
-            (_a = activeSubArray.shift()) === null || _a === void 0 ? void 0 : _a.destroy();
-            if (activeSubArray.length === 0) {
-                this.activeSubs.delete(handler);
-            }
-        }
-    }
-    /** @inheritdoc */
-    atFrequency(frequency, immediateFirstPublish = true) {
-        const initialState = {
-            previousTime: Date.now(),
-            firstRun: immediateFirstPublish
-        };
-        return new BasicConsumer(this.subscribe, initialState, this.getAtFrequencyHandler(frequency));
-    }
-    /**
-     * Gets a handler function for a 'atFrequency' filter.
-     * @param frequency The frequency, in Hz, to cap to.
-     * @returns A handler function for a 'atFrequency' filter.
-     */
-    getAtFrequencyHandler(frequency) {
-        const deltaTimeTrigger = 1000 / frequency;
-        return (data, state, next) => {
-            const currentTime = Date.now();
-            const deltaTime = currentTime - state.previousTime;
-            if (deltaTimeTrigger <= deltaTime || state.firstRun) {
-                while ((state.previousTime + deltaTimeTrigger) < currentTime) {
-                    state.previousTime += deltaTimeTrigger;
-                }
-                if (state.firstRun) {
-                    state.firstRun = false;
-                }
-                this.with(data, next);
-            }
-        };
-    }
-    /** @inheritdoc */
-    withPrecision(precision) {
-        return new BasicConsumer(this.subscribe, { lastValue: 0, hasLastValue: false }, this.getWithPrecisionHandler(precision));
-    }
-    /**
-     * Gets a handler function for a 'withPrecision' filter.
-     * @param precision The decimal precision to snap to.
-     * @returns A handler function for a 'withPrecision' filter.
-     */
-    getWithPrecisionHandler(precision) {
-        return (data, state, next) => {
-            const dataValue = data;
-            const multiplier = Math.pow(10, precision);
-            const currentValueAtPrecision = Math.round(dataValue * multiplier) / multiplier;
-            if (!state.hasLastValue || currentValueAtPrecision !== state.lastValue) {
-                state.hasLastValue = true;
-                state.lastValue = currentValueAtPrecision;
-                this.with(currentValueAtPrecision, next);
-            }
-        };
-    }
-    /** @inheritdoc */
-    whenChangedBy(amount) {
-        return new BasicConsumer(this.subscribe, { lastValue: 0, hasLastValue: false }, this.getWhenChangedByHandler(amount));
-    }
-    /**
-     * Gets a handler function for a 'whenChangedBy' filter.
-     * @param amount The minimum amount threshold below which the consumer will not consume.
-     * @returns A handler function for a 'whenChangedBy' filter.
-     */
-    getWhenChangedByHandler(amount) {
-        return (data, state, next) => {
-            const dataValue = data;
-            const diff = Math.abs(dataValue - state.lastValue);
-            if (!state.hasLastValue || diff >= amount) {
-                state.hasLastValue = true;
-                state.lastValue = dataValue;
-                this.with(data, next);
-            }
-        };
-    }
-    /** @inheritdoc */
-    whenChanged() {
-        return new BasicConsumer(this.subscribe, { lastValue: '', hasLastValue: false }, this.getWhenChangedHandler());
-    }
-    /**
-     * Gets a handler function for a 'whenChanged' filter.
-     * @returns A handler function for a 'whenChanged' filter.
-     */
-    getWhenChangedHandler() {
-        return (data, state, next) => {
-            if (!state.hasLastValue || state.lastValue !== data) {
-                state.hasLastValue = true;
-                state.lastValue = data;
-                this.with(data, next);
-            }
-        };
-    }
-    /** @inheritdoc */
-    onlyAfter(deltaTime) {
-        return new BasicConsumer(this.subscribe, { previousTime: Date.now() }, this.getOnlyAfterHandler(deltaTime));
-    }
-    /**
-     * Gets a handler function for an 'onlyAfter' filter.
-     * @param deltaTime The minimum delta time between events.
-     * @returns A handler function for an 'onlyAfter' filter.
-     */
-    getOnlyAfterHandler(deltaTime) {
-        return (data, state, next) => {
-            const currentTime = Date.now();
-            const timeDiff = currentTime - state.previousTime;
-            if (timeDiff > deltaTime) {
-                state.previousTime += deltaTime;
-                this.with(data, next);
-            }
-        };
-    }
-    /**
-     * Builds a handler stack from the current handler.
-     * @param data The data to send in to the handler.
-     * @param handler The handler to use for processing.
-     */
-    with(data, handler) {
-        if (this.currentHandler !== undefined) {
-            this.currentHandler(data, this.state, handler);
-        }
-        else {
-            handler(data);
-        }
-    }
-}
-/**
- * A {@link Subscription} for a {@link BasicConsumer}.
- */
-class ConsumerSubscription {
-    /**
-     * Constructor.
-     * @param sub The event bus subscription backing this subscription.
-     * @param onDestroy A function which is called when this subscription is destroyed.
-     */
-    constructor(sub, onDestroy) {
-        this.sub = sub;
-        this.onDestroy = onDestroy;
-    }
-    /** @inheritdoc */
-    get isAlive() {
-        return this.sub.isAlive;
-    }
-    /** @inheritdoc */
-    get isPaused() {
-        return this.sub.isPaused;
-    }
-    /** @inheritdoc */
-    get canInitialNotify() {
-        return this.sub.canInitialNotify;
-    }
-    /** @inheritdoc */
-    pause() {
-        this.sub.pause();
-        return this;
-    }
-    /** @inheritdoc */
-    resume(initialNotify = false) {
-        this.sub.resume(initialNotify);
-        return this;
-    }
-    /** @inheritdoc */
-    destroy() {
-        this.sub.destroy();
-        this.onDestroy(this);
-    }
-}
-
-/**
- * A typed container for subscribers interacting with the Event Bus.
- */
-class EventSubscriber {
-    /**
-     * Creates an instance of an EventSubscriber.
-     * @param bus The EventBus that is the parent of this instance.
-     */
-    constructor(bus) {
-        this.bus = bus;
-    }
-    /**
-     * Subscribes to a topic on the bus.
-     * @param topic The topic to subscribe to.
-     * @returns A consumer to bind the event handler to.
-     */
-    on(topic) {
-        return new BasicConsumer((handler, paused) => {
-            return this.bus.on(topic, handler, paused);
-        });
-    }
-}
-
-var APLockType;
-(function (APLockType) {
-    APLockType[APLockType["Heading"] = 0] = "Heading";
-    APLockType[APLockType["Nav"] = 1] = "Nav";
-    APLockType[APLockType["Alt"] = 2] = "Alt";
-    APLockType[APLockType["Bank"] = 3] = "Bank";
-    APLockType[APLockType["WingLevel"] = 4] = "WingLevel";
-    APLockType[APLockType["Vs"] = 5] = "Vs";
-    APLockType[APLockType["Flc"] = 6] = "Flc";
-    APLockType[APLockType["Pitch"] = 7] = "Pitch";
-    APLockType[APLockType["Approach"] = 8] = "Approach";
-    APLockType[APLockType["Backcourse"] = 9] = "Backcourse";
-    APLockType[APLockType["Glideslope"] = 10] = "Glideslope";
-    APLockType[APLockType["VNav"] = 11] = "VNav";
-})(APLockType || (APLockType = {}));
-/** base publisher for simvars */
-class APSimVarPublisher extends SimVarPublisher {
-    /**
-     * Create an APSimVarPublisher
-     * @param bus The EventBus to publish to
-     * @param pacer An optional pacer to use to control the pace of publishing
-     */
-    constructor(bus, pacer = undefined) {
-        super(APSimVarPublisher.simvars, bus, pacer);
-    }
-}
-APSimVarPublisher.simvars = new Map([
-    ['ap_master_status', { name: 'AUTOPILOT MASTER', type: SimVarValueType.Bool }],
-    ['ap_yd_status', { name: 'AUTOPILOT YAW DAMPER', type: SimVarValueType.Bool }],
-    ['ap_disengage_status', { name: 'AUTOPILOT DISENGAGED', type: SimVarValueType.Bool }],
-    ['ap_heading_hold', { name: 'AUTOPILOT HEADING LOCK', type: SimVarValueType.Bool }],
-    ['ap_nav_hold', { name: 'AUTOPILOT NAV1 LOCK', type: SimVarValueType.Bool }],
-    ['ap_bank_hold', { name: 'AUTOPILOT BANK HOLD', type: SimVarValueType.Bool }],
-    ['ap_max_bank_id', { name: 'AUTOPILOT MAX BANK ID', type: SimVarValueType.Number }],
-    ['ap_max_bank_value', { name: 'AUTOPILOT MAX BANK', type: SimVarValueType.Degree }],
-    ['ap_wing_lvl_hold', { name: 'AUTOPILOT WING LEVELER', type: SimVarValueType.Bool }],
-    ['ap_approach_hold', { name: 'AUTOPILOT APPROACH HOLD', type: SimVarValueType.Bool }],
-    ['ap_backcourse_hold', { name: 'AUTOPILOT BACKCOURSE HOLD', type: SimVarValueType.Bool }],
-    ['ap_vs_hold', { name: 'AUTOPILOT VERTICAL HOLD', type: SimVarValueType.Bool }],
-    ['ap_flc_hold', { name: 'AUTOPILOT FLIGHT LEVEL CHANGE', type: SimVarValueType.Bool }],
-    ['ap_alt_hold', { name: 'AUTOPILOT ALTITUDE LOCK', type: SimVarValueType.Bool }],
-    ['ap_glideslope_hold', { name: 'AUTOPILOT GLIDESLOPE HOLD', type: SimVarValueType.Bool }],
-    ['ap_pitch_hold', { name: 'AUTOPILOT PITCH HOLD', type: SimVarValueType.Bool }],
-    ['ap_toga_hold', { name: 'AUTOPILOT TAKEOFF POWER ACTIVE', type: SimVarValueType.Bool }],
-    ['ap_heading_selected', { name: 'AUTOPILOT HEADING LOCK DIR:#index#', type: SimVarValueType.Degree, indexed: true }],
-    ['ap_altitude_selected', { name: 'AUTOPILOT ALTITUDE LOCK VAR:#index#', type: SimVarValueType.Feet, indexed: true }],
-    ['ap_pitch_selected', { name: 'AUTOPILOT PITCH HOLD REF', type: SimVarValueType.Degree }],
-    ['ap_vs_selected', { name: 'AUTOPILOT VERTICAL HOLD VAR:#index#', type: SimVarValueType.FPM, indexed: true }],
-    ['ap_fpa_selected', { name: 'L:WT_AP_FPA_Target:#index#', type: SimVarValueType.Degree, indexed: true }],
-    ['ap_ias_selected', { name: 'AUTOPILOT AIRSPEED HOLD VAR:#index#', type: SimVarValueType.Knots, indexed: true }],
-    ['ap_mach_selected', { name: 'AUTOPILOT MACH HOLD VAR:#index#', type: SimVarValueType.Number, indexed: true }],
-    ['ap_selected_speed_is_mach', { name: 'AUTOPILOT MANAGED SPEED IN MACH', type: SimVarValueType.Bool }],
-    ['ap_selected_speed_is_manual', { name: 'L:XMLVAR_SpeedIsManuallySet', type: SimVarValueType.Bool }],
-    ['flight_director_bank', { name: 'AUTOPILOT FLIGHT DIRECTOR BANK', type: SimVarValueType.Degree }],
-    ['flight_director_pitch', { name: 'AUTOPILOT FLIGHT DIRECTOR PITCH', type: SimVarValueType.Degree }],
-    ['flight_director_is_active_1', { name: 'AUTOPILOT FLIGHT DIRECTOR ACTIVE:1', type: SimVarValueType.Bool }],
-    ['flight_director_is_active_2', { name: 'AUTOPILOT FLIGHT DIRECTOR ACTIVE:2', type: SimVarValueType.Bool }],
-    ['vnav_active', { name: 'L:XMLVAR_VNAVButtonValue', type: SimVarValueType.Bool }]
-]);
-/**
- * Publishes autopilot data
- */
-class AutopilotPublisher extends BasePublisher {
-    /**
-     * Creates an AutopilotPublisher
-     * @param bus The event bus to publish to.
-     * @param pacer An optional pacer to use to control the rate of publishing.
-     */
-    constructor(bus, pacer) {
-        super(bus, pacer);
-    }
-    /**
-     * Publish an AP master engage event
-     */
-    publishMasterEngage() {
-        this.publish('ap_master_on', true);
-    }
-    /**
-     * Publish an AP master disengage event
-     */
-    publishMasterDisengage() {
-        this.publish('ap_master_off', true);
-    }
-    /**
-     * Publish a YD engage event
-     */
-    publishYdEngage() {
-        this.publish('ap_yd_on', true);
-    }
-    /**
-     * Publish a YD disengage event
-     */
-    publishYdDisengage() {
-        this.publish('ap_yd_off', true);
-    }
-    /**
-     * Publish a lock set event
-     * @param lock The lock/hold set
-     */
-    publishLockSet(lock) {
-        this.publish('ap_lock_set', lock);
-    }
-    /**
-     * Publish a lock release event
-     * @param lock The lock/hold released
-     */
-    publishLockRelease(lock) {
-        this.publish('ap_lock_release', lock);
-    }
-}
-/**
- * Manages an autopilot system
- */
-class AutopilotInstrument {
-    /**
-     * Create an AutopilotInstrument
-     * @param bus The event bus to publish to
-     */
-    constructor(bus) {
-        this.bus = bus;
-        // this.hEvents = this.bus.getSubscriber<HEvent>();
-        this.publisher = new AutopilotPublisher(bus);
-        this.simVarPublisher = new APSimVarPublisher(bus);
-        this.simVarSubscriber = new EventSubscriber(bus);
-    }
-    /**
-     * Initialize the instrument
-     */
-    init() {
-        this.publisher.startPublish();
-        this.simVarPublisher.startPublish();
-        // console.log('initting autopilot');
-        this.simVarSubscriber.on('ap_master_status').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishMasterEngage();
-            }
-            else {
-                this.publisher.publishMasterDisengage();
-            }
-        });
-        this.simVarSubscriber.on('ap_yd_status').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishYdEngage();
-            }
-            else {
-                this.publisher.publishYdDisengage();
-            }
-        });
-        this.simVarSubscriber.on('ap_alt_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Alt);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Alt);
-            }
-        });
-        this.simVarSubscriber.on('ap_pitch_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Pitch);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Pitch);
-            }
-        });
-        this.simVarSubscriber.on('ap_heading_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Heading);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Heading);
-            }
-        });
-        this.simVarSubscriber.on('ap_nav_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Nav);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Nav);
-            }
-        });
-        this.simVarSubscriber.on('ap_approach_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Approach);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Approach);
-            }
-        });
-        this.simVarSubscriber.on('ap_backcourse_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Backcourse);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Backcourse);
-            }
-        });
-        this.simVarSubscriber.on('ap_bank_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Bank);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Bank);
-            }
-        });
-        this.simVarSubscriber.on('ap_wing_lvl_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.WingLevel);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.WingLevel);
-            }
-        });
-        this.simVarSubscriber.on('ap_flc_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Flc);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Flc);
-            }
-        });
-        this.simVarSubscriber.on('ap_vs_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Vs);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Vs);
-            }
-        });
-        this.simVarSubscriber.on('ap_glideslope_hold').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.Glideslope);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.Glideslope);
-            }
-        });
-        this.simVarSubscriber.on('vnav_active').whenChangedBy(1).handle((engaged) => {
-            if (engaged) {
-                this.publisher.publishLockSet(APLockType.VNav);
-            }
-            else {
-                this.publisher.publishLockRelease(APLockType.VNav);
-            }
-        });
-    }
-    /** update our publishers */
-    onUpdate() {
-        this.simVarPublisher.onUpdate();
-    }
-}
-
-/**
- * Utility functions for working with arrays.
- */
-class ArrayUtils {
-    /**
-     * Creates a new array with initialized values.
-     * @param length The length of the new array.
-     * @param init A function which generates initial values for the new array at each index.
-     * @returns A new array of the specified length with initialized values.
-     */
-    static create(length, init) {
-        const newArray = [];
-        for (let i = 0; i < length; i++) {
-            newArray[i] = init(i);
-        }
-        return newArray;
-    }
-    /**
-     * Gets the element at a specific index in an array.
-     * @param array An array.
-     * @param index The index to access. Negative indexes are supported and access elements starting from the end of the
-     * array (`-1` accesses the last element, `-2` the second to last element, etc).
-     * @returns The element at the specified index in the array.
-     * @throws RangeError if the index is out of bounds.
-     */
-    static at(array, index) {
-        if (index < 0) {
-            index += array.length;
-        }
-        if (index < 0 || index >= array.length) {
-            throw new RangeError();
-        }
-        return array[index];
-    }
-    /**
-     * Gets the element at a specific index in an array, or `undefined` if the index is out of bounds.
-     * @param array An array.
-     * @param index The index to access. Negative indexes are supported and access elements starting from the end of the
-     * array (`-1` accesses the last element, `-2` the second to last element, etc).
-     * @returns The element at the specified index in the array, or `undefined` if the index is out of bounds.
-     */
-    static peekAt(array, index) {
-        if (index < 0) {
-            index += array.length;
-        }
-        return array[index];
-    }
-    /**
-     * Gets the first element of an array.
-     * @param array An array.
-     * @returns The first element of the specified array.
-     * @throws RangeError if the array is empty.
-     */
-    static first(array) {
-        if (array.length === 0) {
-            throw new RangeError();
-        }
-        return array[0];
-    }
-    /**
-     * Gets the first element of an array if it is not empty, or `undefined` otherwise.
-     * @param array An array.
-     * @returns The first element of an array if it is not empty, or `undefined` otherwise.
-     */
-    static peekFirst(array) {
-        return array[0];
-    }
-    /**
-     * Gets the last element of an array.
-     * @param array An array.
-     * @returns The last element of the specified array.
-     * @throws RangeError if the array is empty.
-     */
-    static last(array) {
-        if (array.length === 0) {
-            throw new RangeError();
-        }
-        return array[array.length - 1];
-    }
-    /**
-     * Gets the last element of an array if it is not empty, or `undefined` otherwise.
-     * @param array An array.
-     * @returns The last element of an array if it is not empty, or `undefined` otherwise.
-     */
-    static peekLast(array) {
-        return array[array.length - 1];
-    }
-    /**
-     * Checks if a certain element is included in an array.
-     * @param array An array.
-     * @param searchElement The element to search for.
-     * @param fromIndex The position in this array at which to begin searching for `searchElement`.
-     * @returns Whether the search element is included in the specified array.
-     */
-    static includes(array, searchElement, fromIndex) {
-        return array.includes(searchElement, fromIndex);
-    }
-    /**
-     * Checks if two arrays are equal to each other. This method considers two arrays `a` and `b` if their lengths are
-     * equal and `a[i]` equals `b[i]` for every valid index `i`. All empty arrays are considered equal to one another.
-     * @param a The first array.
-     * @param b The second array.
-     * @param equalsFunc The function to use to determine whether two array elements are equal to each other. Defaults
-     * to a function which uses the strict equality operator (`===`).
-     * @returns Whether the two specified arrays are equal.
-     */
-    static equals(a, b, equalsFunc = ArrayUtils.STRICT_EQUALS) {
-        if (a.length !== b.length) {
-            return false;
-        }
-        for (let i = 0; i < a.length; i++) {
-            if (!equalsFunc(a[i], b[i])) {
-                return false;
-            }
-        }
-        return true;
-    }
-    /**
-     * Creates a new array by mapping each element of an existing array using a mapping function, then flattening the
-     * mapped elements to a maximum depth of one, leaving the original array intact.
-     * @param array An array.
-     * @param map A function which is called once on each element of the original array to map it to an arbitrary value.
-     * @returns A new array which was created by mapping each element of the specified array, then flattening the mapped
-     * elements to a maximum depth of one.
-     */
-    static flatMap(array, map) {
-        const out = [];
-        for (let i = 0; i < array.length; i++) {
-            const mapped = map(array[i], i, array);
-            if (Array.isArray(mapped)) {
-                for (let j = 0; j < mapped.length; j++) {
-                    out[out.length] = mapped[j];
-                }
-            }
-            else {
-                out[out.length] = mapped;
-            }
-        }
-        return out;
-    }
-    /**
-     * Creates a new array by flattening an existing array to a maximum depth, leaving the original array intact. The
-     * process of flattening replaces each element in the array that is itself an array with the sequence of elements
-     * found in the sub-array, recursively up to the maximum depth.
-     * @param array An array.
-     * @param depth The maximum depth to which to flatten. Values less than or equal to zero will result in no flattening
-     * (in other words, a shallow copy of the original array will be returned). Defaults to `1`.
-     * @returns A new array which was created by flattening the specified array to the specified maximum depth.
-     */
-    static flat(array, depth = 1) {
-        const out = [];
-        this.flatHelper(array, depth, 0, out);
-        return out;
-    }
-    /**
-     * Recursively flattens an array and writes the flattened sequence of elements into another array.
-     * @param array The array to flatten.
-     * @param maxDepth The maximum depth to which to flatten.
-     * @param depth The current flattening depth.
-     * @param out The array to which to write the flattened sequence of elements.
-     */
-    static flatHelper(array, maxDepth, depth, out) {
-        for (let i = 0; i < array.length; i++) {
-            const element = array[i];
-            if (Array.isArray(element) && depth < maxDepth) {
-                this.flatHelper(element, maxDepth, depth + 1, out);
-            }
-            else {
-                out[out.length] = element;
-            }
-        }
-    }
-    /**
-     * Performs a shallow copy of an array. After the operation is complete, the target array will have the same
-     * length and the same elements in the same order as the source array.
-     * @param source The array to copy.
-     * @param target The array to copy into. If not defined, a new array will be created.
-     * @returns The target array, after the source array has been copied into it.
-     */
-    static shallowCopy(source, target = []) {
-        target.length = source.length;
-        for (let i = 0; i < source.length; i++) {
-            target[i] = source[i];
-        }
-        return target;
-    }
-    /**
-     * Performs a binary search on a sorted array to find the index of the first or last element in the array whose
-     * sorting order is equal to a query element. If no such element in the array exists, `-(index + 1)` is returned,
-     * where `index` is the index at which the query element would be found if it were contained in the sorted array.
-     * @param array An array.
-     * @param element The element to search for.
-     * @param comparator A function which determines the sorting order of elements in the array. The function should
-     * return a negative number if the first element is to be sorted before the second, a positive number if the first
-     * element is to be sorted after the second, or zero if both elements are to be sorted equivalently.
-     * @param first If `true`, this method will find the first (lowest) matching index if there are multiple matching
-     * indexes, otherwise this method will find the last (highest) matching index. Defaults to `true`.
-     * @returns The index of the first (if `first` is `true`) or last (if `first` is `false`) element in the specified
-     * array whose sorting order is equal to the query element, or `-(index + 1)`, where `index` is the index at which
-     * the query element would be found if it were contained in the sorted array, if no element in the array has a
-     * sorting order equal to the query.
-     */
-    static binarySearch(array, element, comparator, first = true) {
-        let min = 0;
-        let max = array.length;
-        let index = Math.floor((min + max) / 2);
-        while (min < max) {
-            const compare = comparator(element, array[index]);
-            if (compare < 0) {
-                max = index;
-            }
-            else if (compare > 0) {
-                min = index + 1;
-            }
-            else {
-                const delta = first ? -1 : 1;
-                while (index + delta >= 0 && index + delta < array.length && comparator(element, array[index + delta]) === 0) {
-                    index += delta;
-                }
-                return index;
-            }
-            index = Math.floor((min + max) / 2);
-        }
-        return -(index + 1);
-    }
-    /**
-     * Gets the length of the longest string in the array.
-     * @param array The array to search in.
-     * @returns length of the longest string
-     */
-    static getMaxStringLength(array) {
-        return array.reduce((accum, curr) => curr.length > accum ? curr.length : accum, 0);
-    }
-}
-ArrayUtils.STRICT_EQUALS = (a, b) => a === b;
-
-/** A collection of helper functions dealing with radios and frequencies. */
-class RadioUtils {
-    /**
-     * Checks whether a frequency is a NAV frequency.
-     * @param freq The frequency to check, in megahertz.
-     * @returns Whether the specified frequency is a NAV frequency.
-     */
-    static isNavFrequency(freq) {
-        const freqKhz = Math.round(freq * 1000);
-        if (freqKhz < 108e3 || freqKhz > 117950) {
-            return false;
-        }
-        return freqKhz % 50 === 0;
-    }
-    /**
-     * Checks if frequency is a localizer frequency based on the number.
-     * @param freq The frequency to check, in megahertz.
-     * @returns True if frequency is between 108.1 and 111.95 MHz (inclusive) and the tenths place is odd.
-     */
-    static isLocalizerFrequency(freq) {
-        return freq >= 108.1 && freq <= 111.95 && (Math.trunc(freq * 10) % 2 === 1);
-    }
-    /**
-     * Checks whether a frequency is a 8.33 kHz-spacing COM frequency.
-     * @param freq The frequency to check, in megahertz.
-     * @returns Whether the specified frequency is a 8.33 kHz-spacing COM frequency.
-     */
-    static isCom833Frequency(freq) {
-        const freqKhz = Math.round(freq * 1000);
-        if (freqKhz < 118e3 || freqKhz > 136990) {
-            return false;
-        }
-        return RadioUtils.COM_833_ENDINGS.includes(freqKhz % 50);
-    }
-    /**
-     * Checks whether a frequency is a 25 kHz-spacing COM frequency.
-     * @param freq The frequency to check, in megahertz.
-     * @returns Whether the specified frequency is a 25 kHz-spacing COM frequency.
-     */
-    static isCom25Frequency(freq) {
-        const freqKhz = Math.round(freq * 1000);
-        if (freqKhz < 118e3 || freqKhz > 136975) {
-            return false;
-        }
-        return freqKhz % 25 === 0;
-    }
-    /**
-     * Checks whether a frequency is an ADF frequency.
-     * @param freq The frequency to check, in kilohertz.
-     * @returns Whether the specified frequency is an ADF frequency.
-     */
-    static isAdfFrequency(freq) {
-        const freqHz = Math.round(freq * 1000);
-        if (freqHz < 190e3 || freqHz > 1799500) {
-            return false;
-        }
-        return freqHz % 500 === 0;
-    }
-}
-RadioUtils.COM_833_ENDINGS = [5, 10, 15, 30, 35, 40];
-
-/**
- * VOR signal to/from flags.
- */
-var VorToFrom;
-(function (VorToFrom) {
-    VorToFrom[VorToFrom["OFF"] = 0] = "OFF";
-    VorToFrom[VorToFrom["TO"] = 1] = "TO";
-    VorToFrom[VorToFrom["FROM"] = 2] = "FROM";
-})(VorToFrom || (VorToFrom = {}));
-/** Marker beacon signal state. */
-var MarkerBeaconState;
-(function (MarkerBeaconState) {
-    MarkerBeaconState[MarkerBeaconState["Inactive"] = 0] = "Inactive";
-    MarkerBeaconState[MarkerBeaconState["Outer"] = 1] = "Outer";
-    MarkerBeaconState[MarkerBeaconState["Middle"] = 2] = "Middle";
-    MarkerBeaconState[MarkerBeaconState["Inner"] = 3] = "Inner";
-})(MarkerBeaconState || (MarkerBeaconState = {}));
-/**
- * A publisher of NAV, COM, ADF radio and marker beacon tuning-related sim var events.
- */
-class NavComSimVarPublisher extends SimVarPublisher {
-    /**
-     * Creates a new instance of NavComSimVarPublisher.
-     * @param bus The event bus to which to publish.
-     * @param pacer An optional pacer to use to control the pace of publishing
-     */
-    constructor(bus, pacer = undefined) {
-        const simvars = new Map([
-            ...NavComSimVarPublisher.createNavRadioDefinitions(),
-            ...NavComSimVarPublisher.createComRadioDefinitions(),
-            ...NavComSimVarPublisher.createAdfRadioDefinitions(),
-            ...NavComSimVarPublisher.createMarkerBeaconDefinitions(),
-            ...NavComSimVarPublisher.createGpsDefinitions()
-        ]);
-        super(simvars, bus, pacer);
-    }
-    /**
-     * Creates an array of nav radio sim var event definitions.
-     * @returns An array of nav radio sim var event definitions.
-     */
-    static createNavRadioDefinitions() {
-        return [
-            ['nav_active_frequency', { name: 'NAV ACTIVE FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_standby_frequency', { name: 'NAV STANDBY FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_signal', { name: 'NAV SIGNAL:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_sound', { name: 'NAV SOUND:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_ident', { name: 'NAV IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_volume', { name: 'NAV VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_obs', { name: 'NAV OBS:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_has_dme', { name: 'NAV HAS DME:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_has_nav', { name: 'NAV HAS NAV:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_cdi', { name: 'NAV CDI:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_dme', { name: 'NAV DME:#index#', type: SimVarValueType.NM, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_radial', { name: 'NAV RADIAL:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_radial_error', { name: 'NAV RADIAL ERROR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_to_from', { name: 'NAV TOFROM:#index#', type: SimVarValueType.Enum, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_localizer', { name: 'NAV HAS LOCALIZER:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_localizer_crs', { name: 'NAV LOCALIZER:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_loc_airport_ident', { name: 'NAV LOC AIRPORT IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_loc_runway_designator', { name: 'NAV LOC RUNWAY DESIGNATOR:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_loc_runway_number', { name: 'NAV LOC RUNWAY NUMBER:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_glideslope', { name: 'NAV HAS GLIDE SLOPE:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_gs_error', { name: 'NAV GLIDE SLOPE ERROR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_raw_gs', { name: 'NAV RAW GLIDE SLOPE:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_lla', { name: 'NAV VOR LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_dme_lla', { name: 'NAV DME LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_gs_lla', { name: 'NAV GS LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
-            ['nav_magvar', { name: 'NAV MAGVAR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }]
-        ];
-    }
-    /**
-     * Creates an array of com radio sim var event definitions.
-     * @returns An array of com radio sim var event definitions.
-     */
-    static createComRadioDefinitions() {
-        return [
-            ['com_active_frequency', { name: 'COM ACTIVE FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_standby_frequency', { name: 'COM STANDBY FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_active_facility_name', { name: 'COM ACTIVE FREQ NAME:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_active_facility_type', { name: 'COM ACTIVE FREQ TYPE:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_active_facility_ident', { name: 'COM ACTIVE FREQ IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
-            // Note: 'COM RECEIVE' is whether the radio is receiving OR transmitting,
-            // whereas 'COM RECEIVE EX1' is exclusively its receiving state.
-            ['com_receive', { name: 'COM RECEIVE EX1:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_status', { name: 'COM STATUS:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_transmit', { name: 'COM TRANSMIT:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_spacing_mode', { name: 'COM SPACING MODE:#index#', type: SimVarValueType.Enum, indexed: [1, 2, 3], defaultIndex: null }],
-            ['com_volume', { name: 'COM VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2, 3], defaultIndex: null }],
-        ];
-    }
-    /**
-     * Creates an array of ADF radio sim var event definitions.
-     * @returns An array of ADF radio sim var event definitions.
-     */
-    static createAdfRadioDefinitions() {
-        return [
-            ['adf_active_frequency', { name: 'ADF ACTIVE FREQUENCY:#index#', type: SimVarValueType.KHz, indexed: [1, 2], defaultIndex: null }],
-            ['adf_standby_frequency', { name: 'ADF STANDBY FREQUENCY:#index#', type: SimVarValueType.KHz, indexed: [1, 2], defaultIndex: null }],
-            ['adf_sound', { name: 'ADF SOUND:#index#', type: SimVarValueType.Bool, indexed: [1, 2], defaultIndex: null }],
-            ['adf_volume', { name: 'ADF VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2], defaultIndex: null }],
-            ['adf_ident', { name: 'ADF IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2], defaultIndex: null }],
-            ['adf_signal', { name: 'ADF SIGNAL:#index#', type: SimVarValueType.Number, indexed: [1, 2], defaultIndex: null }],
-            ['adf_bearing', { name: 'ADF RADIAL:#index#', type: SimVarValueType.Degree, indexed: [1, 2], defaultIndex: null }],
-            ['adf_lla', { name: 'ADF LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2], defaultIndex: null }]
-        ];
-    }
-    /**
-     * Creates an array of GPS sim var event definitions.
-     * @returns An array of GPS sim var event definitions.
-     */
-    static createMarkerBeaconDefinitions() {
-        return [
-            ['marker_beacon_hisense_on', { name: 'MARKER BEACON SENSITIVITY HIGH', type: SimVarValueType.Bool }],
-            ['marker_beacon_sound', { name: 'MARKER SOUND', type: SimVarValueType.Bool }],
-            ['marker_beacon_state', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }],
-            ['mkr_bcn_state_simvar', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }]
-        ];
-    }
-    /**
-     * Creates an array of GPS sim var event definitions.
-     * @returns An array of GPS sim var event definitions.
-     */
-    static createGpsDefinitions() {
-        return [
-            ['gps_dtk', { name: 'GPS WP DESIRED TRACK', type: SimVarValueType.Degree }],
-            ['gps_xtk', { name: 'GPS WP CROSS TRK', type: SimVarValueType.NM }],
-            ['gps_wp', { name: 'GPS WP NEXT ID', type: SimVarValueType.NM }],
-            ['gps_wp_bearing', { name: 'GPS WP BEARING', type: SimVarValueType.Degree }],
-            ['gps_wp_distance', { name: 'GPS WP DISTANCE', type: SimVarValueType.NM }],
-            ['gps_obs_active_simvar', { name: 'GPS OBS ACTIVE', type: SimVarValueType.Bool }],
-            ['gps_obs_value_simvar', { name: 'GPS OBS VALUE', type: SimVarValueType.Degree }]
-        ];
-    }
-}
-
-/// <reference types="@microsoft/msfs-types/js/simvar" />
-/**
- * A publisher of nav radio, ADF radio, GPS, and marker beacon-related sim var events.
- *
- * @deprecated Please use `NavComSimVarPublisher` instead.
- */
-class NavProcSimVarPublisher extends SimVarPublisher {
-    /**
-     * Create a NavProcSimVarPublisher
-     * @param bus The EventBus to publish to
-     * @param pacer An optional pacer to use to control the pace of publishing
-     */
-    constructor(bus, pacer = undefined) {
-        super(NavProcSimVarPublisher.simvars, bus, pacer);
-    }
-    /**
-     * Creates an array of nav radio sim var event definitions for an indexed nav radio.
-     * @param index The index of the nav radio.
-     * @returns An array of nav radio sim var event definitions for the specified nav radio.
-     */
-    static createNavRadioDefinitions(index) {
-        return [
-            [`nav_signal_${index}`, { name: `NAV SIGNAL:${index}`, type: SimVarValueType.Number }],
-            [`nav_obs_${index}`, { name: `NAV OBS:${index}`, type: SimVarValueType.Degree }],
-            [`nav_has_dme_${index}`, { name: `NAV HAS DME:${index}`, type: SimVarValueType.Bool }],
-            [`nav_has_nav_${index}`, { name: `NAV HAS NAV:${index}`, type: SimVarValueType.Bool }],
-            [`nav_cdi_${index}`, { name: `NAV CDI:${index}`, type: SimVarValueType.Number }],
-            [`nav_dme_${index}`, { name: `NAV DME:${index}`, type: SimVarValueType.NM }],
-            [`nav_radial_${index}`, { name: `NAV RADIAL:${index}`, type: SimVarValueType.Degree }],
-            [`nav_radial_error_${index}`, { name: `NAV RADIAL ERROR:${index}`, type: SimVarValueType.Degree }],
-            [`nav_ident_${index}`, { name: `NAV IDENT:${index}`, type: SimVarValueType.String }],
-            [`nav_to_from_${index}`, { name: `NAV TOFROM:${index}`, type: SimVarValueType.Enum }],
-            [`nav_localizer_${index}`, { name: `NAV HAS LOCALIZER:${index}`, type: SimVarValueType.Bool }],
-            [`nav_localizer_crs_${index}`, { name: `NAV LOCALIZER:${index}`, type: SimVarValueType.Number }],
-            [`nav_loc_airport_ident_${index}`, { name: `NAV LOC AIRPORT IDENT:${index}`, type: SimVarValueType.String }],
-            [`nav_loc_runway_designator_${index}`, { name: `NAV LOC RUNWAY DESIGNATOR:${index}`, type: SimVarValueType.Number }],
-            [`nav_loc_runway_number_${index}`, { name: `NAV LOC RUNWAY NUMBER:${index}`, type: SimVarValueType.Number }],
-            [`nav_glideslope_${index}`, { name: `NAV HAS GLIDE SLOPE:${index}`, type: SimVarValueType.Bool }],
-            [`nav_gs_error_${index}`, { name: `NAV GLIDE SLOPE ERROR:${index}`, type: SimVarValueType.Degree }],
-            [`nav_raw_gs_${index}`, { name: `NAV RAW GLIDE SLOPE:${index}`, type: SimVarValueType.Degree }],
-            [`nav_lla_${index}`, { name: `NAV VOR LATLONALT:${index}`, type: SimVarValueType.LLA }],
-            [`nav_dme_lla_${index}`, { name: `NAV DME LATLONALT:${index}`, type: SimVarValueType.LLA }],
-            [`nav_gs_lla_${index}`, { name: `NAV GS LATLONALT:${index}`, type: SimVarValueType.LLA }],
-            [`nav_magvar_${index}`, { name: `NAV MAGVAR:${index}`, type: SimVarValueType.Degree }]
-        ];
-    }
-    /**
-     * Creates an array of ADF radio sim var event definitions for an indexed ADF radio.
-     * @param index The index of the ADF radio.
-     * @returns An array of ADF radio sim var event definitions for the specified ADF radio.
-     */
-    static createAdfRadioDefinitions(index) {
-        return [
-            [`adf_signal_${index}`, { name: `ADF SIGNAL:${index}`, type: SimVarValueType.Number }],
-            [`adf_bearing_${index}`, { name: `ADF RADIAL:${index}`, type: SimVarValueType.Degree }],
-            [`adf_lla_${index}`, { name: `ADF LATLONALT:${index}`, type: SimVarValueType.LLA }]
-        ];
-    }
-}
-NavProcSimVarPublisher.simvars = new Map([
-    ...NavProcSimVarPublisher.createNavRadioDefinitions(1),
-    ...NavProcSimVarPublisher.createNavRadioDefinitions(2),
-    ...NavProcSimVarPublisher.createNavRadioDefinitions(3),
-    ...NavProcSimVarPublisher.createNavRadioDefinitions(4),
-    ...NavProcSimVarPublisher.createAdfRadioDefinitions(1),
-    ...NavProcSimVarPublisher.createAdfRadioDefinitions(2),
-    ['gps_dtk', { name: 'GPS WP DESIRED TRACK', type: SimVarValueType.Degree }],
-    ['gps_xtk', { name: 'GPS WP CROSS TRK', type: SimVarValueType.NM }],
-    ['gps_wp', { name: 'GPS WP NEXT ID', type: SimVarValueType.NM }],
-    ['gps_wp_bearing', { name: 'GPS WP BEARING', type: SimVarValueType.Degree }],
-    ['gps_wp_distance', { name: 'GPS WP DISTANCE', type: SimVarValueType.NM }],
-    ['mkr_bcn_state_simvar', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }],
-    ['gps_obs_active_simvar', { name: 'GPS OBS ACTIVE', type: SimVarValueType.Bool }],
-    ['gps_obs_value_simvar', { name: 'GPS OBS VALUE', type: SimVarValueType.Degree }]
-]);
-//
-// Navigation event configurations
-//
-var NavSourceType;
-(function (NavSourceType) {
-    NavSourceType[NavSourceType["Nav"] = 0] = "Nav";
-    NavSourceType[NavSourceType["Gps"] = 1] = "Gps";
-    NavSourceType[NavSourceType["Adf"] = 2] = "Adf";
-})(NavSourceType || (NavSourceType = {}));
-
-/**
- * An instrument that gathers localizer and glideslope information for use by
- * the AP systems.
- *
- * Requires that the topics defined in {@link NavComEvents} are published to the event bus.
- */
-class APRadioNavInstrument {
-    /**
-     * Creates an instance of the APRadioNavInstrument.
-     * @param bus The event bus to use with this instance.
-     */
-    constructor(bus) {
-        this.bus = bus;
-        this.navRadioData = ArrayUtils.create(5, index => {
-            index = Math.max(1, index);
-            return {
-                gsLocation: new LatLongAlt(0, 0),
-                navLocation: new LatLongAlt(0, 0),
-                glideslope: this.createEmptyGlideslope({ index, type: NavSourceType.Nav }),
-                localizer: this.createEmptyLocalizer({ index, type: NavSourceType.Nav }),
-                cdi: this.createEmptyCdi({ index, type: NavSourceType.Nav }),
-                obs: this.createEmptyObs({ index, type: NavSourceType.Nav }),
-                radialError: 0,
-                magVar: 0
-            };
-        });
-        this.currentCdiIndex = 1;
-        this.publisher = bus.getPublisher();
-    }
-    /** @inheritdoc */
-    init() {
-        const navComSubscriber = this.bus.getSubscriber();
-        for (let i = 1; i < 5; i++) {
-            navComSubscriber.on(`nav_glideslope_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'isValid'));
-            navComSubscriber.on(`nav_gs_lla_${i}`).handle(this.setGlideslopePosition.bind(this, i));
-            navComSubscriber.on(`nav_gs_error_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'deviation'));
-            navComSubscriber.on(`nav_raw_gs_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'gsAngle'));
-            navComSubscriber.on(`nav_localizer_${i}`).whenChanged().handle(this.setLocalizerValue.bind(this, i, 'isValid'));
-            navComSubscriber.on(`nav_localizer_crs_${i}`).whenChanged().handle(this.setLocalizerValue.bind(this, i, 'course'));
-            navComSubscriber.on(`nav_cdi_${i}`).whenChanged().handle(this.setCDIValue.bind(this, i, 'deviation'));
-            navComSubscriber.on(`nav_has_nav_${i}`).whenChanged().handle(hasNav => !hasNav && this.setCDIValue(i, 'deviation', null));
-            navComSubscriber.on(`nav_obs_${i}`).whenChanged().handle(this.setOBSValue.bind(this, i, 'heading'));
-            navComSubscriber.on(`nav_lla_${i}`).handle(this.setNavPosition.bind(this, i));
-            navComSubscriber.on(`nav_radial_error_${i}`).whenChanged().handle(this.setRadialError.bind(this, i));
-            navComSubscriber.on(`nav_magvar_${i}`).whenChanged().handle(this.setMagVar.bind(this, i));
-        }
-        const navEvents = this.bus.getSubscriber();
-        navEvents.on('cdi_select').handle(source => {
-            const oldIndex = this.currentCdiIndex;
-            this.currentCdiIndex = source.type === NavSourceType.Nav ? source.index : 0;
-            if (oldIndex !== this.currentCdiIndex) {
-                const data = this.navRadioData[this.currentCdiIndex];
-                this.publisher.pub('nav_radio_active_gs_location', data.gsLocation);
-                this.publisher.pub('nav_radio_active_nav_location', data.navLocation);
-                this.publisher.pub('nav_radio_active_glideslope', data.glideslope);
-                this.publisher.pub('nav_radio_active_localizer', data.localizer);
-                this.publisher.pub('nav_radio_active_cdi_deviation', data.cdi);
-                this.publisher.pub('nav_radio_active_obs_setting', data.obs);
-                this.publisher.pub('nav_radio_active_radial_error', data.radialError);
-                this.publisher.pub('nav_radio_active_magvar', data.magVar);
-            }
-        });
-    }
-    /** @inheritdoc */
-    onUpdate() {
-        // noop
-    }
-    /**
-     * Sets a value in a nav radio glideslope.
-     * @param index The index of the nav radio.
-     * @param field The field to set.
-     * @param value The value to set the field to.
-     */
-    setGlideslopeValue(index, field, value) {
-        this.navRadioData[index].glideslope[field] = value;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_glideslope', this.navRadioData[index].glideslope);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_glideslope_1', this.navRadioData[index].glideslope);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_glideslope_2', this.navRadioData[index].glideslope);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_glideslope_3', this.navRadioData[index].glideslope);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_glideslope_4', this.navRadioData[index].glideslope);
-                break;
-        }
-    }
-    /**
-     * Sends the current glideslope's LLA position.
-     * @param index The index of the nav radio.
-     * @param lla The LLA to send.
-     */
-    setGlideslopePosition(index, lla) {
-        this.navRadioData[index].gsLocation = lla;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_gs_location', lla);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_gs_location_1', this.navRadioData[index].gsLocation);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_gs_location_2', this.navRadioData[index].gsLocation);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_gs_location_3', this.navRadioData[index].gsLocation);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_gs_location_4', this.navRadioData[index].gsLocation);
-                break;
-        }
-    }
-    /**
-     * Sends the current nav's LLA position.
-     * @param index The index of the nav radio.
-     * @param lla The LLA to send.
-     */
-    setNavPosition(index, lla) {
-        this.navRadioData[index].navLocation = lla;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_nav_location', lla);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_nav_location_1', this.navRadioData[index].navLocation);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_nav_location_2', this.navRadioData[index].navLocation);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_nav_location_3', this.navRadioData[index].navLocation);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_nav_location_4', this.navRadioData[index].navLocation);
-                break;
-        }
-    }
-    /**
-     * Sets a value in a nav radio localizer.
-     * @param index The index of the nav radio.
-     * @param field The field to set.
-     * @param value The value to set the field to.
-     */
-    setLocalizerValue(index, field, value) {
-        this.navRadioData[index].localizer[field] = value;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_localizer', this.navRadioData[index].localizer);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_localizer_1', this.navRadioData[index].localizer);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_localizer_2', this.navRadioData[index].localizer);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_localizer_3', this.navRadioData[index].localizer);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_localizer_4', this.navRadioData[index].localizer);
-                break;
-        }
-    }
-    /**
-     * Sets a value in a nav radio localizer.
-     * @param index The index of the nav radio.
-     * @param field The field to set.
-     * @param value The value to set the field to.
-     */
-    setCDIValue(index, field, value) {
-        this.navRadioData[index].cdi[field] = value;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_cdi_deviation', this.navRadioData[index].cdi);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_cdi_1', this.navRadioData[index].cdi);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_cdi_2', this.navRadioData[index].cdi);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_cdi_3', this.navRadioData[index].cdi);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_cdi_4', this.navRadioData[index].cdi);
-                break;
-        }
-    }
-    /**
-     * Sets a value in a nav radio localizer.
-     * @param index The index of the nav radio.
-     * @param field The field to set.
-     * @param value The value to set the field to.
-     */
-    setOBSValue(index, field, value) {
-        this.navRadioData[index].obs[field] = value;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_obs_setting', this.navRadioData[index].obs);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_obs_1', this.navRadioData[index].obs);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_obs_2', this.navRadioData[index].obs);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_obs_3', this.navRadioData[index].obs);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_obs_4', this.navRadioData[index].obs);
-                break;
-        }
-    }
-    /**
-     * Sets the radial error of a nav radio signal source.
-     * @param index The index of the nav radio.
-     * @param radialError The radial error to set.
-     */
-    setRadialError(index, radialError) {
-        this.navRadioData[index].radialError = radialError;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_radial_error', radialError);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_radial_error_1', this.navRadioData[index].radialError);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_radial_error_2', this.navRadioData[index].radialError);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_radial_error_3', this.navRadioData[index].radialError);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_radial_error_4', this.navRadioData[index].radialError);
-                break;
-        }
-    }
-    /**
-     * Sets the magnetic variation of a nav radio signal source.
-     * @param index The index of the nav radio.
-     * @param magVar The magvar to set.
-     */
-    setMagVar(index, magVar) {
-        magVar = NavMath.normalizeHeading(-magVar + 180) % 360 - 180;
-        this.navRadioData[index].magVar = magVar;
-        if (this.currentCdiIndex === index) {
-            this.publisher.pub('nav_radio_active_magvar', magVar);
-        }
-        switch (index) {
-            case 1:
-                this.publisher.pub('nav_radio_magvar_1', this.navRadioData[index].magVar);
-                break;
-            case 2:
-                this.publisher.pub('nav_radio_magvar_2', this.navRadioData[index].magVar);
-                break;
-            case 3:
-                this.publisher.pub('nav_radio_magvar_3', this.navRadioData[index].magVar);
-                break;
-            case 4:
-                this.publisher.pub('nav_radio_magvar_4', this.navRadioData[index].magVar);
-                break;
-        }
-    }
-    /**
-     * Creates an empty localizer data.
-     * @param id The nav source ID.
-     * @returns New empty localizer data.
-     */
-    createEmptyLocalizer(id) {
-        return {
-            isValid: false,
-            course: 0,
-            source: id
-        };
-    }
-    /**
-     * Creates an empty glideslope data.
-     * @param id The nav source ID.
-     * @returns New empty glideslope data.
-     */
-    createEmptyGlideslope(id) {
-        return {
-            isValid: false,
-            gsAngle: 0,
-            deviation: 0,
-            source: id
-        };
-    }
-    /**
-     * Creates an empty CDI data.
-     * @param id The nav source ID.
-     * @returns New empty CDI data.
-     */
-    createEmptyCdi(id) {
-        return {
-            deviation: 0,
-            source: id
-        };
-    }
-    /**
-     * Creates an empty OBS data.
-     * @param id The nav source ID.
-     * @returns New empty OBS data.
-     */
-    createEmptyObs(id) {
-        return {
-            heading: 0,
-            source: id
-        };
-    }
-}
-
-/**
- * InstrumentBackplane provides a common control point for aggregating and
- * managing any number of publishers.  This can be used as an "update loop"
- * corral", amongst other things.
- */
-class InstrumentBackplane {
-    /**
-     * Create an InstrumentBackplane
-     */
-    constructor() {
-        this.publishers = new Map();
-        this.instruments = new Map();
-    }
-    /**
-     * Initialize all the things. This is initially just a proxy for the
-     * private initPublishers() and initInstruments() methods.
-     *
-     * This should be simplified.
-     */
-    init() {
-        this.initPublishers();
-        this.initInstruments();
-    }
-    /**
-     * Update all the things.  This is initially just a proxy for the private
-     * updatePublishers() and updateInstruments() methods.
-     *
-     * This should be simplified.
-     */
-    onUpdate() {
-        this.updatePublishers();
-        this.updateInstruments();
-    }
-    /**
-     * Add a publisher to this backplane.
-     * @param name A symbolic name for the publisher for reference.
-     * @param publisher The publisher to add.
-     * @param override Whether to override any existing publishers added to this backplane under the same name. If
-     * `true`, any existing publisher with the same name will removed from this backplane and the new one added in its
-     * place. If `false`, the new publisher will not be added if this backplane already has a publisher with the same
-     * name or a publisher of the same type. Defaults to `false`.
-     */
-    addPublisher(name, publisher, override = false) {
-        if (override || !InstrumentBackplane.checkAlreadyExists(name, publisher, this.publishers)) {
-            this.publishers.set(name, publisher);
-        }
-    }
-    /**
-     * Add an instrument to this backplane.
-     * @param name A symbolic name for the instrument for reference.
-     * @param instrument The instrument to add.
-     * @param override Whether to override any existing instruments added to this backplane under the same name. If
-     * `true`, any existing instrument with the same name will removed from this backplane and the new one added in its
-     * place. If `false`, the new instrument will not be added if this backplane already has an instrument with the same
-     * name or an instrument of the same type. Defaults to `false`.
-     */
-    addInstrument(name, instrument, override = false) {
-        if (override || !InstrumentBackplane.checkAlreadyExists(name, instrument, this.instruments)) {
-            this.instruments.set(name, instrument);
-        }
-    }
-    /**
-     * Gets a publisher from this backplane.
-     * @param name The name of the publisher to get.
-     * @returns The publisher in this backplane with the specified name, or `undefined` if there is no such publisher.
-     */
-    getPublisher(name) {
-        return this.publishers.get(name);
-    }
-    /**
-     * Gets an instrument from this backplane.
-     * @param name The name of the instrument to get.
-     * @returns The instrument in this backplane with the specified name, or `undefined` if there is no such instrument.
-     */
-    getInstrument(name) {
-        return this.instruments.get(name);
-    }
-    /**
-     * Checks for duplicate publishers or instruments of the same name or type.
-     * @param name the name of the publisher or instrument
-     * @param objToCheck the object to check
-     * @param map the map to check
-     * @returns true if the object is already in the map
-     */
-    static checkAlreadyExists(name, objToCheck, map) {
-        if (map.has(name)) {
-            console.warn(`${name} already exists in backplane.`);
-            return true;
-        }
-        // check if there already is a publisher with the same type
-        for (const p of map.values()) {
-            if (p.constructor === objToCheck.constructor) {
-                console.warn(`${name} already exists in backplane.`);
-                return true;
-            }
-        }
-        return false;
-    }
-    /**
-     * Initialize all of the publishers that you hold.
-     */
-    initPublishers() {
-        for (const publisher of this.publishers.values()) {
-            publisher.startPublish();
-        }
-    }
-    /**
-     * Initialize all of the instruments that you hold.
-     */
-    initInstruments() {
-        for (const instrument of this.instruments.values()) {
-            instrument.init();
-        }
-    }
-    /**
-     * Update all of the publishers that you hold.
-     */
-    updatePublishers() {
-        for (const publisher of this.publishers.values()) {
-            publisher.onUpdate();
-        }
-    }
-    /**
-     * Update all of the instruments that you hold.
-     */
-    updateInstruments() {
-        for (const instrument of this.instruments.values()) {
-            instrument.onUpdate();
-        }
-    }
-}
-
-/// <reference types="@microsoft/msfs-types/js/simvar" />
-/**
- * A publisher for Brake information.
- */
-class BrakeSimvarPublisher extends SimVarPublisher {
-    /**
-     * Create a BrakePublisher.
-     * @param bus The EventBus to publish to
-     * @param pacer An optional pacer to use to control the rate of publishing
-     */
-    constructor(bus, pacer = undefined) {
-        const simvars = new Map([
-            ['brake_position_left', { name: 'BRAKE LEFT POSITION', type: SimVarValueType.Percent }],
-            ['brake_position_right', { name: 'BRAKE RIGHT POSITION', type: SimVarValueType.Percent }],
-            ['brake_position_left_raw', { name: 'BRAKE LEFT POSITION EX1', type: SimVarValueType.Percent }],
-            ['brake_position_right_raw', { name: 'BRAKE RIGHT POSITION EX1', type: SimVarValueType.Percent }],
-            ['left_wheel_rpm', { name: 'LEFT WHEEL RPM', type: SimVarValueType.RPM }],
-            ['right_wheel_rpm', { name: 'RIGHT WHEEL RPM', type: SimVarValueType.RPM }],
-            ['parking_brake_set', { name: 'BRAKE PARKING POSITION', type: SimVarValueType.Bool }],
-            ['autobrake_switch_pos', { name: 'AUTO BRAKE SWITCH CB', type: SimVarValueType.Number }],
-            ['autobrake_active', { name: 'AUTOBRAKES ACTIVE', type: SimVarValueType.Bool }],
-        ]);
-        super(simvars, bus, pacer);
-    }
-    /** @inheritdoc */
-    onUpdate() {
-        super.onUpdate();
-    }
-}
-
-/**
- * A publisher of clock events.
- */
-class ClockPublisher extends BasePublisher {
-    /**
-     * Creates a new instance of ClockPublisher.
-     * @param bus The event bus.
-     * @param pacer An optional pacer to control the rate of publishing.
-     */
-    constructor(bus, pacer) {
-        super(bus, pacer);
-        this.needPublishRealTime = false;
-        this.simVarPublisher = new SimVarPublisher(new Map([
-            ['simTime', { name: 'E:ABSOLUTE TIME', type: SimVarValueType.Seconds, map: ClockPublisher.absoluteTimeToUNIXTime }],
-            ['simRate', { name: 'E:SIMULATION RATE', type: SimVarValueType.Number }]
-        ]), bus, pacer);
-        if (this.bus.getTopicSubscriberCount('realTime') > 0) {
-            this.needPublishRealTime = true;
-        }
-        else {
-            const sub = this.bus.getSubscriber().on('event_bus_topic_first_sub').handle(topic => {
-                if (topic === 'realTime') {
-                    this.needPublishRealTime = true;
-                    sub.destroy();
-                }
-            }, true);
-            sub.resume();
-        }
-    }
-    /** @inheritdoc */
-    startPublish() {
-        super.startPublish();
-        this.simVarPublisher.startPublish();
-        if (this.hiFreqInterval === undefined) {
-            this.hiFreqInterval = setInterval(() => this.publish('simTimeHiFreq', ClockPublisher.absoluteTimeToUNIXTime(SimVar.GetSimVarValue('E:ABSOLUTE TIME', 'seconds'))), 0);
-        }
-    }
-    /** @inheritdoc */
-    stopPublish() {
-        super.stopPublish();
-        this.simVarPublisher.stopPublish();
-        if (this.hiFreqInterval !== undefined) {
-            clearInterval(this.hiFreqInterval);
-            this.hiFreqInterval = undefined;
-        }
-    }
-    /** @inheritdoc */
-    onUpdate() {
-        if (this.needPublishRealTime) {
-            this.publish('realTime', Date.now());
-        }
-        this.simVarPublisher.onUpdate();
-    }
-    /**
-     * Converts the sim's absolute time to a UNIX timestamp. The sim's absolute time value is equivalent to a .NET
-     * DateTime.Ticks value (epoch = 00:00:00 01 Jan 0001).
-     * @param absoluteTime an absolute time value, in units of seconds.
-     * @returns the UNIX timestamp corresponding to the absolute time value.
-     */
-    static absoluteTimeToUNIXTime(absoluteTime) {
-        return (absoluteTime - 62135596800) * 1000;
-    }
-}
-/**
- * A clock which keeps track of real-world and sim time.
- */
-class Clock {
-    /**
-     * Constructor.
-     * @param bus The event bus to use to publish events from this clock.
-     */
-    constructor(bus) {
-        this.publisher = new ClockPublisher(bus);
-    }
-    /**
-     * Initializes this clock.
-     */
-    init() {
-        this.publisher.startPublish();
-    }
-    /**
-     * Updates this clock.
-     */
-    onUpdate() {
-        this.publisher.onUpdate();
-    }
-}
-
-/**
- * A publisher for control surfaces information.
- */
-class ControlSurfacesPublisher extends SimVarPublisher {
-    /**
-     * Create an ControlSurfacesPublisher.
-     * @param bus The EventBus to publish to.
-     * @param gearCount The number of landing gear to support.
-     * @param pacer An optional pacer to use to control the rate of publishing.
-     */
-    constructor(bus, gearCount, pacer) {
-        const nonIndexedSimVars = [
-            ['flaps_handle_index', { name: 'FLAPS HANDLE INDEX', type: SimVarValueType.Number }],
-            ['flaps_left_angle', { name: 'TRAILING EDGE FLAPS LEFT ANGLE', type: SimVarValueType.Degree }],
-            ['flaps_right_angle', { name: 'TRAILING EDGE FLAPS RIGHT ANGLE', type: SimVarValueType.Degree }],
-            ['flaps_left_percent', { name: 'TRAILING EDGE FLAPS LEFT PERCENT', type: SimVarValueType.Percent }],
-            ['flaps_right_percent', { name: 'TRAILING EDGE FLAPS RIGHT PERCENT', type: SimVarValueType.Percent }],
-            ['slats_left_angle', { name: 'LEADING EDGE FLAPS LEFT ANGLE', type: SimVarValueType.Degree }],
-            ['slats_right_angle', { name: 'LEADING EDGE FLAPS RIGHT ANGLE', type: SimVarValueType.Degree }],
-            ['slats_left_percent', { name: 'LEADING EDGE FLAPS LEFT PERCENT', type: SimVarValueType.Percent }],
-            ['slats_right_percent', { name: 'LEADING EDGE FLAPS RIGHT PERCENT', type: SimVarValueType.Percent }],
-            ['spoilers_left_percent', { name: 'SPOILERS LEFT POSITION', type: SimVarValueType.Percent }],
-            ['spoilers_right_percent', { name: 'SPOILERS RIGHT POSITION', type: SimVarValueType.Percent }],
-            ['spoilers_without_spoilerons_left_percent', { name: 'SPOILERS WITHOUT SPOILERONS LEFT POSITION', type: SimVarValueType.Percent }],
-            ['elevator_trim_angle', { name: 'ELEVATOR TRIM POSITION', type: SimVarValueType.Degree }],
-            ['elevator_trim_pct', { name: 'ELEVATOR TRIM PCT', type: SimVarValueType.Percent }],
-            ['elevator_trim_neutral_pct', { name: 'AIRCRAFT ELEVATOR TRIM NEUTRAL', type: SimVarValueType.Percent }],
-            ['aileron_trim_angle', { name: 'AILERON TRIM', type: SimVarValueType.Degree }],
-            ['aileron_trim_pct', { name: 'AILERON TRIM PCT', type: SimVarValueType.Percent }],
-            ['rudder_trim_angle', { name: 'RUDDER TRIM', type: SimVarValueType.Degree }],
-            ['rudder_trim_pct', { name: 'RUDDER TRIM PCT', type: SimVarValueType.Percent }],
-            ['aileron_left_percent', { name: 'AILERON LEFT DEFLECTION PCT', type: SimVarValueType.Percent }],
-            ['aileron_right_percent', { name: 'AILERON RIGHT DEFLECTION PCT', type: SimVarValueType.Percent }],
-            ['elevator_percent', { name: 'ELEVATOR DEFLECTION PCT', type: SimVarValueType.Percent }],
-            ['rudder_percent', { name: 'RUDDER DEFLECTION PCT', type: SimVarValueType.Percent }]
-        ];
-        const gearIndexedSimVars = [
-            ['gear_position', { name: 'GEAR POSITION', type: SimVarValueType.Number }],
-            ['gear_is_on_ground', { name: 'GEAR IS ON GROUND', type: SimVarValueType.Bool }]
-        ];
-        const simvars = new Map(nonIndexedSimVars);
-        // set un-indexed simvar topics to pull from index 0
-        for (const [topic, simvar] of [...gearIndexedSimVars]) {
-            simvars.set(`${topic}`, {
-                name: `${simvar.name}:0`,
-                type: simvar.type,
-                map: simvar.map
-            });
-        }
-        // add landing gear indexed simvar topics
-        // HINT: for some reason index 0 is nose. not 1-based.
-        gearCount = Math.max(gearCount, 1);
-        for (let i = 0; i < gearCount; i++) {
-            for (const [topic, simvar] of gearIndexedSimVars) {
-                simvars.set(`${topic}_${i}`, {
-                    name: `${simvar.name}:${i}`,
-                    type: simvar.type,
-                    map: simvar.map
-                });
-            }
-        }
-        super(simvars, bus, pacer);
-    }
-}
-
-/// <reference types="@microsoft/msfs-types/js/common" />
-/**
- * An event bus that can be used to publish data from backend
- * components and devices to consumers.
- */
-class EventBus {
-    /**
-     * Creates an instance of an EventBus.
-     * @param useAlternativeEventSync Whether or not to use generic listener event sync (default false).
-     * If true, FlowEventSync will only work for gauges.
-     * @param shouldResync Whether the eventbus should ask for a resync of all previously cached events (default true)
-     */
-    constructor(useAlternativeEventSync = false, shouldResync = true) {
-        this._topicSubsMap = new Map();
-        this._wildcardSubs = new Array();
-        this._notifyDepthMap = new Map();
-        this._wildcardNotifyDepth = 0;
-        this._eventCache = new Map();
-        this.onWildcardSubDestroyedFunc = this.onWildcardSubDestroyed.bind(this);
-        this._busId = Math.floor(Math.random() * 2147483647);
-        // fallback to flowevent when genericdatalistener not avail (su9)
-        useAlternativeEventSync = (typeof RegisterGenericDataListener === 'undefined');
-        const syncFunc = useAlternativeEventSync ? EventBusFlowEventSync : EventBusListenerSync;
-        this._busSync = new syncFunc(this.pub.bind(this), this._busId);
-        if (shouldResync === true) {
-            this.syncEvent('event_bus', 'resync_request', false);
-            this.on('event_bus', (data) => {
-                if (data == 'resync_request') {
-                    this.resyncEvents();
-                }
-            });
-        }
-    }
-    /**
-     * Subscribes to a topic on the bus.
-     * @param topic The topic to subscribe to.
-     * @param handler The handler to be called when an event happens.
-     * @param paused Whether the new subscription should be initialized as paused. Defaults to `false`.
-     * @returns The new subscription.
-     */
-    on(topic, handler, paused = false) {
-        let subs = this._topicSubsMap.get(topic);
-        if (subs === undefined) {
-            this._topicSubsMap.set(topic, subs = []);
-            this.pub('event_bus_topic_first_sub', topic, false, false);
-        }
-        const initialNotifyFunc = (sub) => {
-            const lastState = this._eventCache.get(topic);
-            if (lastState !== undefined) {
-                sub.handler(lastState.data);
-            }
-        };
-        const onDestroyFunc = (sub) => {
-            var _a;
-            // If we are not in the middle of a notify operation, remove the subscription.
-            // Otherwise, do nothing and let the post-notify clean-up code handle it.
-            if (((_a = this._notifyDepthMap.get(topic)) !== null && _a !== void 0 ? _a : 0) === 0) {
-                const subsToSplice = this._topicSubsMap.get(topic);
-                if (subsToSplice) {
-                    subsToSplice.splice(subsToSplice.indexOf(sub), 1);
-                }
-            }
-        };
-        const sub = new HandlerSubscription(handler, initialNotifyFunc, onDestroyFunc);
-        subs.push(sub);
-        if (paused) {
-            sub.pause();
-        }
-        else {
-            sub.initialNotify();
-        }
-        return sub;
-    }
-    /**
-     * Unsubscribes a handler from the topic's events.
-     * @param topic The topic to unsubscribe from.
-     * @param handler The handler to unsubscribe from topic.
-     * @deprecated This method has been deprecated in favor of using the {@link Subscription} object returned by `.on()`
-     * to manage subscriptions.
-     */
-    off(topic, handler) {
-        const handlers = this._topicSubsMap.get(topic);
-        const toDestroy = handlers === null || handlers === void 0 ? void 0 : handlers.find(sub => sub.handler === handler);
-        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
-    }
-    /**
-     * Subscribes to all topics.
-     * @param handler The handler to subscribe to all events.
-     * @returns The new subscription.
-     */
-    onAll(handler) {
-        const sub = new HandlerSubscription(handler, undefined, this.onWildcardSubDestroyedFunc);
-        this._wildcardSubs.push(sub);
-        return sub;
-    }
-    /**
-     * Unsubscribe the handler from all topics.
-     * @param handler The handler to unsubscribe from all events.
-     * @deprecated This method has been deprecated in favor of using the {@link Subscription} object returned by
-     * `.onAll()` to manage subscriptions.
-     */
-    offAll(handler) {
-        const toDestroy = this._wildcardSubs.find(sub => sub.handler === handler);
-        toDestroy === null || toDestroy === void 0 ? void 0 : toDestroy.destroy();
-    }
-    /**
-     * Publishes an event to the topic on the bus.
-     * @param topic The topic to publish to.
-     * @param data The data portion of the event.
-     * @param sync Whether or not this message needs to be synced on local stoage.
-     * @param isCached Whether or not this message will be resync'd across the bus on load.
-     */
-    pub(topic, data, sync = false, isCached = true) {
-        var _a;
-        if (isCached) {
-            this._eventCache.set(topic, { data: data, synced: sync });
-        }
-        const subs = this._topicSubsMap.get(topic);
-        if (subs !== undefined) {
-            let needCleanUpSubs = false;
-            const notifyDepth = (_a = this._notifyDepthMap.get(topic)) !== null && _a !== void 0 ? _a : 0;
-            this._notifyDepthMap.set(topic, notifyDepth + 1);
-            const len = subs.length;
-            for (let i = 0; i < len; i++) {
-                try {
-                    const sub = subs[i];
-                    if (sub.isAlive && !sub.isPaused) {
-                        sub.handler(data);
-                    }
-                    needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
-                }
-                catch (error) {
-                    console.error(`EventBus: error in handler: ${error}. topic: ${topic}. data: ${data}. sync: ${sync}. isCached: ${isCached}`, { error, topic, data, sync, isCached, subs });
-                    if (error instanceof Error) {
-                        console.error(error.stack);
-                    }
-                }
-            }
-            this._notifyDepthMap.set(topic, notifyDepth);
-            if (needCleanUpSubs && notifyDepth === 0) {
-                const filteredSubs = subs.filter(sub => sub.isAlive);
-                this._topicSubsMap.set(topic, filteredSubs);
-            }
-        }
-        // We don't know if anything is subscribed on busses in other instruments,
-        // so we'll unconditionally sync if sync is true and trust that the
-        // publisher knows what it's doing.
-        if (sync) {
-            this.syncEvent(topic, data, isCached);
-        }
-        // always push to wildcard handlers
-        let needCleanUpSubs = false;
-        this._wildcardNotifyDepth++;
-        const wcLen = this._wildcardSubs.length;
-        for (let i = 0; i < wcLen; i++) {
-            const sub = this._wildcardSubs[i];
-            if (sub.isAlive && !sub.isPaused) {
-                sub.handler(topic, data);
-            }
-            needCleanUpSubs || (needCleanUpSubs = !sub.isAlive);
-        }
-        this._wildcardNotifyDepth--;
-        if (needCleanUpSubs && this._wildcardNotifyDepth === 0) {
-            this._wildcardSubs = this._wildcardSubs.filter(sub => sub.isAlive);
-        }
-    }
-    /**
-     * Responds to when a wildcard subscription is destroyed.
-     * @param sub The destroyed subscription.
-     */
-    onWildcardSubDestroyed(sub) {
-        // If we are not in the middle of a notify operation, remove the subscription.
-        // Otherwise, do nothing and let the post-notify clean-up code handle it.
-        if (this._wildcardNotifyDepth === 0) {
-            this._wildcardSubs.splice(this._wildcardSubs.indexOf(sub), 1);
-        }
-    }
-    /**
-     * Re-sync all synced events
-     */
-    resyncEvents() {
-        for (const [topic, event] of this._eventCache) {
-            if (event.synced) {
-                this.syncEvent(topic, event.data, true);
-            }
-        }
-    }
-    /**
-     * Publish an event to the sync bus.
-     * @param topic The topic to publish to.
-     * @param data The data to publish.
-     * @param isCached Whether or not this message will be resync'd across the bus on load.
-     */
-    syncEvent(topic, data, isCached) {
-        this._busSync.sendEvent(topic, data, isCached);
-    }
-    /**
-     * Gets a typed publisher from the event bus..
-     * @returns The typed publisher.
-     */
-    getPublisher() {
-        return this;
-    }
-    /**
-     * Gets a typed subscriber from the event bus.
-     * @returns The typed subscriber.
-     */
-    getSubscriber() {
-        return new EventSubscriber(this);
-    }
-    /**
-     * Get the number of subscribes for a given topic.
-     * @param topic The name of the topic.
-     * @returns The number of subscribers.
-     **/
-    getTopicSubscriberCount(topic) {
-        var _a, _b;
-        return (_b = (_a = this._topicSubsMap.get(topic)) === null || _a === void 0 ? void 0 : _a.length) !== null && _b !== void 0 ? _b : 0;
-    }
-    /**
-     * Executes a function once for each topic with at least one subscriber.
-     * @param fn The function to execute.
-     */
-    forEachSubscribedTopic(fn) {
-        this._topicSubsMap.forEach((subs, topic) => { subs.length > 0 && fn(topic, subs.length); });
-    }
-}
-/**
- * An abstract class for bus sync implementations.
- */
-class EventBusSyncBase {
-    /**
-     * Creates an instance of EventBusFlowEventSync.
-     * @param recvEventCb A callback to execute when an event is received on the bus.
-     * @param busId The ID of the bus.
-     */
-    constructor(recvEventCb, busId) {
-        this.isPaused = false;
-        this.lastEventSynced = -1;
-        this.dataPackageQueue = [];
-        this.recvEventCb = recvEventCb;
-        this.busId = busId;
-        this.hookReceiveEvent();
-        /** Sends the queued up data packages */
-        const sendFn = () => {
-            if (!this.isPaused && this.dataPackageQueue.length > 0) {
-                // console.log(`Sending ${this.dataPackageQueue.length} packages`);
-                const syncDataPackage = {
-                    busId: this.busId,
-                    packagedId: Math.floor(Math.random() * 1000000000),
-                    data: this.dataPackageQueue
-                };
-                if (this.executeSync(syncDataPackage)) {
-                    this.dataPackageQueue.length = 0;
-                }
-                else {
-                    console.warn('Failed to send sync data package');
-                }
-            }
-            requestAnimationFrame(sendFn);
-        };
-        requestAnimationFrame(sendFn);
-    }
-    /**
-     * Processes events received and sends them onto the local bus.
-     * @param syncData The data package to process.
-     */
-    processEventsReceived(syncData) {
-        if (this.busId !== syncData.busId) {
-            // HINT: coherent events are still received twice, so check for this
-            if (this.lastEventSynced !== syncData.packagedId) {
-                this.lastEventSynced = syncData.packagedId;
-                syncData.data.forEach((data) => {
-                    try {
-                        this.recvEventCb(data.topic, data.data !== undefined ? data.data : undefined, false, data.isCached);
-                    }
-                    catch (e) {
-                        console.error(e);
-                        if (e instanceof Error) {
-                            console.error(e.stack);
-                        }
-                    }
-                });
-            }
-        }
-    }
-    /**
-     * Sends an event via flow events.
-     * @param topic The topic to send data on.
-     * @param data The data to send.
-     * @param isCached Whether or not this event is cached.
-     */
-    sendEvent(topic, data, isCached) {
-        // stringify data
-        const dataObj = data;
-        // build a data package
-        const dataPackage = {
-            topic: topic,
-            data: dataObj,
-            isCached: isCached
-        };
-        // queue data package
-        this.dataPackageQueue.push(dataPackage);
-    }
-}
-/**
- * A class that manages event bus synchronization via Flow Event Triggers.
- * DON'T USE this, it has bad performance implications.
- * @deprecated
- */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-class EventBusCoherentSync extends EventBusSyncBase {
-    /** @inheritdoc */
-    executeSync(syncDataPackage) {
-        // HINT: Stringifying the data again to circumvent the bad perf on Coherent interop
-        try {
-            this.listener.triggerToAllSubscribers(EventBusCoherentSync.EB_KEY, JSON.stringify(syncDataPackage));
-            return true;
-        }
-        catch (error) {
-            return false;
-        }
-    }
-    /** @inheritdoc */
-    hookReceiveEvent() {
-        this.listener = RegisterViewListener(EventBusCoherentSync.EB_LISTENER_KEY, undefined, true);
-        this.listener.on(EventBusCoherentSync.EB_KEY, (e) => {
-            try {
-                const evt = JSON.parse(e);
-                this.processEventsReceived(evt);
-            }
-            catch (error) {
-                console.error(error);
-            }
-        });
-    }
-}
-EventBusCoherentSync.EB_KEY = 'eb.evt';
-EventBusCoherentSync.EB_LISTENER_KEY = 'JS_LISTENER_SIMVARS';
-/**
- * A class that manages event bus synchronization via Flow Event Triggers.
- */
-class EventBusFlowEventSync extends EventBusSyncBase {
-    /** @inheritdoc */
-    executeSync(syncDataPackage) {
-        // console.log('Sending sync package: ' + syncDataPackage.packagedId);
-        try {
-            LaunchFlowEvent('ON_MOUSERECT_HTMLEVENT', EventBusFlowEventSync.EB_LISTENER_KEY, this.busId.toString(), JSON.stringify(syncDataPackage));
-            return true;
-        }
-        catch (error) {
-            return false;
-        }
-    }
-    /** @inheritdoc */
-    hookReceiveEvent() {
-        Coherent.on('OnInteractionEvent', (target, args) => {
-            // identify if its a busevent
-            if (args.length === 0 || args[0] !== EventBusFlowEventSync.EB_LISTENER_KEY || !args[2]) {
-                return;
-            }
-            this.processEventsReceived(JSON.parse(args[2]));
-        });
-    }
-}
-EventBusFlowEventSync.EB_LISTENER_KEY = 'EB_EVENTS';
-//// END GLOBALS DECLARATION
-/**
- * A class that manages event bus synchronization via the Generic Data Listener.
- */
-class EventBusListenerSync extends EventBusSyncBase {
-    /** @inheritdoc */
-    executeSync(syncDataPackage) {
-        try {
-            this.listener.send(EventBusListenerSync.EB_KEY, syncDataPackage);
-            return true;
-        }
-        catch (error) {
-            return false;
-        }
-    }
-    /** @inheritdoc */
-    hookReceiveEvent() {
-        // pause the sync until the listener is ready
-        this.isPaused = true;
-        this.listener = RegisterGenericDataListener(() => {
-            this.listener.onDataReceived(EventBusListenerSync.EB_KEY, (data) => {
-                try {
-                    this.processEventsReceived(data);
-                }
-                catch (error) {
-                    console.error(error);
-                }
-            });
-            this.isPaused = false;
-        });
-    }
-}
-EventBusListenerSync.EB_KEY = 'wt.eb.evt';
-EventBusListenerSync.EB_LISTENER_KEY = 'JS_LISTENER_GENERICDATA';
-
-/**
- * Captures the state of a value from a consumer.
- */
-class ConsumerValue {
-    /**
-     * Creates an instance of a ConsumerValue.
-     * @param consumer The consumer to track.
-     * @param initialValue The initial value.
-     */
-    constructor(consumer, initialValue) {
-        this.consumerHandler = (v) => { this.value = v; };
-        this._isPaused = false;
-        this.isDestroyed = false;
-        this.value = initialValue;
-        this.sub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler);
-    }
-    // eslint-disable-next-line jsdoc/require-returns
-    /**
-     * Whether event consumption is currently paused. While paused, this object's value will not update.
-     */
-    get isPaused() {
-        return this._isPaused;
-    }
-    /**
-     * Gets the current value.
-     * @returns The current value.
-     */
-    get() {
-        return this.value;
-    }
-    /**
-     * Sets the consumer from which this object derives its value. If the consumer is null, this object's value will
-     * not be updated until a non-null consumer is set.
-     * @param consumer An event consumer.
-     * @returns This object, after its consumer has been set.
-     */
-    setConsumer(consumer) {
-        var _a;
-        if (this.isDestroyed) {
-            return this;
-        }
-        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.destroy();
-        this.sub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler, this._isPaused);
-        return this;
-    }
-    /**
-     * Pauses consuming events for this object. Once paused, this object's value will not be updated.
-     * @returns This object, after it has been paused.
-     */
-    pause() {
-        var _a;
-        if (this._isPaused) {
-            return this;
-        }
-        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.pause();
-        this._isPaused = true;
-        return this;
-    }
-    /**
-     * Resumes consuming events for this object. Once resumed, this object's value will be updated from consumed
-     * events.
-     * @returns This object, after it has been resumed.
-     */
-    resume() {
-        var _a;
-        if (!this._isPaused) {
-            return this;
-        }
-        this._isPaused = false;
-        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.resume(true);
-        return this;
-    }
-    /**
-     * Destroys this object. Once destroyed, it will no longer consume events to update its value.
-     */
-    destroy() {
-        var _a;
-        this.isDestroyed = true;
-        (_a = this.sub) === null || _a === void 0 ? void 0 : _a.destroy();
-    }
-    /**
-     * Creates a new ConsumerValue.
-     * @param consumer The consumer to track.
-     * @param initialValue The initial value.
-     * @returns The created ConsumerValue.
-     */
-    static create(consumer, initialValue) {
-        return new ConsumerValue(consumer, initialValue);
-    }
-}
-
-/**
- * A publisher for publishing H:Events on the bus.
- */
-class HEventPublisher extends BasePublisher {
-    /**
-     * Dispatches an H:Event to the event bus.
-     * @param hEvent The H:Event to dispatch.
-     * @param sync Whether this event should be synced (optional, default false)
-     */
-    dispatchHEvent(hEvent, sync = false) {
-        // console.log(`dispaching hevent:  ${hEvent}`);
-        this.publish('hEvent', hEvent, sync, false);
-    }
-}
-
-/**
- * A subscribable subject which derives its value from an event consumer.
- */
-class ConsumerSubject extends AbstractSubscribable {
-    /**
-     * Constructor.
-     * @param consumer The event consumer from which this subject obtains its value. If null, this subject's value will
-     * not be updated until its consumer is set to a non-null value.
-     * @param initialVal This subject's initial value.
-     * @param equalityFunc The function this subject uses check for equality between values.
-     * @param mutateFunc The function this subject uses to change its value. If not defined, variable assignment is used
-     * instead.
-     */
-    constructor(consumer, initialVal, equalityFunc, mutateFunc) {
-        super();
-        this.equalityFunc = equalityFunc;
-        this.mutateFunc = mutateFunc;
-        this.consumerHandler = this.onEventConsumed.bind(this);
-        this._isPaused = false;
-        this.isDestroyed = false;
-        this.value = initialVal;
-        this.consumerSub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler);
-    }
-    // eslint-disable-next-line jsdoc/require-returns
-    /**
-     * Whether event consumption is currently paused for this subject. While paused, this subject's value will not
-     * update.
-     */
-    get isPaused() {
-        return this._isPaused;
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    static create(consumer, initialVal, equalityFunc, mutateFunc) {
-        return new ConsumerSubject(consumer, initialVal, equalityFunc !== null && equalityFunc !== void 0 ? equalityFunc : AbstractSubscribable.DEFAULT_EQUALITY_FUNC, mutateFunc);
-    }
-    /**
-     * Consumes an event.
-     * @param value The value of the event.
-     */
-    onEventConsumed(value) {
-        if (!this.equalityFunc(this.value, value)) {
-            if (this.mutateFunc) {
-                this.mutateFunc(this.value, value);
-            }
-            else {
-                this.value = value;
-            }
-            this.notify();
-        }
-    }
-    /**
-     * Sets the consumer from which this subject derives its value. If the consumer is null, this subject's value will
-     * not be updated until a non-null consumer is set.
-     * @param consumer An event consumer.
-     * @returns This subject, after its consumer has been set.
-     */
-    setConsumer(consumer) {
-        var _a;
-        if (this.isDestroyed) {
-            return this;
-        }
-        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.destroy();
-        this.consumerSub = consumer === null || consumer === void 0 ? void 0 : consumer.handle(this.consumerHandler, this._isPaused);
-        return this;
-    }
-    /**
-     * Pauses consuming events for this subject. Once paused, this subject's value will not be updated.
-     * @returns This subject, after it has been paused.
-     */
-    pause() {
-        var _a;
-        if (this._isPaused) {
-            return this;
-        }
-        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.pause();
-        this._isPaused = true;
-        return this;
-    }
-    /**
-     * Resumes consuming events for this subject. Once resumed, this subject's value will be updated from consumed
-     * events.
-     * @returns This subject, after it has been resumed.
-     */
-    resume() {
-        var _a;
-        if (!this._isPaused) {
-            return this;
-        }
-        this._isPaused = false;
-        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.resume(true);
-        return this;
-    }
-    /** @inheritdoc */
-    get() {
-        return this.value;
-    }
-    /**
-     * Destroys this subject. Once destroyed, it will no longer consume events to update its value.
-     */
-    destroy() {
-        var _a;
-        (_a = this.consumerSub) === null || _a === void 0 ? void 0 : _a.destroy();
-        this.isDestroyed = true;
-    }
-}
-
-/**
- * A utility class which provides the current game state.
- */
-class GameStateProvider {
-    /**
-     * Constructor.
-     */
-    constructor() {
-        this.gameState = Subject.create(undefined);
-        window.document.addEventListener('OnVCockpitPanelAttributesChanged', this.onAttributesChanged.bind(this));
-        this.onAttributesChanged();
-    }
-    /**
-     * Responds to changes in document attributes.
-     */
-    onAttributesChanged() {
-        var _a;
-        if ((_a = window.parent) === null || _a === void 0 ? void 0 : _a.document.body.hasAttribute('gamestate')) {
-            const attribute = window.parent.document.body.getAttribute('gamestate');
-            if (attribute !== null) {
-                const state = GameState[attribute];
-                // The game state is set briefly to ingame after loading is finished before changing to briefing. In order to
-                // not notify subscribers of this erroneous ingame state, we will debounce any state changes into ingame by two
-                // frames.
-                if (state === GameState.ingame && this.gameState.get() !== GameState.ingame) {
-                    setTimeout(() => {
-                        setTimeout(() => {
-                            const newAttribute = window.parent.document.body.getAttribute('gamestate');
-                            if (newAttribute !== null) {
-                                this.gameState.set(GameState[newAttribute]);
-                            }
-                        });
-                    });
-                }
-                else {
-                    this.gameState.set(state);
-                }
-                return;
-            }
-        }
-        this.gameState.set(undefined);
-    }
-    /**
-     * Gets a subscribable which provides the current game state.
-     * @returns A subscribable which provides the current game state.
-     */
-    static get() {
-        var _a;
-        return ((_a = GameStateProvider.INSTANCE) !== null && _a !== void 0 ? _a : (GameStateProvider.INSTANCE = new GameStateProvider())).gameState;
-    }
-}
-
 /// <reference types="@microsoft/msfs-types/js/simplane" />
 /**
  * The available facility frequency types.
@@ -9718,6 +8161,57 @@ class ApproachUtils {
     }
 }
 
+/**
+ * A Subject which provides a {@link GeoPointInterface} value.
+ */
+class GeoPointSubject extends AbstractSubscribable {
+    /**
+     * Constructor.
+     * @param value The value of this subject.
+     * @param tolerance The tolerance of this subject's equality check, defined as the maximum allowed great-circle
+     * distance between two equal points in great-arc radians. Defaults to {@link GeoPoint.EQUALITY_TOLERANCE}.
+     */
+    constructor(value, tolerance) {
+        super();
+        this.value = value;
+        this.tolerance = tolerance;
+        /** @inheritdoc */
+        this.isMutableSubscribable = true;
+    }
+    /**
+     * Creates a GeoPointSubject.
+     * @param initialVal The initial value.
+     * @param tolerance The tolerance of the subject's equality check, defined as the maximum allowed great-circle
+     * distance between two equal points in great-arc radians. Defaults to {@link GeoPoint.EQUALITY_TOLERANCE}.
+     * @returns A GeoPointSubject.
+     */
+    static create(initialVal, tolerance) {
+        return new GeoPointSubject(initialVal, tolerance);
+    }
+    /**
+     * Creates a GeoPointSubject.
+     * @param initialVal The initial value.
+     * @returns A GeoPointSubject.
+     * @deprecated Use `GeoPointSubject.create()` instead.
+     */
+    static createFromGeoPoint(initialVal) {
+        return new GeoPointSubject(initialVal);
+    }
+    /** @inheritdoc */
+    get() {
+        return this.value.readonly;
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    set(arg1, arg2) {
+        const isArg1Number = typeof arg1 === 'number';
+        const equals = isArg1Number ? this.value.equals(arg1, arg2, this.tolerance) : this.value.equals(arg1, this.tolerance);
+        if (!equals) {
+            isArg1Number ? this.value.set(arg1, arg2) : this.value.set(arg1);
+            this.notify();
+        }
+    }
+}
+
 /// <reference types="@microsoft/msfs-types/js/common" />
 const airportIcaoRegionPattern = new RegExp(/^A../);
 /**
@@ -10499,6 +8993,269 @@ class AirwayBuilder {
         });
     }
 }
+
+/**
+ * Utility functions for working with arrays.
+ */
+class ArrayUtils {
+    /**
+     * Creates a new array with initialized values.
+     * @param length The length of the new array.
+     * @param init A function which generates initial values for the new array at each index.
+     * @returns A new array of the specified length with initialized values.
+     */
+    static create(length, init) {
+        const newArray = [];
+        for (let i = 0; i < length; i++) {
+            newArray[i] = init(i);
+        }
+        return newArray;
+    }
+    /**
+     * Creates a new array containing a sequence of evenly-spaced numbers.
+     * @param length The length of the new array.
+     * @param start The number contained at index 0 of the new array. Defaults to `0`.
+     * @param increment The increment between each successive number in the new array. Defaults to `1`.
+     * @returns A new array containing the specified sequence of evenly-spaced numbers.
+     */
+    static range(length, start = 0, increment = 1) {
+        return ArrayUtils.fillRange([], length, 0, start, increment);
+    }
+    /**
+     * Fills an existing array with a sequence of evenly-spaced numbers. The sequence is written to the array in a single
+     * contiguous block of consecutive indexes.
+     * @param array The array to fill.
+     * @param length The length of the number sequence.
+     * @param startIndex The index at which to start filling the array. Defaults to `0`.
+     * @param start The first number in the sequence. Defaults to {@linkcode startIndex}.
+     * @param increment The increment between each successive number in the new array. Defaults to `1`.
+     * @returns The array, after it has been filled with the specified number sequence.
+     */
+    static fillRange(array, length, startIndex = 0, start = startIndex, increment = 1) {
+        const endIndex = startIndex + length;
+        for (let i = startIndex; i < endIndex; i++) {
+            array[i] = start + i * increment;
+        }
+        return array;
+    }
+    /**
+     * Gets the element at a specific index in an array.
+     * @param array An array.
+     * @param index The index to access. Negative indexes are supported and access elements starting from the end of the
+     * array (`-1` accesses the last element, `-2` the second to last element, etc).
+     * @returns The element at the specified index in the array.
+     * @throws RangeError if the index is out of bounds.
+     */
+    static at(array, index) {
+        if (index < 0) {
+            index += array.length;
+        }
+        if (index < 0 || index >= array.length) {
+            throw new RangeError();
+        }
+        return array[index];
+    }
+    /**
+     * Gets the element at a specific index in an array, or `undefined` if the index is out of bounds.
+     * @param array An array.
+     * @param index The index to access. Negative indexes are supported and access elements starting from the end of the
+     * array (`-1` accesses the last element, `-2` the second to last element, etc).
+     * @returns The element at the specified index in the array, or `undefined` if the index is out of bounds.
+     */
+    static peekAt(array, index) {
+        if (index < 0) {
+            index += array.length;
+        }
+        return array[index];
+    }
+    /**
+     * Gets the first element of an array.
+     * @param array An array.
+     * @returns The first element of the specified array.
+     * @throws RangeError if the array is empty.
+     */
+    static first(array) {
+        if (array.length === 0) {
+            throw new RangeError();
+        }
+        return array[0];
+    }
+    /**
+     * Gets the first element of an array if it is not empty, or `undefined` otherwise.
+     * @param array An array.
+     * @returns The first element of an array if it is not empty, or `undefined` otherwise.
+     */
+    static peekFirst(array) {
+        return array[0];
+    }
+    /**
+     * Gets the last element of an array.
+     * @param array An array.
+     * @returns The last element of the specified array.
+     * @throws RangeError if the array is empty.
+     */
+    static last(array) {
+        if (array.length === 0) {
+            throw new RangeError();
+        }
+        return array[array.length - 1];
+    }
+    /**
+     * Gets the last element of an array if it is not empty, or `undefined` otherwise.
+     * @param array An array.
+     * @returns The last element of an array if it is not empty, or `undefined` otherwise.
+     */
+    static peekLast(array) {
+        return array[array.length - 1];
+    }
+    /**
+     * Checks if a certain element is included in an array.
+     * @param array An array.
+     * @param searchElement The element to search for.
+     * @param fromIndex The position in this array at which to begin searching for `searchElement`.
+     * @returns Whether the search element is included in the specified array.
+     */
+    static includes(array, searchElement, fromIndex) {
+        return array.includes(searchElement, fromIndex);
+    }
+    /**
+     * Checks if two arrays are equal to each other. This method considers two arrays `a` and `b` if their lengths are
+     * equal and `a[i]` equals `b[i]` for every valid index `i`. All empty arrays are considered equal to one another.
+     * @param a The first array.
+     * @param b The second array.
+     * @param equalsFunc The function to use to determine whether two array elements are equal to each other. Defaults
+     * to a function which uses the strict equality operator (`===`).
+     * @returns Whether the two specified arrays are equal.
+     */
+    static equals(a, b, equalsFunc = ArrayUtils.STRICT_EQUALS) {
+        if (a.length !== b.length) {
+            return false;
+        }
+        for (let i = 0; i < a.length; i++) {
+            if (!equalsFunc(a[i], b[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+    /**
+     * Creates a new array by mapping each element of an existing array using a mapping function, then flattening the
+     * mapped elements to a maximum depth of one, leaving the original array intact.
+     * @param array An array.
+     * @param map A function which is called once on each element of the original array to map it to an arbitrary value.
+     * @returns A new array which was created by mapping each element of the specified array, then flattening the mapped
+     * elements to a maximum depth of one.
+     */
+    static flatMap(array, map) {
+        const out = [];
+        for (let i = 0; i < array.length; i++) {
+            const mapped = map(array[i], i, array);
+            if (Array.isArray(mapped)) {
+                for (let j = 0; j < mapped.length; j++) {
+                    out[out.length] = mapped[j];
+                }
+            }
+            else {
+                out[out.length] = mapped;
+            }
+        }
+        return out;
+    }
+    /**
+     * Creates a new array by flattening an existing array to a maximum depth, leaving the original array intact. The
+     * process of flattening replaces each element in the array that is itself an array with the sequence of elements
+     * found in the sub-array, recursively up to the maximum depth.
+     * @param array An array.
+     * @param depth The maximum depth to which to flatten. Values less than or equal to zero will result in no flattening
+     * (in other words, a shallow copy of the original array will be returned). Defaults to `1`.
+     * @returns A new array which was created by flattening the specified array to the specified maximum depth.
+     */
+    static flat(array, depth = 1) {
+        const out = [];
+        this.flatHelper(array, depth, 0, out);
+        return out;
+    }
+    /**
+     * Recursively flattens an array and writes the flattened sequence of elements into another array.
+     * @param array The array to flatten.
+     * @param maxDepth The maximum depth to which to flatten.
+     * @param depth The current flattening depth.
+     * @param out The array to which to write the flattened sequence of elements.
+     */
+    static flatHelper(array, maxDepth, depth, out) {
+        for (let i = 0; i < array.length; i++) {
+            const element = array[i];
+            if (Array.isArray(element) && depth < maxDepth) {
+                this.flatHelper(element, maxDepth, depth + 1, out);
+            }
+            else {
+                out[out.length] = element;
+            }
+        }
+    }
+    /**
+     * Performs a shallow copy of an array. After the operation is complete, the target array will have the same
+     * length and the same elements in the same order as the source array.
+     * @param source The array to copy.
+     * @param target The array to copy into. If not defined, a new array will be created.
+     * @returns The target array, after the source array has been copied into it.
+     */
+    static shallowCopy(source, target = []) {
+        target.length = source.length;
+        for (let i = 0; i < source.length; i++) {
+            target[i] = source[i];
+        }
+        return target;
+    }
+    /**
+     * Performs a binary search on a sorted array to find the index of the first or last element in the array whose
+     * sorting order is equal to a query element. If no such element in the array exists, `-(index + 1)` is returned,
+     * where `index` is the index at which the query element would be found if it were contained in the sorted array.
+     * @param array An array.
+     * @param element The element to search for.
+     * @param comparator A function which determines the sorting order of elements in the array. The function should
+     * return a negative number if the first element is to be sorted before the second, a positive number if the first
+     * element is to be sorted after the second, or zero if both elements are to be sorted equivalently.
+     * @param first If `true`, this method will find the first (lowest) matching index if there are multiple matching
+     * indexes, otherwise this method will find the last (highest) matching index. Defaults to `true`.
+     * @returns The index of the first (if `first` is `true`) or last (if `first` is `false`) element in the specified
+     * array whose sorting order is equal to the query element, or `-(index + 1)`, where `index` is the index at which
+     * the query element would be found if it were contained in the sorted array, if no element in the array has a
+     * sorting order equal to the query.
+     */
+    static binarySearch(array, element, comparator, first = true) {
+        let min = 0;
+        let max = array.length;
+        let index = Math.floor((min + max) / 2);
+        while (min < max) {
+            const compare = comparator(element, array[index]);
+            if (compare < 0) {
+                max = index;
+            }
+            else if (compare > 0) {
+                min = index + 1;
+            }
+            else {
+                const delta = first ? -1 : 1;
+                while (index + delta >= 0 && index + delta < array.length && comparator(element, array[index + delta]) === 0) {
+                    index += delta;
+                }
+                return index;
+            }
+            index = Math.floor((min + max) / 2);
+        }
+        return -(index + 1);
+    }
+    /**
+     * Gets the length of the longest string in the array.
+     * @param array The array to search in.
+     * @returns length of the longest string
+     */
+    static getMaxStringLength(array) {
+        return array.reduce((accum, curr) => curr.length > accum ? curr.length : accum, 0);
+    }
+}
+ArrayUtils.STRICT_EQUALS = (a, b) => a === b;
 
 /**
  * A binary min-heap. Each element added to the heap is ordered according to the value of an assigned key relative
@@ -19712,6 +18469,1657 @@ class ObjectSubject {
 
 /// <reference types="@microsoft/msfs-types/js/simvar" />
 /**
+ * A publisher for air data computer information.
+ */
+class AdcPublisher extends SimVarPublisher {
+    /**
+     * Creates an AdcPublisher.
+     * @param bus The event bus to which to publish.
+     * @param pacer An optional pacer to use to control the rate of publishing.
+     */
+    constructor(bus, pacer) {
+        var _a, _b, _c, _d, _e, _f, _g, _h;
+        const simvars = new Map([
+            ['indicated_alt', { name: 'INDICATED ALTITUDE:#index#', type: SimVarValueType.Feet, indexed: true }],
+            ['altimeter_baro_setting_inhg', { name: 'KOHLSMAN SETTING HG:#index#', type: SimVarValueType.InHG, indexed: true }],
+            ['altimeter_baro_setting_mb', { name: 'KOHLSMAN SETTING MB:#index#', type: SimVarValueType.MB, indexed: true }],
+            ['altimeter_baro_preselect_raw', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, indexed: true }],
+            ['altimeter_baro_preselect_inhg', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, map: raw => UnitType.HPA.convertTo(raw / 16, UnitType.IN_HG), indexed: true }],
+            ['altimeter_baro_preselect_mb', { name: 'L:XMLVAR_Baro#index#_SavedPressure', type: SimVarValueType.Number, map: raw => raw / 16, indexed: true }],
+            ['altimeter_baro_is_std', { name: 'L:XMLVAR_Baro#index#_ForcedToSTD', type: SimVarValueType.Bool, indexed: true }],
+            ['radio_alt', { name: 'RADIO HEIGHT', type: SimVarValueType.Feet }],
+            ['pressure_alt', { name: 'PRESSURE ALTITUDE', type: SimVarValueType.Feet }],
+            ['vertical_speed', { name: 'VERTICAL SPEED', type: SimVarValueType.FPM }],
+            ['ambient_density', { name: 'AMBIENT DENSITY', type: SimVarValueType.SlugsPerCubicFoot }],
+            ['isa_temp_c', { name: 'STANDARD ATM TEMPERATURE', type: SimVarValueType.Celsius }],
+            ['ram_air_temp_c', { name: 'TOTAL AIR TEMPERATURE', type: SimVarValueType.Celsius }],
+            ['ambient_wind_velocity', { name: 'AMBIENT WIND VELOCITY', type: SimVarValueType.Knots }],
+            ['ambient_wind_direction', { name: 'AMBIENT WIND DIRECTION', type: SimVarValueType.Degree }],
+            ['on_ground', { name: 'SIM ON GROUND', type: SimVarValueType.Bool }],
+            ['aoa', { name: 'INCIDENCE ALPHA', type: SimVarValueType.Degree }],
+            ['stall_aoa', { name: 'STALL ALPHA', type: SimVarValueType.Degree }],
+            ['zero_lift_aoa', { name: 'ZERO LIFT ALPHA', type: SimVarValueType.Degree }],
+            ['density_alt', { name: 'DENSITY ALTITUDE', type: SimVarValueType.Feet }],
+        ]);
+        super(simvars, bus, pacer);
+        (_a = this.needPublish) !== null && _a !== void 0 ? _a : (this.needPublish = {
+            'mach_number': false,
+            'ambient_pressure_inhg': false,
+            'ambient_temp_c': false
+        });
+        (_b = this.needPublishIasTopics) !== null && _b !== void 0 ? _b : (this.needPublishIasTopics = new Map());
+        (_c = this.needRetrievePressure) !== null && _c !== void 0 ? _c : (this.needRetrievePressure = false);
+        (_d = this.needRetrieveTemperature) !== null && _d !== void 0 ? _d : (this.needRetrieveTemperature = false);
+        (_e = this.needRetrieveMach) !== null && _e !== void 0 ? _e : (this.needRetrieveMach = false);
+        (_f = this.pressure) !== null && _f !== void 0 ? _f : (this.pressure = 1013.25);
+        (_g = this.temperature) !== null && _g !== void 0 ? _g : (this.temperature = 0);
+        (_h = this.mach) !== null && _h !== void 0 ? _h : (this.mach = 0);
+    }
+    /** @inheritDoc */
+    handleSubscribedTopic(topic) {
+        var _a, _b;
+        (_a = this.needPublish) !== null && _a !== void 0 ? _a : (this.needPublish = {
+            'mach_number': false,
+            'ambient_pressure_inhg': false,
+            'ambient_temp_c': false
+        });
+        (_b = this.needPublishIasTopics) !== null && _b !== void 0 ? _b : (this.needPublishIasTopics = new Map());
+        if (this.resolvedSimVars.has(topic)
+            || topic in this.needPublish
+            || AdcPublisher.TOPIC_REGEXES['ias'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['tas'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['indicated_mach_number'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['indicated_tas'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['mach_to_kias_factor'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['tas_to_ias_factor'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['indicated_mach_to_kias_factor'].test(topic)
+            || AdcPublisher.TOPIC_REGEXES['indicated_tas_to_ias_factor'].test(topic)) {
+            // If topic matches an already resolved topic -> start publishing.
+            this.onTopicSubscribed(topic);
+        }
+        else {
+            // Check if topic matches indexed topic.
+            this.tryMatchIndexedSubscribedTopic(topic);
+        }
+    }
+    /** @inheritDoc */
+    onTopicSubscribed(topic) {
+        if (topic in this.needPublish) {
+            this.needPublish[topic] = true;
+            switch (topic) {
+                case 'ambient_pressure_inhg':
+                    this.needRetrievePressure = true;
+                    if (this.publishActive) {
+                        this.retrieveAmbientPressure(true);
+                    }
+                    break;
+                case 'ambient_temp_c':
+                    this.needRetrieveTemperature = true;
+                    if (this.publishActive) {
+                        this.retrieveAmbientTemperature(true);
+                    }
+                    break;
+                case 'mach_number':
+                    this.needRetrieveMach = true;
+                    if (this.publishActive) {
+                        this.retrieveMach(true);
+                    }
+                    break;
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['ias'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['ias'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.iasTopic = index < 0 ? 'ias' : `ias_${index}`;
+            if (this.publishActive) {
+                this.retrieveIas(entry, true);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['tas'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['tas'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.tasTopic = index < 0 ? 'tas' : `tas_${index}`;
+            if (this.publishActive) {
+                this.retrieveTas(entry, true);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['indicated_mach_number'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['indicated_mach_number'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.indicatedMachTopic = index < 0 ? 'indicated_mach_number' : `indicated_mach_number_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveIas(entry, false);
+                this.retrieveIndicatedMach(entry, true);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['indicated_tas'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['indicated_tas'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            this.needRetrieveTemperature = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.indicatedTasTopic = index < 0 ? 'indicated_tas' : `indicated_tas_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveAmbientTemperature(false);
+                this.retrieveIas(entry, false);
+                this.retrieveIndicatedTas(entry, true);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['mach_to_kias_factor'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['mach_to_kias_factor'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            this.needRetrieveMach = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.machToKiasTopic = index < 0 ? 'mach_to_kias_factor' : `mach_to_kias_factor_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveMach(false);
+                this.retrieveIas(entry, false);
+                this.publishMachToKias(entry);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['tas_to_ias_factor'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['tas_to_ias_factor'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            this.needRetrieveTemperature = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.tasToIasTopic = index < 0 ? 'tas_to_ias_factor' : `tas_to_ias_factor_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveAmbientTemperature(false);
+                this.retrieveIas(entry, false);
+                this.retrieveTas(entry, false);
+                this.publishTasToIas(entry);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['indicated_mach_to_kias_factor'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['indicated_mach_to_kias_factor'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.indicatedMachToKiasTopic = index < 0 ? 'indicated_mach_to_kias_factor' : `indicated_mach_to_kias_factor_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveIas(entry, false);
+                this.retrieveIndicatedMach(entry, false);
+                this.publishIndicatedMachToKias(entry);
+            }
+        }
+        else if (AdcPublisher.TOPIC_REGEXES['indicated_tas_to_ias_factor'].test(topic)) {
+            const indexMatch = topic.match(AdcPublisher.TOPIC_REGEXES['indicated_tas_to_ias_factor'])[1];
+            const index = indexMatch ? parseInt(indexMatch) : -1;
+            this.needRetrievePressure = true;
+            this.needRetrieveTemperature = true;
+            const entry = this.getOrCreateIasTopicEntry(index);
+            entry.indicatedTasToIasTopic = index < 0 ? 'indicated_tas_to_ias_factor' : `indicated_tas_to_ias_factor_${index}`;
+            if (this.publishActive) {
+                this.retrieveAmbientPressure(false);
+                this.retrieveAmbientTemperature(false);
+                this.retrieveIas(entry, false);
+                this.retrieveIndicatedTas(entry, false);
+                this.publishIndicatedTasToIas(entry);
+            }
+        }
+        else {
+            super.onTopicSubscribed(topic);
+        }
+    }
+    /**
+     * Gets the entry describing indicated airspeed-related topics to publish for a given airspeed indicator index, or
+     * creates a new one if it does not exist.
+     * @param index The airspeed indicator index for which to get an entry, or `-1` for the un-indexed airspeed
+     * indicator.
+     * @returns An entry describing indicated airspeed-related topics to publish for the specified airspeed indicator
+     * index.
+     */
+    getOrCreateIasTopicEntry(index) {
+        let entry = this.needPublishIasTopics.get(index);
+        if (!entry) {
+            entry = {
+                iasSimVar: index < 0 ? 'AIRSPEED INDICATED:1' : `AIRSPEED INDICATED:${index}`,
+                tasSimVar: index < 0 ? 'AIRSPEED TRUE:1' : `AIRSPEED TRUE:${index}`,
+                kias: 0,
+                iasMps: 0,
+                ktas: 0,
+                indicatedMach: 0,
+                indicatedTas: 0
+            };
+            this.needPublishIasTopics.set(index, entry);
+        }
+        return entry;
+    }
+    /** @inheritDoc */
+    onUpdate() {
+        const isSlewing = SimVar.GetSimVarValue('IS SLEW ACTIVE', 'bool');
+        if (!isSlewing) {
+            if (this.needRetrievePressure) {
+                this.retrieveAmbientPressure(this.needPublish['ambient_pressure_inhg']);
+            }
+            if (this.needRetrieveTemperature) {
+                this.retrieveAmbientTemperature(this.needPublish['ambient_temp_c']);
+            }
+            if (this.needRetrieveMach) {
+                this.retrieveMach(this.needPublish['mach_number']);
+            }
+            for (const entry of this.needPublishIasTopics.values()) {
+                this.retrieveIas(entry, true);
+                if (entry.tasTopic || entry.tasToIasTopic) {
+                    this.retrieveTas(entry, true);
+                }
+                if (entry.indicatedMachTopic || entry.indicatedMachToKiasTopic) {
+                    this.retrieveIndicatedMach(entry, true);
+                }
+                if (entry.indicatedTasTopic || entry.indicatedTasToIasTopic) {
+                    this.retrieveIndicatedTas(entry, true);
+                }
+                this.publishMachToKias(entry);
+                this.publishTasToIas(entry);
+                this.publishIndicatedMachToKias(entry);
+                this.publishIndicatedTasToIas(entry);
+            }
+            super.onUpdate();
+        }
+    }
+    /**
+     * Retrieves and optionally publishes the current ambient pressure.
+     * @param publish Whether to publish the value.
+     */
+    retrieveAmbientPressure(publish) {
+        const pressureInHg = SimVar.GetSimVarValue('AMBIENT PRESSURE', SimVarValueType.InHG);
+        this.pressure = UnitType.IN_HG.convertTo(pressureInHg, UnitType.HPA);
+        publish && this.publish('ambient_pressure_inhg', pressureInHg);
+    }
+    /**
+     * Retrieves and optionally publishes the current ambient temperature.
+     * @param publish Whether to publish the value.
+     */
+    retrieveAmbientTemperature(publish) {
+        this.temperature = SimVar.GetSimVarValue('AMBIENT TEMPERATURE', SimVarValueType.Celsius);
+        publish && this.publish('ambient_temp_c', this.temperature);
+    }
+    /**
+     * Retrieves and optionally publishes the airplane's current mach number.
+     * @param publish Whether to publish the value.
+     */
+    retrieveMach(publish) {
+        this.mach = SimVar.GetSimVarValue('AIRSPEED MACH', SimVarValueType.Mach);
+        publish && this.publish('mach_number', this.mach);
+    }
+    /**
+     * Retrieves and optionally publishes the current indicated airspeed for an airspeed indicator index.
+     * @param entry The entry for the airspeed indicator index for which to retrieve the value.
+     * @param publish Whether to publish the value.
+     */
+    retrieveIas(entry, publish) {
+        entry.kias = SimVar.GetSimVarValue(entry.iasSimVar, SimVarValueType.Knots);
+        entry.iasMps = UnitType.KNOT.convertTo(entry.kias, UnitType.MPS);
+        publish && entry.iasTopic && this.publish(entry.iasTopic, entry.kias);
+    }
+    /**
+     * Retrieves and optionally publishes the current true airspeed for an airspeed indicator index.
+     * @param entry The entry for the airspeed indicator index for which to retrieve the value.
+     * @param publish Whether to publish the value.
+     */
+    retrieveTas(entry, publish) {
+        entry.ktas = SimVar.GetSimVarValue(entry.tasSimVar, SimVarValueType.Knots);
+        publish && entry.tasTopic && this.publish(entry.tasTopic, entry.ktas);
+    }
+    /**
+     * Retrieves and optionally publishes the current indicated mach number for an airspeed indicator index.
+     * @param entry The entry for the airspeed indicator index for which to retrieve the value.
+     * @param publish Whether to publish the value.
+     */
+    retrieveIndicatedMach(entry, publish) {
+        entry.indicatedMach = AeroMath.casToMach(entry.iasMps, this.pressure);
+        publish && entry.indicatedMachTopic && this.publish(entry.indicatedMachTopic, entry.indicatedMach);
+    }
+    /**
+     * Retrieves and optionally publishes the current indicated true airspeed for an airspeed indicator index.
+     * @param entry The entry for the airspeed indicator index for which to retrieve the value.
+     * @param publish Whether to publish the value.
+     */
+    retrieveIndicatedTas(entry, publish) {
+        entry.indicatedTas = UnitType.MPS.convertTo(AeroMath.casToTas(entry.iasMps, this.pressure, this.temperature), UnitType.KNOT);
+        publish && entry.indicatedTasTopic && this.publish(entry.indicatedTasTopic, entry.indicatedTas);
+    }
+    /**
+     * Publishes the current conversion factor from mach number to knots indicated airspeed for an airspeed indicator
+     * index.
+     * @param entry The entry for the airspeed indicator index for which to publish the value.
+     */
+    publishMachToKias(entry) {
+        if (!entry.machToKiasTopic) {
+            return;
+        }
+        const factor = entry.kias < 1 || this.mach === 0
+            ? 1 / AeroMath.casToMach(1, this.pressure)
+            : entry.kias / this.mach;
+        this.publish(entry.machToKiasTopic, isFinite(factor) ? factor : 1);
+    }
+    /**
+     * Publishes the current conversion factor from true airspeed to indicated airspeed for an airspeed indicator index.
+     * @param entry The entry for the airspeed indicator index for which to publish the value.
+     */
+    publishTasToIas(entry) {
+        if (!entry.tasToIasTopic) {
+            return;
+        }
+        const factor = entry.kias < 1 || entry.ktas === 0
+            ? 1 / AeroMath.casToTas(1, this.pressure, this.temperature)
+            : entry.kias / entry.ktas;
+        this.publish(entry.tasToIasTopic, isFinite(factor) ? factor : 1);
+    }
+    /**
+     * Publishes the current conversion factor from indicated mach number to knots indicated airspeed for an airspeed
+     * indicator index.
+     * @param entry The entry for the airspeed indicator index for which to publish the value.
+     */
+    publishIndicatedMachToKias(entry) {
+        if (!entry.indicatedMachToKiasTopic) {
+            return;
+        }
+        const factor = entry.kias < 1 || entry.indicatedMach === 0
+            ? 1 / AeroMath.casToMach(1, this.pressure)
+            : entry.kias / entry.indicatedMach;
+        this.publish(entry.indicatedMachToKiasTopic, isFinite(factor) ? factor : 1);
+    }
+    /**
+     * Publishes the current conversion factor from indicated true airspeed to indicated airspeed for an airspeed
+     * indicator index.
+     * @param entry The entry for the airspeed indicator index for which to publish the value.
+     */
+    publishIndicatedTasToIas(entry) {
+        if (!entry.indicatedTasToIasTopic) {
+            return;
+        }
+        const factor = entry.kias < 1 || entry.indicatedTas === 0
+            ? 1 / AeroMath.casToTas(1, this.pressure, this.temperature)
+            : entry.kias / entry.indicatedTas;
+        this.publish(entry.indicatedTasToIasTopic, isFinite(factor) ? factor : 1);
+    }
+}
+AdcPublisher.TOPIC_REGEXES = {
+    'ias': /^ias(?:_(0|(?:[1-9])\d*))?$/,
+    'tas': /^tas(?:_(0|(?:[1-9])\d*))?$/,
+    'indicated_mach_number': /^indicated_mach_number(?:_(0|(?:[1-9])\d*))?$/,
+    'indicated_tas': /^indicated_tas(?:_(0|(?:[1-9])\d*))?$/,
+    'mach_to_kias_factor': /^mach_to_kias_factor(?:_(0|(?:[1-9])\d*))?$/,
+    'tas_to_ias_factor': /^tas_to_ias_factor(?:_(0|(?:[1-9])\d*))?$/,
+    'indicated_mach_to_kias_factor': /^indicated_mach_to_kias_factor(?:_(0|(?:[1-9])\d*))?$/,
+    'indicated_tas_to_ias_factor': /^indicated_tas_to_ias_factor(?:_(0|(?:[1-9])\d*))?$/
+};
+
+/**
+ * A publisher for AHRS information.
+ */
+class AhrsPublisher extends SimVarPublisher {
+    /**
+     * Creates an AhrsPublisher.
+     * @param bus The event bus to which to publish.
+     * @param pacer An optional pacer to use to control the rate of publishing.
+     */
+    constructor(bus, pacer) {
+        var _a;
+        const simvars = new Map([
+            ['pitch_deg', { name: 'ATTITUDE INDICATOR PITCH DEGREES:#index#', type: SimVarValueType.Degree, indexed: true }],
+            ['roll_deg', { name: 'ATTITUDE INDICATOR BANK DEGREES:#index#', type: SimVarValueType.Degree, indexed: true }],
+            ['hdg_deg', { name: 'HEADING INDICATOR:#index#', type: SimVarValueType.Degree, indexed: true }],
+            ['hdg_deg_true', { name: 'HEADING INDICATOR:#index#', type: SimVarValueType.Degree, map: (heading) => MagVar.magneticToTrue(heading, this.magVar), indexed: true }],
+            ['delta_heading_rate', { name: 'DELTA HEADING RATE:#index#', type: SimVarValueType.Degree, indexed: true }],
+            ['turn_coordinator_ball', { name: 'TURN COORDINATOR BALL', type: SimVarValueType.Number }],
+            ['actual_hdg_deg', { name: 'PLANE HEADING DEGREES MAGNETIC', type: SimVarValueType.Degree }],
+            ['actual_hdg_deg_true', { name: 'PLANE HEADING DEGREES TRUE', type: SimVarValueType.Degree }],
+            ['actual_pitch_deg', { name: 'PLANE PITCH DEGREES', type: SimVarValueType.Degree }],
+            ['actual_roll_deg', { name: 'PLANE BANK DEGREES', type: SimVarValueType.Degree }],
+        ]);
+        super(simvars, bus, pacer);
+        this.magVar = 0;
+        (_a = this.needUpdateMagVar) !== null && _a !== void 0 ? _a : (this.needUpdateMagVar = false);
+    }
+    /** @inheritdoc */
+    onTopicSubscribed(topic) {
+        super.onTopicSubscribed(topic);
+        if (topic.startsWith('hdg_deg_true')) {
+            this.needUpdateMagVar = true;
+        }
+    }
+    /** @inheritdoc */
+    onUpdate() {
+        if (this.needUpdateMagVar) {
+            this.magVar = SimVar.GetSimVarValue('MAGVAR', SimVarValueType.Degree);
+        }
+        super.onUpdate();
+    }
+}
+
+/**
+ * A publisher for events related to the sim's AI piloting feature.
+ */
+class AiPilotPublisher extends SimVarPublisher {
+    /**
+     * Creates a new instance of AiPilotPublisher.
+     * @param bus The event bus to which to publish.
+     */
+    constructor(bus) {
+        super(new Map([
+            ['ai_delegate_controls_active', { name: 'DELEGATE CONTROLS TO AI', type: SimVarValueType.Bool }],
+            ['ai_auto_rudder_active', { name: 'AUTO COORDINATION', type: SimVarValueType.Bool }]
+        ]), bus);
+    }
+}
+
+/**
+ * Ambient precipitation states.
+ */
+var AmbientPrecipState;
+(function (AmbientPrecipState) {
+    AmbientPrecipState[AmbientPrecipState["None"] = 2] = "None";
+    AmbientPrecipState[AmbientPrecipState["Rain"] = 4] = "Rain";
+    AmbientPrecipState[AmbientPrecipState["Snow"] = 8] = "Snow";
+})(AmbientPrecipState || (AmbientPrecipState = {}));
+/**
+ * A publisher for ambient environment information.
+ */
+class AmbientPublisher extends SimVarPublisher {
+    /**
+     * Creates an AmbientPublisher.
+     * @param bus The event bus to which to publish.
+     * @param pacer An optional pacer to use to control the rate of publishing.
+     */
+    constructor(bus, pacer) {
+        const simvars = new Map([
+            ['ambient_precip_state', { name: 'AMBIENT PRECIP STATE', type: SimVarValueType.Number }],
+            ['ambient_precip_rate', { name: 'AMBIENT PRECIP RATE', type: SimVarValueType.MillimetersWater }],
+            ['ambient_visibility', { name: 'AMBIENT VISIBILITY', type: SimVarValueType.Meters }],
+            ['ambient_in_cloud', { name: 'AMBIENT IN CLOUD', type: SimVarValueType.Bool }],
+            ['ambient_qnh_inhg', { name: 'SEA LEVEL PRESSURE', type: SimVarValueType.InHG }],
+            ['ambient_qnh_mb', { name: 'SEA LEVEL PRESSURE', type: SimVarValueType.MB }],
+        ]);
+        super(simvars, bus, pacer);
+    }
+}
+
+var APLockType;
+(function (APLockType) {
+    APLockType[APLockType["Heading"] = 0] = "Heading";
+    APLockType[APLockType["Nav"] = 1] = "Nav";
+    APLockType[APLockType["Alt"] = 2] = "Alt";
+    APLockType[APLockType["Bank"] = 3] = "Bank";
+    APLockType[APLockType["WingLevel"] = 4] = "WingLevel";
+    APLockType[APLockType["Vs"] = 5] = "Vs";
+    APLockType[APLockType["Flc"] = 6] = "Flc";
+    APLockType[APLockType["Pitch"] = 7] = "Pitch";
+    APLockType[APLockType["Approach"] = 8] = "Approach";
+    APLockType[APLockType["Backcourse"] = 9] = "Backcourse";
+    APLockType[APLockType["Glideslope"] = 10] = "Glideslope";
+    APLockType[APLockType["VNav"] = 11] = "VNav";
+})(APLockType || (APLockType = {}));
+/** base publisher for simvars */
+class APSimVarPublisher extends SimVarPublisher {
+    /**
+     * Create an APSimVarPublisher
+     * @param bus The EventBus to publish to
+     * @param pacer An optional pacer to use to control the pace of publishing
+     */
+    constructor(bus, pacer = undefined) {
+        super(APSimVarPublisher.simvars, bus, pacer);
+    }
+}
+APSimVarPublisher.simvars = new Map([
+    ['ap_master_status', { name: 'AUTOPILOT MASTER', type: SimVarValueType.Bool }],
+    ['ap_yd_status', { name: 'AUTOPILOT YAW DAMPER', type: SimVarValueType.Bool }],
+    ['ap_disengage_status', { name: 'AUTOPILOT DISENGAGED', type: SimVarValueType.Bool }],
+    ['ap_heading_hold', { name: 'AUTOPILOT HEADING LOCK', type: SimVarValueType.Bool }],
+    ['ap_nav_hold', { name: 'AUTOPILOT NAV1 LOCK', type: SimVarValueType.Bool }],
+    ['ap_bank_hold', { name: 'AUTOPILOT BANK HOLD', type: SimVarValueType.Bool }],
+    ['ap_max_bank_id', { name: 'AUTOPILOT MAX BANK ID', type: SimVarValueType.Number }],
+    ['ap_max_bank_value', { name: 'AUTOPILOT MAX BANK', type: SimVarValueType.Degree }],
+    ['ap_wing_lvl_hold', { name: 'AUTOPILOT WING LEVELER', type: SimVarValueType.Bool }],
+    ['ap_approach_hold', { name: 'AUTOPILOT APPROACH HOLD', type: SimVarValueType.Bool }],
+    ['ap_backcourse_hold', { name: 'AUTOPILOT BACKCOURSE HOLD', type: SimVarValueType.Bool }],
+    ['ap_vs_hold', { name: 'AUTOPILOT VERTICAL HOLD', type: SimVarValueType.Bool }],
+    ['ap_flc_hold', { name: 'AUTOPILOT FLIGHT LEVEL CHANGE', type: SimVarValueType.Bool }],
+    ['ap_alt_hold', { name: 'AUTOPILOT ALTITUDE LOCK', type: SimVarValueType.Bool }],
+    ['ap_glideslope_hold', { name: 'AUTOPILOT GLIDESLOPE HOLD', type: SimVarValueType.Bool }],
+    ['ap_pitch_hold', { name: 'AUTOPILOT PITCH HOLD', type: SimVarValueType.Bool }],
+    ['ap_toga_hold', { name: 'AUTOPILOT TAKEOFF POWER ACTIVE', type: SimVarValueType.Bool }],
+    ['ap_heading_selected', { name: 'AUTOPILOT HEADING LOCK DIR:#index#', type: SimVarValueType.Degree, indexed: true }],
+    ['ap_altitude_selected', { name: 'AUTOPILOT ALTITUDE LOCK VAR:#index#', type: SimVarValueType.Feet, indexed: true }],
+    ['ap_pitch_selected', { name: 'AUTOPILOT PITCH HOLD REF', type: SimVarValueType.Degree }],
+    ['ap_vs_selected', { name: 'AUTOPILOT VERTICAL HOLD VAR:#index#', type: SimVarValueType.FPM, indexed: true }],
+    ['ap_fpa_selected', { name: 'L:WT_AP_FPA_Target:#index#', type: SimVarValueType.Degree, indexed: true }],
+    ['ap_ias_selected', { name: 'AUTOPILOT AIRSPEED HOLD VAR:#index#', type: SimVarValueType.Knots, indexed: true }],
+    ['ap_mach_selected', { name: 'AUTOPILOT MACH HOLD VAR:#index#', type: SimVarValueType.Number, indexed: true }],
+    ['ap_selected_speed_is_mach', { name: 'AUTOPILOT MANAGED SPEED IN MACH', type: SimVarValueType.Bool }],
+    ['ap_selected_speed_is_manual', { name: 'L:XMLVAR_SpeedIsManuallySet', type: SimVarValueType.Bool }],
+    ['flight_director_bank', { name: 'AUTOPILOT FLIGHT DIRECTOR BANK', type: SimVarValueType.Degree }],
+    ['flight_director_pitch', { name: 'AUTOPILOT FLIGHT DIRECTOR PITCH', type: SimVarValueType.Degree }],
+    ['flight_director_is_active_1', { name: 'AUTOPILOT FLIGHT DIRECTOR ACTIVE:1', type: SimVarValueType.Bool }],
+    ['flight_director_is_active_2', { name: 'AUTOPILOT FLIGHT DIRECTOR ACTIVE:2', type: SimVarValueType.Bool }],
+    ['vnav_active', { name: 'L:XMLVAR_VNAVButtonValue', type: SimVarValueType.Bool }]
+]);
+/**
+ * Publishes autopilot data
+ */
+class AutopilotPublisher extends BasePublisher {
+    /**
+     * Creates an AutopilotPublisher
+     * @param bus The event bus to publish to.
+     * @param pacer An optional pacer to use to control the rate of publishing.
+     */
+    constructor(bus, pacer) {
+        super(bus, pacer);
+    }
+    /**
+     * Publish an AP master engage event
+     */
+    publishMasterEngage() {
+        this.publish('ap_master_on', true);
+    }
+    /**
+     * Publish an AP master disengage event
+     */
+    publishMasterDisengage() {
+        this.publish('ap_master_off', true);
+    }
+    /**
+     * Publish a YD engage event
+     */
+    publishYdEngage() {
+        this.publish('ap_yd_on', true);
+    }
+    /**
+     * Publish a YD disengage event
+     */
+    publishYdDisengage() {
+        this.publish('ap_yd_off', true);
+    }
+    /**
+     * Publish a lock set event
+     * @param lock The lock/hold set
+     */
+    publishLockSet(lock) {
+        this.publish('ap_lock_set', lock);
+    }
+    /**
+     * Publish a lock release event
+     * @param lock The lock/hold released
+     */
+    publishLockRelease(lock) {
+        this.publish('ap_lock_release', lock);
+    }
+}
+/**
+ * Manages an autopilot system
+ */
+class AutopilotInstrument {
+    /**
+     * Create an AutopilotInstrument
+     * @param bus The event bus to publish to
+     */
+    constructor(bus) {
+        this.bus = bus;
+        // this.hEvents = this.bus.getSubscriber<HEvent>();
+        this.publisher = new AutopilotPublisher(bus);
+        this.simVarPublisher = new APSimVarPublisher(bus);
+        this.simVarSubscriber = new EventSubscriber(bus);
+    }
+    /**
+     * Initialize the instrument
+     */
+    init() {
+        this.publisher.startPublish();
+        this.simVarPublisher.startPublish();
+        // console.log('initting autopilot');
+        this.simVarSubscriber.on('ap_master_status').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishMasterEngage();
+            }
+            else {
+                this.publisher.publishMasterDisengage();
+            }
+        });
+        this.simVarSubscriber.on('ap_yd_status').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishYdEngage();
+            }
+            else {
+                this.publisher.publishYdDisengage();
+            }
+        });
+        this.simVarSubscriber.on('ap_alt_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Alt);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Alt);
+            }
+        });
+        this.simVarSubscriber.on('ap_pitch_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Pitch);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Pitch);
+            }
+        });
+        this.simVarSubscriber.on('ap_heading_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Heading);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Heading);
+            }
+        });
+        this.simVarSubscriber.on('ap_nav_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Nav);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Nav);
+            }
+        });
+        this.simVarSubscriber.on('ap_approach_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Approach);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Approach);
+            }
+        });
+        this.simVarSubscriber.on('ap_backcourse_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Backcourse);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Backcourse);
+            }
+        });
+        this.simVarSubscriber.on('ap_bank_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Bank);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Bank);
+            }
+        });
+        this.simVarSubscriber.on('ap_wing_lvl_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.WingLevel);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.WingLevel);
+            }
+        });
+        this.simVarSubscriber.on('ap_flc_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Flc);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Flc);
+            }
+        });
+        this.simVarSubscriber.on('ap_vs_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Vs);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Vs);
+            }
+        });
+        this.simVarSubscriber.on('ap_glideslope_hold').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.Glideslope);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.Glideslope);
+            }
+        });
+        this.simVarSubscriber.on('vnav_active').whenChangedBy(1).handle((engaged) => {
+            if (engaged) {
+                this.publisher.publishLockSet(APLockType.VNav);
+            }
+            else {
+                this.publisher.publishLockRelease(APLockType.VNav);
+            }
+        });
+    }
+    /** update our publishers */
+    onUpdate() {
+        this.simVarPublisher.onUpdate();
+    }
+}
+
+/** A collection of helper functions dealing with radios and frequencies. */
+class RadioUtils {
+    /**
+     * Checks whether a frequency is a NAV frequency.
+     * @param freq The frequency to check, in megahertz.
+     * @returns Whether the specified frequency is a NAV frequency.
+     */
+    static isNavFrequency(freq) {
+        const freqKhz = Math.round(freq * 1000);
+        if (freqKhz < 108e3 || freqKhz > 117950) {
+            return false;
+        }
+        return freqKhz % 50 === 0;
+    }
+    /**
+     * Checks if frequency is a localizer frequency based on the number.
+     * @param freq The frequency to check, in megahertz.
+     * @returns True if frequency is between 108.1 and 111.95 MHz (inclusive) and the tenths place is odd.
+     */
+    static isLocalizerFrequency(freq) {
+        return freq >= 108.1 && freq <= 111.95 && (Math.trunc(freq * 10) % 2 === 1);
+    }
+    /**
+     * Checks whether a frequency is a 8.33 kHz-spacing COM frequency.
+     * @param freq The frequency to check, in megahertz.
+     * @returns Whether the specified frequency is a 8.33 kHz-spacing COM frequency.
+     */
+    static isCom833Frequency(freq) {
+        const freqKhz = Math.round(freq * 1000);
+        if (freqKhz < 118e3 || freqKhz > 136990) {
+            return false;
+        }
+        return RadioUtils.COM_833_ENDINGS.includes(freqKhz % 50);
+    }
+    /**
+     * Checks whether a frequency is a 25 kHz-spacing COM frequency.
+     * @param freq The frequency to check, in megahertz.
+     * @returns Whether the specified frequency is a 25 kHz-spacing COM frequency.
+     */
+    static isCom25Frequency(freq) {
+        const freqKhz = Math.round(freq * 1000);
+        if (freqKhz < 118e3 || freqKhz > 136975) {
+            return false;
+        }
+        return freqKhz % 25 === 0;
+    }
+    /**
+     * Checks whether a frequency is an ADF frequency.
+     * @param freq The frequency to check, in kilohertz.
+     * @returns Whether the specified frequency is an ADF frequency.
+     */
+    static isAdfFrequency(freq) {
+        const freqHz = Math.round(freq * 1000);
+        if (freqHz < 190e3 || freqHz > 1799500) {
+            return false;
+        }
+        return freqHz % 500 === 0;
+    }
+}
+RadioUtils.COM_833_ENDINGS = [5, 10, 15, 30, 35, 40];
+
+/**
+ * VOR signal to/from flags.
+ */
+var VorToFrom;
+(function (VorToFrom) {
+    VorToFrom[VorToFrom["OFF"] = 0] = "OFF";
+    VorToFrom[VorToFrom["TO"] = 1] = "TO";
+    VorToFrom[VorToFrom["FROM"] = 2] = "FROM";
+})(VorToFrom || (VorToFrom = {}));
+/** Marker beacon signal state. */
+var MarkerBeaconState;
+(function (MarkerBeaconState) {
+    MarkerBeaconState[MarkerBeaconState["Inactive"] = 0] = "Inactive";
+    MarkerBeaconState[MarkerBeaconState["Outer"] = 1] = "Outer";
+    MarkerBeaconState[MarkerBeaconState["Middle"] = 2] = "Middle";
+    MarkerBeaconState[MarkerBeaconState["Inner"] = 3] = "Inner";
+})(MarkerBeaconState || (MarkerBeaconState = {}));
+/**
+ * A publisher of NAV, COM, ADF radio and marker beacon tuning-related sim var events.
+ */
+class NavComSimVarPublisher extends SimVarPublisher {
+    /**
+     * Creates a new instance of NavComSimVarPublisher.
+     * @param bus The event bus to which to publish.
+     * @param pacer An optional pacer to use to control the pace of publishing
+     */
+    constructor(bus, pacer = undefined) {
+        const simvars = new Map([
+            ...NavComSimVarPublisher.createNavRadioDefinitions(),
+            ...NavComSimVarPublisher.createComRadioDefinitions(),
+            ...NavComSimVarPublisher.createAdfRadioDefinitions(),
+            ...NavComSimVarPublisher.createMarkerBeaconDefinitions(),
+            ...NavComSimVarPublisher.createGpsDefinitions()
+        ]);
+        super(simvars, bus, pacer);
+    }
+    /**
+     * Creates an array of nav radio sim var event definitions.
+     * @returns An array of nav radio sim var event definitions.
+     */
+    static createNavRadioDefinitions() {
+        return [
+            ['nav_active_frequency', { name: 'NAV ACTIVE FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_standby_frequency', { name: 'NAV STANDBY FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_signal', { name: 'NAV SIGNAL:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_sound', { name: 'NAV SOUND:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_ident', { name: 'NAV IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_volume', { name: 'NAV VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_obs', { name: 'NAV OBS:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_has_dme', { name: 'NAV HAS DME:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_has_nav', { name: 'NAV HAS NAV:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_cdi', { name: 'NAV CDI:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_dme', { name: 'NAV DME:#index#', type: SimVarValueType.NM, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_radial', { name: 'NAV RADIAL:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_radial_error', { name: 'NAV RADIAL ERROR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_to_from', { name: 'NAV TOFROM:#index#', type: SimVarValueType.Enum, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_localizer', { name: 'NAV HAS LOCALIZER:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_localizer_crs', { name: 'NAV LOCALIZER:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_loc_airport_ident', { name: 'NAV LOC AIRPORT IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_loc_runway_designator', { name: 'NAV LOC RUNWAY DESIGNATOR:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_loc_runway_number', { name: 'NAV LOC RUNWAY NUMBER:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_glideslope', { name: 'NAV HAS GLIDE SLOPE:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_gs_error', { name: 'NAV GLIDE SLOPE ERROR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_raw_gs', { name: 'NAV RAW GLIDE SLOPE:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_lla', { name: 'NAV VOR LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_dme_lla', { name: 'NAV DME LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_gs_lla', { name: 'NAV GS LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2, 3, 4], defaultIndex: null }],
+            ['nav_magvar', { name: 'NAV MAGVAR:#index#', type: SimVarValueType.Degree, indexed: [1, 2, 3, 4], defaultIndex: null }]
+        ];
+    }
+    /**
+     * Creates an array of com radio sim var event definitions.
+     * @returns An array of com radio sim var event definitions.
+     */
+    static createComRadioDefinitions() {
+        return [
+            ['com_active_frequency', { name: 'COM ACTIVE FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_standby_frequency', { name: 'COM STANDBY FREQUENCY:#index#', type: SimVarValueType.MHz, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_active_facility_name', { name: 'COM ACTIVE FREQ NAME:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_active_facility_type', { name: 'COM ACTIVE FREQ TYPE:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_active_facility_ident', { name: 'COM ACTIVE FREQ IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2, 3], defaultIndex: null }],
+            // Note: 'COM RECEIVE' is whether the radio is receiving OR transmitting,
+            // whereas 'COM RECEIVE EX1' is exclusively its receiving state.
+            ['com_receive', { name: 'COM RECEIVE EX1:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_status', { name: 'COM STATUS:#index#', type: SimVarValueType.Number, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_transmit', { name: 'COM TRANSMIT:#index#', type: SimVarValueType.Bool, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_spacing_mode', { name: 'COM SPACING MODE:#index#', type: SimVarValueType.Enum, indexed: [1, 2, 3], defaultIndex: null }],
+            ['com_volume', { name: 'COM VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2, 3], defaultIndex: null }],
+        ];
+    }
+    /**
+     * Creates an array of ADF radio sim var event definitions.
+     * @returns An array of ADF radio sim var event definitions.
+     */
+    static createAdfRadioDefinitions() {
+        return [
+            ['adf_active_frequency', { name: 'ADF ACTIVE FREQUENCY:#index#', type: SimVarValueType.KHz, indexed: [1, 2], defaultIndex: null }],
+            ['adf_standby_frequency', { name: 'ADF STANDBY FREQUENCY:#index#', type: SimVarValueType.KHz, indexed: [1, 2], defaultIndex: null }],
+            ['adf_sound', { name: 'ADF SOUND:#index#', type: SimVarValueType.Bool, indexed: [1, 2], defaultIndex: null }],
+            ['adf_volume', { name: 'ADF VOLUME:#index#', type: SimVarValueType.Percent, indexed: [1, 2], defaultIndex: null }],
+            ['adf_ident', { name: 'ADF IDENT:#index#', type: SimVarValueType.String, indexed: [1, 2], defaultIndex: null }],
+            ['adf_signal', { name: 'ADF SIGNAL:#index#', type: SimVarValueType.Number, indexed: [1, 2], defaultIndex: null }],
+            ['adf_bearing', { name: 'ADF RADIAL:#index#', type: SimVarValueType.Degree, indexed: [1, 2], defaultIndex: null }],
+            ['adf_lla', { name: 'ADF LATLONALT:#index#', type: SimVarValueType.LLA, indexed: [1, 2], defaultIndex: null }]
+        ];
+    }
+    /**
+     * Creates an array of GPS sim var event definitions.
+     * @returns An array of GPS sim var event definitions.
+     */
+    static createMarkerBeaconDefinitions() {
+        return [
+            ['marker_beacon_hisense_on', { name: 'MARKER BEACON SENSITIVITY HIGH', type: SimVarValueType.Bool }],
+            ['marker_beacon_sound', { name: 'MARKER SOUND', type: SimVarValueType.Bool }],
+            ['marker_beacon_state', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }],
+            ['mkr_bcn_state_simvar', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }]
+        ];
+    }
+    /**
+     * Creates an array of GPS sim var event definitions.
+     * @returns An array of GPS sim var event definitions.
+     */
+    static createGpsDefinitions() {
+        return [
+            ['gps_dtk', { name: 'GPS WP DESIRED TRACK', type: SimVarValueType.Degree }],
+            ['gps_xtk', { name: 'GPS WP CROSS TRK', type: SimVarValueType.NM }],
+            ['gps_wp', { name: 'GPS WP NEXT ID', type: SimVarValueType.NM }],
+            ['gps_wp_bearing', { name: 'GPS WP BEARING', type: SimVarValueType.Degree }],
+            ['gps_wp_distance', { name: 'GPS WP DISTANCE', type: SimVarValueType.NM }],
+            ['gps_obs_active_simvar', { name: 'GPS OBS ACTIVE', type: SimVarValueType.Bool }],
+            ['gps_obs_value_simvar', { name: 'GPS OBS VALUE', type: SimVarValueType.Degree }]
+        ];
+    }
+}
+
+/// <reference types="@microsoft/msfs-types/js/simvar" />
+/**
+ * A publisher of nav radio, ADF radio, GPS, and marker beacon-related sim var events.
+ *
+ * @deprecated Please use `NavComSimVarPublisher` instead.
+ */
+class NavProcSimVarPublisher extends SimVarPublisher {
+    /**
+     * Create a NavProcSimVarPublisher
+     * @param bus The EventBus to publish to
+     * @param pacer An optional pacer to use to control the pace of publishing
+     */
+    constructor(bus, pacer = undefined) {
+        super(NavProcSimVarPublisher.simvars, bus, pacer);
+    }
+    /**
+     * Creates an array of nav radio sim var event definitions for an indexed nav radio.
+     * @param index The index of the nav radio.
+     * @returns An array of nav radio sim var event definitions for the specified nav radio.
+     */
+    static createNavRadioDefinitions(index) {
+        return [
+            [`nav_signal_${index}`, { name: `NAV SIGNAL:${index}`, type: SimVarValueType.Number }],
+            [`nav_obs_${index}`, { name: `NAV OBS:${index}`, type: SimVarValueType.Degree }],
+            [`nav_has_dme_${index}`, { name: `NAV HAS DME:${index}`, type: SimVarValueType.Bool }],
+            [`nav_has_nav_${index}`, { name: `NAV HAS NAV:${index}`, type: SimVarValueType.Bool }],
+            [`nav_cdi_${index}`, { name: `NAV CDI:${index}`, type: SimVarValueType.Number }],
+            [`nav_dme_${index}`, { name: `NAV DME:${index}`, type: SimVarValueType.NM }],
+            [`nav_radial_${index}`, { name: `NAV RADIAL:${index}`, type: SimVarValueType.Degree }],
+            [`nav_radial_error_${index}`, { name: `NAV RADIAL ERROR:${index}`, type: SimVarValueType.Degree }],
+            [`nav_ident_${index}`, { name: `NAV IDENT:${index}`, type: SimVarValueType.String }],
+            [`nav_to_from_${index}`, { name: `NAV TOFROM:${index}`, type: SimVarValueType.Enum }],
+            [`nav_localizer_${index}`, { name: `NAV HAS LOCALIZER:${index}`, type: SimVarValueType.Bool }],
+            [`nav_localizer_crs_${index}`, { name: `NAV LOCALIZER:${index}`, type: SimVarValueType.Number }],
+            [`nav_loc_airport_ident_${index}`, { name: `NAV LOC AIRPORT IDENT:${index}`, type: SimVarValueType.String }],
+            [`nav_loc_runway_designator_${index}`, { name: `NAV LOC RUNWAY DESIGNATOR:${index}`, type: SimVarValueType.Number }],
+            [`nav_loc_runway_number_${index}`, { name: `NAV LOC RUNWAY NUMBER:${index}`, type: SimVarValueType.Number }],
+            [`nav_glideslope_${index}`, { name: `NAV HAS GLIDE SLOPE:${index}`, type: SimVarValueType.Bool }],
+            [`nav_gs_error_${index}`, { name: `NAV GLIDE SLOPE ERROR:${index}`, type: SimVarValueType.Degree }],
+            [`nav_raw_gs_${index}`, { name: `NAV RAW GLIDE SLOPE:${index}`, type: SimVarValueType.Degree }],
+            [`nav_lla_${index}`, { name: `NAV VOR LATLONALT:${index}`, type: SimVarValueType.LLA }],
+            [`nav_dme_lla_${index}`, { name: `NAV DME LATLONALT:${index}`, type: SimVarValueType.LLA }],
+            [`nav_gs_lla_${index}`, { name: `NAV GS LATLONALT:${index}`, type: SimVarValueType.LLA }],
+            [`nav_magvar_${index}`, { name: `NAV MAGVAR:${index}`, type: SimVarValueType.Degree }]
+        ];
+    }
+    /**
+     * Creates an array of ADF radio sim var event definitions for an indexed ADF radio.
+     * @param index The index of the ADF radio.
+     * @returns An array of ADF radio sim var event definitions for the specified ADF radio.
+     */
+    static createAdfRadioDefinitions(index) {
+        return [
+            [`adf_signal_${index}`, { name: `ADF SIGNAL:${index}`, type: SimVarValueType.Number }],
+            [`adf_bearing_${index}`, { name: `ADF RADIAL:${index}`, type: SimVarValueType.Degree }],
+            [`adf_lla_${index}`, { name: `ADF LATLONALT:${index}`, type: SimVarValueType.LLA }]
+        ];
+    }
+}
+NavProcSimVarPublisher.simvars = new Map([
+    ...NavProcSimVarPublisher.createNavRadioDefinitions(1),
+    ...NavProcSimVarPublisher.createNavRadioDefinitions(2),
+    ...NavProcSimVarPublisher.createNavRadioDefinitions(3),
+    ...NavProcSimVarPublisher.createNavRadioDefinitions(4),
+    ...NavProcSimVarPublisher.createAdfRadioDefinitions(1),
+    ...NavProcSimVarPublisher.createAdfRadioDefinitions(2),
+    ['gps_dtk', { name: 'GPS WP DESIRED TRACK', type: SimVarValueType.Degree }],
+    ['gps_xtk', { name: 'GPS WP CROSS TRK', type: SimVarValueType.NM }],
+    ['gps_wp', { name: 'GPS WP NEXT ID', type: SimVarValueType.NM }],
+    ['gps_wp_bearing', { name: 'GPS WP BEARING', type: SimVarValueType.Degree }],
+    ['gps_wp_distance', { name: 'GPS WP DISTANCE', type: SimVarValueType.NM }],
+    ['mkr_bcn_state_simvar', { name: 'MARKER BEACON STATE', type: SimVarValueType.Number }],
+    ['gps_obs_active_simvar', { name: 'GPS OBS ACTIVE', type: SimVarValueType.Bool }],
+    ['gps_obs_value_simvar', { name: 'GPS OBS VALUE', type: SimVarValueType.Degree }]
+]);
+//
+// Navigation event configurations
+//
+var NavSourceType;
+(function (NavSourceType) {
+    NavSourceType[NavSourceType["Nav"] = 0] = "Nav";
+    NavSourceType[NavSourceType["Gps"] = 1] = "Gps";
+    NavSourceType[NavSourceType["Adf"] = 2] = "Adf";
+})(NavSourceType || (NavSourceType = {}));
+
+/**
+ * An instrument that gathers localizer and glideslope information for use by
+ * the AP systems.
+ *
+ * Requires that the topics defined in {@link NavComEvents} are published to the event bus.
+ */
+class APRadioNavInstrument {
+    /**
+     * Creates an instance of the APRadioNavInstrument.
+     * @param bus The event bus to use with this instance.
+     */
+    constructor(bus) {
+        this.bus = bus;
+        this.navRadioData = ArrayUtils.create(5, index => {
+            index = Math.max(1, index);
+            return {
+                gsLocation: new LatLongAlt(0, 0),
+                navLocation: new LatLongAlt(0, 0),
+                glideslope: this.createEmptyGlideslope({ index, type: NavSourceType.Nav }),
+                localizer: this.createEmptyLocalizer({ index, type: NavSourceType.Nav }),
+                cdi: this.createEmptyCdi({ index, type: NavSourceType.Nav }),
+                obs: this.createEmptyObs({ index, type: NavSourceType.Nav }),
+                radialError: 0,
+                magVar: 0
+            };
+        });
+        this.currentCdiIndex = 1;
+        this.publisher = bus.getPublisher();
+    }
+    /** @inheritdoc */
+    init() {
+        const navComSubscriber = this.bus.getSubscriber();
+        for (let i = 1; i < 5; i++) {
+            navComSubscriber.on(`nav_glideslope_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'isValid'));
+            navComSubscriber.on(`nav_gs_lla_${i}`).handle(this.setGlideslopePosition.bind(this, i));
+            navComSubscriber.on(`nav_gs_error_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'deviation'));
+            navComSubscriber.on(`nav_raw_gs_${i}`).whenChanged().handle(this.setGlideslopeValue.bind(this, i, 'gsAngle'));
+            navComSubscriber.on(`nav_localizer_${i}`).whenChanged().handle(this.setLocalizerValue.bind(this, i, 'isValid'));
+            navComSubscriber.on(`nav_localizer_crs_${i}`).whenChanged().handle(this.setLocalizerValue.bind(this, i, 'course'));
+            navComSubscriber.on(`nav_cdi_${i}`).whenChanged().handle(this.setCDIValue.bind(this, i, 'deviation'));
+            navComSubscriber.on(`nav_has_nav_${i}`).whenChanged().handle(hasNav => !hasNav && this.setCDIValue(i, 'deviation', null));
+            navComSubscriber.on(`nav_obs_${i}`).whenChanged().handle(this.setOBSValue.bind(this, i, 'heading'));
+            navComSubscriber.on(`nav_lla_${i}`).handle(this.setNavPosition.bind(this, i));
+            navComSubscriber.on(`nav_radial_error_${i}`).whenChanged().handle(this.setRadialError.bind(this, i));
+            navComSubscriber.on(`nav_magvar_${i}`).whenChanged().handle(this.setMagVar.bind(this, i));
+        }
+        const navEvents = this.bus.getSubscriber();
+        navEvents.on('cdi_select').handle(source => {
+            const oldIndex = this.currentCdiIndex;
+            this.currentCdiIndex = source.type === NavSourceType.Nav ? source.index : 0;
+            if (oldIndex !== this.currentCdiIndex) {
+                const data = this.navRadioData[this.currentCdiIndex];
+                this.publisher.pub('nav_radio_active_gs_location', data.gsLocation);
+                this.publisher.pub('nav_radio_active_nav_location', data.navLocation);
+                this.publisher.pub('nav_radio_active_glideslope', data.glideslope);
+                this.publisher.pub('nav_radio_active_localizer', data.localizer);
+                this.publisher.pub('nav_radio_active_cdi_deviation', data.cdi);
+                this.publisher.pub('nav_radio_active_obs_setting', data.obs);
+                this.publisher.pub('nav_radio_active_radial_error', data.radialError);
+                this.publisher.pub('nav_radio_active_magvar', data.magVar);
+            }
+        });
+    }
+    /** @inheritdoc */
+    onUpdate() {
+        // noop
+    }
+    /**
+     * Sets a value in a nav radio glideslope.
+     * @param index The index of the nav radio.
+     * @param field The field to set.
+     * @param value The value to set the field to.
+     */
+    setGlideslopeValue(index, field, value) {
+        this.navRadioData[index].glideslope[field] = value;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_glideslope', this.navRadioData[index].glideslope);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_glideslope_1', this.navRadioData[index].glideslope);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_glideslope_2', this.navRadioData[index].glideslope);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_glideslope_3', this.navRadioData[index].glideslope);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_glideslope_4', this.navRadioData[index].glideslope);
+                break;
+        }
+    }
+    /**
+     * Sends the current glideslope's LLA position.
+     * @param index The index of the nav radio.
+     * @param lla The LLA to send.
+     */
+    setGlideslopePosition(index, lla) {
+        this.navRadioData[index].gsLocation = lla;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_gs_location', lla);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_gs_location_1', this.navRadioData[index].gsLocation);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_gs_location_2', this.navRadioData[index].gsLocation);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_gs_location_3', this.navRadioData[index].gsLocation);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_gs_location_4', this.navRadioData[index].gsLocation);
+                break;
+        }
+    }
+    /**
+     * Sends the current nav's LLA position.
+     * @param index The index of the nav radio.
+     * @param lla The LLA to send.
+     */
+    setNavPosition(index, lla) {
+        this.navRadioData[index].navLocation = lla;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_nav_location', lla);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_nav_location_1', this.navRadioData[index].navLocation);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_nav_location_2', this.navRadioData[index].navLocation);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_nav_location_3', this.navRadioData[index].navLocation);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_nav_location_4', this.navRadioData[index].navLocation);
+                break;
+        }
+    }
+    /**
+     * Sets a value in a nav radio localizer.
+     * @param index The index of the nav radio.
+     * @param field The field to set.
+     * @param value The value to set the field to.
+     */
+    setLocalizerValue(index, field, value) {
+        this.navRadioData[index].localizer[field] = value;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_localizer', this.navRadioData[index].localizer);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_localizer_1', this.navRadioData[index].localizer);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_localizer_2', this.navRadioData[index].localizer);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_localizer_3', this.navRadioData[index].localizer);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_localizer_4', this.navRadioData[index].localizer);
+                break;
+        }
+    }
+    /**
+     * Sets a value in a nav radio localizer.
+     * @param index The index of the nav radio.
+     * @param field The field to set.
+     * @param value The value to set the field to.
+     */
+    setCDIValue(index, field, value) {
+        this.navRadioData[index].cdi[field] = value;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_cdi_deviation', this.navRadioData[index].cdi);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_cdi_1', this.navRadioData[index].cdi);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_cdi_2', this.navRadioData[index].cdi);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_cdi_3', this.navRadioData[index].cdi);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_cdi_4', this.navRadioData[index].cdi);
+                break;
+        }
+    }
+    /**
+     * Sets a value in a nav radio localizer.
+     * @param index The index of the nav radio.
+     * @param field The field to set.
+     * @param value The value to set the field to.
+     */
+    setOBSValue(index, field, value) {
+        this.navRadioData[index].obs[field] = value;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_obs_setting', this.navRadioData[index].obs);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_obs_1', this.navRadioData[index].obs);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_obs_2', this.navRadioData[index].obs);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_obs_3', this.navRadioData[index].obs);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_obs_4', this.navRadioData[index].obs);
+                break;
+        }
+    }
+    /**
+     * Sets the radial error of a nav radio signal source.
+     * @param index The index of the nav radio.
+     * @param radialError The radial error to set.
+     */
+    setRadialError(index, radialError) {
+        this.navRadioData[index].radialError = radialError;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_radial_error', radialError);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_radial_error_1', this.navRadioData[index].radialError);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_radial_error_2', this.navRadioData[index].radialError);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_radial_error_3', this.navRadioData[index].radialError);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_radial_error_4', this.navRadioData[index].radialError);
+                break;
+        }
+    }
+    /**
+     * Sets the magnetic variation of a nav radio signal source.
+     * @param index The index of the nav radio.
+     * @param magVar The magvar to set.
+     */
+    setMagVar(index, magVar) {
+        magVar = NavMath.normalizeHeading(-magVar + 180) % 360 - 180;
+        this.navRadioData[index].magVar = magVar;
+        if (this.currentCdiIndex === index) {
+            this.publisher.pub('nav_radio_active_magvar', magVar);
+        }
+        switch (index) {
+            case 1:
+                this.publisher.pub('nav_radio_magvar_1', this.navRadioData[index].magVar);
+                break;
+            case 2:
+                this.publisher.pub('nav_radio_magvar_2', this.navRadioData[index].magVar);
+                break;
+            case 3:
+                this.publisher.pub('nav_radio_magvar_3', this.navRadioData[index].magVar);
+                break;
+            case 4:
+                this.publisher.pub('nav_radio_magvar_4', this.navRadioData[index].magVar);
+                break;
+        }
+    }
+    /**
+     * Creates an empty localizer data.
+     * @param id The nav source ID.
+     * @returns New empty localizer data.
+     */
+    createEmptyLocalizer(id) {
+        return {
+            isValid: false,
+            course: 0,
+            source: id
+        };
+    }
+    /**
+     * Creates an empty glideslope data.
+     * @param id The nav source ID.
+     * @returns New empty glideslope data.
+     */
+    createEmptyGlideslope(id) {
+        return {
+            isValid: false,
+            gsAngle: 0,
+            deviation: 0,
+            source: id
+        };
+    }
+    /**
+     * Creates an empty CDI data.
+     * @param id The nav source ID.
+     * @returns New empty CDI data.
+     */
+    createEmptyCdi(id) {
+        return {
+            deviation: 0,
+            source: id
+        };
+    }
+    /**
+     * Creates an empty OBS data.
+     * @param id The nav source ID.
+     * @returns New empty OBS data.
+     */
+    createEmptyObs(id) {
+        return {
+            heading: 0,
+            source: id
+        };
+    }
+}
+
+/**
+ * InstrumentBackplane provides a common control point for aggregating and
+ * managing any number of publishers.  This can be used as an "update loop"
+ * corral", amongst other things.
+ */
+class InstrumentBackplane {
+    /**
+     * Create an InstrumentBackplane
+     */
+    constructor() {
+        this.publishers = new Map();
+        this.instruments = new Map();
+    }
+    /**
+     * Initialize all the things. This is initially just a proxy for the
+     * private initPublishers() and initInstruments() methods.
+     *
+     * This should be simplified.
+     */
+    init() {
+        this.initPublishers();
+        this.initInstruments();
+    }
+    /**
+     * Update all the things.  This is initially just a proxy for the private
+     * updatePublishers() and updateInstruments() methods.
+     *
+     * This should be simplified.
+     */
+    onUpdate() {
+        this.updatePublishers();
+        this.updateInstruments();
+    }
+    /**
+     * Add a publisher to this backplane.
+     * @param name A symbolic name for the publisher for reference.
+     * @param publisher The publisher to add.
+     * @param override Whether to override any existing publishers added to this backplane under the same name. If
+     * `true`, any existing publisher with the same name will removed from this backplane and the new one added in its
+     * place. If `false`, the new publisher will not be added if this backplane already has a publisher with the same
+     * name or a publisher of the same type. Defaults to `false`.
+     */
+    addPublisher(name, publisher, override = false) {
+        if (override || !InstrumentBackplane.checkAlreadyExists(name, publisher, this.publishers)) {
+            this.publishers.set(name, publisher);
+        }
+    }
+    /**
+     * Add an instrument to this backplane.
+     * @param name A symbolic name for the instrument for reference.
+     * @param instrument The instrument to add.
+     * @param override Whether to override any existing instruments added to this backplane under the same name. If
+     * `true`, any existing instrument with the same name will removed from this backplane and the new one added in its
+     * place. If `false`, the new instrument will not be added if this backplane already has an instrument with the same
+     * name or an instrument of the same type. Defaults to `false`.
+     */
+    addInstrument(name, instrument, override = false) {
+        if (override || !InstrumentBackplane.checkAlreadyExists(name, instrument, this.instruments)) {
+            this.instruments.set(name, instrument);
+        }
+    }
+    /**
+     * Gets a publisher from this backplane.
+     * @param name The name of the publisher to get.
+     * @returns The publisher in this backplane with the specified name, or `undefined` if there is no such publisher.
+     */
+    getPublisher(name) {
+        return this.publishers.get(name);
+    }
+    /**
+     * Gets an instrument from this backplane.
+     * @param name The name of the instrument to get.
+     * @returns The instrument in this backplane with the specified name, or `undefined` if there is no such instrument.
+     */
+    getInstrument(name) {
+        return this.instruments.get(name);
+    }
+    /**
+     * Checks for duplicate publishers or instruments of the same name or type.
+     * @param name the name of the publisher or instrument
+     * @param objToCheck the object to check
+     * @param map the map to check
+     * @returns true if the object is already in the map
+     */
+    static checkAlreadyExists(name, objToCheck, map) {
+        if (map.has(name)) {
+            console.warn(`${name} already exists in backplane.`);
+            return true;
+        }
+        // check if there already is a publisher with the same type
+        for (const p of map.values()) {
+            if (p.constructor === objToCheck.constructor) {
+                console.warn(`${name} already exists in backplane.`);
+                return true;
+            }
+        }
+        return false;
+    }
+    /**
+     * Initialize all of the publishers that you hold.
+     */
+    initPublishers() {
+        for (const publisher of this.publishers.values()) {
+            publisher.startPublish();
+        }
+    }
+    /**
+     * Initialize all of the instruments that you hold.
+     */
+    initInstruments() {
+        for (const instrument of this.instruments.values()) {
+            instrument.init();
+        }
+    }
+    /**
+     * Update all of the publishers that you hold.
+     */
+    updatePublishers() {
+        for (const publisher of this.publishers.values()) {
+            publisher.onUpdate();
+        }
+    }
+    /**
+     * Update all of the instruments that you hold.
+     */
+    updateInstruments() {
+        for (const instrument of this.instruments.values()) {
+            instrument.onUpdate();
+        }
+    }
+}
+
+/// <reference types="@microsoft/msfs-types/js/simvar" />
+/**
+ * A publisher for Brake information.
+ */
+class BrakeSimvarPublisher extends SimVarPublisher {
+    /**
+     * Create a BrakePublisher.
+     * @param bus The EventBus to publish to
+     * @param pacer An optional pacer to use to control the rate of publishing
+     */
+    constructor(bus, pacer = undefined) {
+        const simvars = new Map([
+            ['brake_position_left', { name: 'BRAKE LEFT POSITION', type: SimVarValueType.Percent }],
+            ['brake_position_right', { name: 'BRAKE RIGHT POSITION', type: SimVarValueType.Percent }],
+            ['brake_position_left_raw', { name: 'BRAKE LEFT POSITION EX1', type: SimVarValueType.Percent }],
+            ['brake_position_right_raw', { name: 'BRAKE RIGHT POSITION EX1', type: SimVarValueType.Percent }],
+            ['left_wheel_rpm', { name: 'LEFT WHEEL RPM', type: SimVarValueType.RPM }],
+            ['right_wheel_rpm', { name: 'RIGHT WHEEL RPM', type: SimVarValueType.RPM }],
+            ['parking_brake_set', { name: 'BRAKE PARKING POSITION', type: SimVarValueType.Bool }],
+            ['autobrake_switch_pos', { name: 'AUTO BRAKE SWITCH CB', type: SimVarValueType.Number }],
+            ['autobrake_active', { name: 'AUTOBRAKES ACTIVE', type: SimVarValueType.Bool }],
+        ]);
+        super(simvars, bus, pacer);
+    }
+    /** @inheritdoc */
+    onUpdate() {
+        super.onUpdate();
+    }
+}
+
+/**
+ * A publisher of clock events.
+ */
+class ClockPublisher extends BasePublisher {
+    /**
+     * Creates a new instance of ClockPublisher.
+     * @param bus The event bus.
+     * @param pacer An optional pacer to control the rate of publishing.
+     */
+    constructor(bus, pacer) {
+        super(bus, pacer);
+        this.needPublishRealTime = false;
+        this.simVarPublisher = new SimVarPublisher(new Map([
+            ['simTime', { name: 'E:ABSOLUTE TIME', type: SimVarValueType.Seconds, map: ClockPublisher.absoluteTimeToUNIXTime }],
+            ['simRate', { name: 'E:SIMULATION RATE', type: SimVarValueType.Number }],
+            ['zulu_sunrise', { name: 'E:ZULU SUNRISE TIME', type: SimVarValueType.Seconds }],
+            ['zulu_sunset', { name: 'E:ZULU SUNSET TIME', type: SimVarValueType.Seconds }],
+        ]), bus, pacer);
+        if (this.bus.getTopicSubscriberCount('realTime') > 0) {
+            this.needPublishRealTime = true;
+        }
+        else {
+            const sub = this.bus.getSubscriber().on('event_bus_topic_first_sub').handle(topic => {
+                if (topic === 'realTime') {
+                    this.needPublishRealTime = true;
+                    sub.destroy();
+                }
+            }, true);
+            sub.resume();
+        }
+    }
+    /** @inheritdoc */
+    startPublish() {
+        super.startPublish();
+        this.simVarPublisher.startPublish();
+        if (this.hiFreqInterval === undefined) {
+            this.hiFreqInterval = setInterval(() => this.publish('simTimeHiFreq', ClockPublisher.absoluteTimeToUNIXTime(SimVar.GetSimVarValue('E:ABSOLUTE TIME', 'seconds'))), 0);
+        }
+    }
+    /** @inheritdoc */
+    stopPublish() {
+        super.stopPublish();
+        this.simVarPublisher.stopPublish();
+        if (this.hiFreqInterval !== undefined) {
+            clearInterval(this.hiFreqInterval);
+            this.hiFreqInterval = undefined;
+        }
+    }
+    /** @inheritdoc */
+    onUpdate() {
+        if (this.needPublishRealTime) {
+            this.publish('realTime', Date.now());
+        }
+        this.simVarPublisher.onUpdate();
+    }
+    /**
+     * Converts the sim's absolute time to a UNIX timestamp. The sim's absolute time value is equivalent to a .NET
+     * DateTime.Ticks value (epoch = 00:00:00 01 Jan 0001).
+     * @param absoluteTime an absolute time value, in units of seconds.
+     * @returns the UNIX timestamp corresponding to the absolute time value.
+     */
+    static absoluteTimeToUNIXTime(absoluteTime) {
+        return (absoluteTime - 62135596800) * 1000;
+    }
+}
+/**
+ * A clock which keeps track of real-world and sim time.
+ */
+class Clock {
+    /**
+     * Constructor.
+     * @param bus The event bus to use to publish events from this clock.
+     */
+    constructor(bus) {
+        this.publisher = new ClockPublisher(bus);
+    }
+    /**
+     * Initializes this clock.
+     */
+    init() {
+        this.publisher.startPublish();
+    }
+    /**
+     * Updates this clock.
+     */
+    onUpdate() {
+        this.publisher.onUpdate();
+    }
+}
+
+/**
+ * A publisher for control surfaces information.
+ */
+class ControlSurfacesPublisher extends SimVarPublisher {
+    /**
+     * Create an ControlSurfacesPublisher.
+     * @param bus The EventBus to publish to.
+     * @param gearCount The number of landing gear to support.
+     * @param pacer An optional pacer to use to control the rate of publishing.
+     */
+    constructor(bus, gearCount, pacer) {
+        const nonIndexedSimVars = [
+            ['flaps_handle_index', { name: 'FLAPS HANDLE INDEX', type: SimVarValueType.Number }],
+            ['flaps_left_angle', { name: 'TRAILING EDGE FLAPS LEFT ANGLE', type: SimVarValueType.Degree }],
+            ['flaps_right_angle', { name: 'TRAILING EDGE FLAPS RIGHT ANGLE', type: SimVarValueType.Degree }],
+            ['flaps_left_percent', { name: 'TRAILING EDGE FLAPS LEFT PERCENT', type: SimVarValueType.Percent }],
+            ['flaps_right_percent', { name: 'TRAILING EDGE FLAPS RIGHT PERCENT', type: SimVarValueType.Percent }],
+            ['slats_left_angle', { name: 'LEADING EDGE FLAPS LEFT ANGLE', type: SimVarValueType.Degree }],
+            ['slats_right_angle', { name: 'LEADING EDGE FLAPS RIGHT ANGLE', type: SimVarValueType.Degree }],
+            ['slats_left_percent', { name: 'LEADING EDGE FLAPS LEFT PERCENT', type: SimVarValueType.Percent }],
+            ['slats_right_percent', { name: 'LEADING EDGE FLAPS RIGHT PERCENT', type: SimVarValueType.Percent }],
+            ['spoilers_left_percent', { name: 'SPOILERS LEFT POSITION', type: SimVarValueType.Percent }],
+            ['spoilers_right_percent', { name: 'SPOILERS RIGHT POSITION', type: SimVarValueType.Percent }],
+            ['spoilers_without_spoilerons_left_percent', { name: 'SPOILERS WITHOUT SPOILERONS LEFT POSITION', type: SimVarValueType.Percent }],
+            ['elevator_trim_angle', { name: 'ELEVATOR TRIM POSITION', type: SimVarValueType.Degree }],
+            ['elevator_trim_pct', { name: 'ELEVATOR TRIM PCT', type: SimVarValueType.Percent }],
+            ['elevator_trim_neutral_pct', { name: 'AIRCRAFT ELEVATOR TRIM NEUTRAL', type: SimVarValueType.Percent }],
+            ['aileron_trim_angle', { name: 'AILERON TRIM', type: SimVarValueType.Degree }],
+            ['aileron_trim_pct', { name: 'AILERON TRIM PCT', type: SimVarValueType.Percent }],
+            ['rudder_trim_angle', { name: 'RUDDER TRIM', type: SimVarValueType.Degree }],
+            ['rudder_trim_pct', { name: 'RUDDER TRIM PCT', type: SimVarValueType.Percent }],
+            ['aileron_left_percent', { name: 'AILERON LEFT DEFLECTION PCT', type: SimVarValueType.Percent }],
+            ['aileron_right_percent', { name: 'AILERON RIGHT DEFLECTION PCT', type: SimVarValueType.Percent }],
+            ['elevator_percent', { name: 'ELEVATOR DEFLECTION PCT', type: SimVarValueType.Percent }],
+            ['elevator_position', { name: 'ELEVATOR POSITION', type: SimVarValueType.Percent }],
+            ['rudder_percent', { name: 'RUDDER DEFLECTION PCT', type: SimVarValueType.Percent }]
+        ];
+        const gearIndexedSimVars = [
+            ['gear_position', { name: 'GEAR POSITION', type: SimVarValueType.Number }],
+            ['gear_is_on_ground', { name: 'GEAR IS ON GROUND', type: SimVarValueType.Bool }]
+        ];
+        const simvars = new Map(nonIndexedSimVars);
+        // set un-indexed simvar topics to pull from index 0
+        for (const [topic, simvar] of [...gearIndexedSimVars]) {
+            simvars.set(`${topic}`, {
+                name: `${simvar.name}:0`,
+                type: simvar.type,
+                map: simvar.map
+            });
+        }
+        // add landing gear indexed simvar topics
+        // HINT: for some reason index 0 is nose. not 1-based.
+        gearCount = Math.max(gearCount, 1);
+        for (let i = 0; i < gearCount; i++) {
+            for (const [topic, simvar] of gearIndexedSimVars) {
+                simvars.set(`${topic}_${i}`, {
+                    name: `${simvar.name}:${i}`,
+                    type: simvar.type,
+                    map: simvar.map
+                });
+            }
+        }
+        super(simvars, bus, pacer);
+    }
+}
+
+/// <reference types="@microsoft/msfs-types/js/simvar" />
+/**
  * A publisher for electrical information.
  */
 class ElectricalPublisher extends SimVarPublisher {
@@ -19815,7 +20223,7 @@ class EISPublisher extends SimVarPublisher {
     constructor(bus, pacer = undefined) {
         const isUsingAdvancedFuelSystem = SimVar.GetSimVarValue('NEW FUEL SYSTEM', SimVarValueType.Bool) !== 0;
         const totalUnusableFuelGal = SimVar.GetSimVarValue('UNUSABLE FUEL TOTAL QUANTITY', SimVarValueType.GAL);
-        const totalUnusableFuelLb = SimVar.GetSimVarValue('UNUSABLE FUEL TOTAL QUANTITY', SimVarValueType.LBS);
+        const totalUnusableFuelLb = UnitType.GALLON_FUEL.convertTo(totalUnusableFuelGal, UnitType.POUND);
         const nonIndexedSimVars = [
             ['vac', { name: 'SUCTION PRESSURE', type: SimVarValueType.InHG }],
             ['fuel_total', { name: 'FUEL TOTAL QUANTITY', type: SimVarValueType.GAL, map: isUsingAdvancedFuelSystem ? v => v + totalUnusableFuelGal : undefined }],
@@ -19839,6 +20247,7 @@ class EISPublisher extends SimVarPublisher {
             ['apu_pct_starter', { name: 'APU PCT STARTER', type: SimVarValueType.Percent }],
             ['apu_switch', { name: 'APU SWITCH', type: SimVarValueType.Bool }],
             ['eng_starter_active', { name: 'GENERAL ENG STARTER ACTIVE:#index#', type: SimVarValueType.Bool, indexed: true }],
+            ['throttle_lower_limit', { name: 'THROTTLE LOWER LIMIT', type: SimVarValueType.Number }],
         ];
         const engineIndexedSimVars = [
             ['rpm', { name: 'GENERAL ENG RPM', type: SimVarValueType.RPM }],
@@ -19863,6 +20272,11 @@ class EISPublisher extends SimVarPublisher {
             ['eng_fuel_pump_switch_state', { name: 'GENERAL ENG FUEL PUMP SWITCH EX1', type: SimVarValueType.Number }],
             ['eng_vibration', { name: 'ENG VIBRATION', type: SimVarValueType.Number }],
             ['fuel_flow_pph', { name: 'ENG FUEL FLOW PPH', type: SimVarValueType.PPH }],
+            ['torque_moment', { name: 'ENG TORQUE', type: SimVarValueType.FtLb }],
+            ['eng_manifold_pressure', { name: 'ENG MANIFOLD PRESSURE', type: SimVarValueType.PSI }],
+            ['reverse_thrust_engaged', { name: 'GENERAL ENG REVERSE THRUST ENGAGED', type: SimVarValueType.Bool }],
+            ['cylinder_head_temp_avg', { name: 'ENG CYLINDER HEAD TEMPERATURE', type: SimVarValueType.Farenheit }],
+            ['recip_turbine_inlet_temp_avg', { name: 'RECIP ENG TURBINE INLET TEMPERATURE', type: SimVarValueType.Farenheit }],
         ];
         const simvars = new Map(nonIndexedSimVars);
         // add engine-indexed simvars
@@ -19974,6 +20388,7 @@ class GNSSPublisher extends BasePublisher {
             ['zulu_time', { name: 'E:ZULU TIME', type: SimVarValueType.Seconds }],
             ['time_of_day', { name: 'E:TIME OF DAY', type: SimVarValueType.Number }],
             ['ground_speed', { name: 'GROUND VELOCITY', type: SimVarValueType.Knots }],
+            ['above_ground_height', { name: 'PLANE ALT ABOVE GROUND', type: SimVarValueType.Feet }],
             ['inertial_vertical_speed', { name: 'VELOCITY WORLD Y', type: SimVarValueType.FPM }]
         ]), this.bus, this.pacer);
         this.needPublish = {
@@ -20114,88 +20529,6 @@ class GNSSPublisher extends BasePublisher {
 }
 
 /**
- * A heap which allocates instances of a resource.
- */
-class ResourceHeap {
-    /**
-     * Constructor.
-     * @param factory A function which creates new instances of this heap's resource.
-     * @param destructor A function which destroys instances of this heap's resource.
-     * @param onAllocated A function which is called when an instance of this heap's resource is allocated.
-     * @param onFreed A function which is called when an instance of this heap's resource is freed.
-     * @param initialSize The initial size of this heap. Defaults to `0`.
-     * @param maxSize The maximum size of this heap. Defaults to `Number.MAX_SAFE_INTEGER`. This heap cannot allocate
-     * more resources than its maximum size.
-     * @param autoShrinkThreshold The size above which this heap will attempt to automatically reduce its size when
-     * resources are freed. The heap will never reduce its size below this threshold. Defaults to
-     * `Number.MAX_SAFE_INTEGER`.
-     */
-    constructor(factory, destructor, onAllocated, onFreed, initialSize = 0, maxSize = Number.MAX_SAFE_INTEGER, autoShrinkThreshold = Number.MAX_SAFE_INTEGER) {
-        this.factory = factory;
-        this.destructor = destructor;
-        this.onAllocated = onAllocated;
-        this.onFreed = onFreed;
-        this.maxSize = maxSize;
-        this.autoShrinkThreshold = autoShrinkThreshold;
-        this.cache = [];
-        this.numAllocated = 0;
-        for (let i = 0; i < Math.min(initialSize, maxSize); i++) {
-            this.cache.push(factory());
-        }
-    }
-    /**
-     * Allocates a resource instance from this heap. If this heap has an existing free resource available, one will be
-     * returned. Otherwise, a new resource instance will be created, added to the heap, and returned.
-     * @returns A resource.
-     * @throws Error if this heap has reached its allocation limit.
-     */
-    allocate() {
-        if (this.numAllocated >= this.maxSize) {
-            throw new Error(`ResourceHeap: maximum number of allocations (${this.maxSize}) reached`);
-        }
-        let resource;
-        if (this.numAllocated < this.cache.length) {
-            resource = this.cache[this.numAllocated];
-        }
-        else {
-            this.cache.push(resource = this.factory());
-        }
-        this.numAllocated++;
-        if (this.onAllocated !== undefined) {
-            this.onAllocated(resource);
-        }
-        return resource;
-    }
-    /**
-     * Frees a resource instance allocated from this heap, allowing it to be re-used.
-     * @param resource The resource to free.
-     */
-    free(resource) {
-        const index = this.cache.indexOf(resource);
-        if (index < 0 || index >= this.numAllocated) {
-            return;
-        }
-        const freed = this.cache[index];
-        this.numAllocated--;
-        this.cache[index] = this.cache[this.numAllocated];
-        this.cache[this.numAllocated] = freed;
-        // If the heap size is over the auto-shrink threshold and the number of allocated instances drops to less than or
-        // equal to half of the heap size, then reduce the size of the heap to the threshold, or 125% of the number of
-        // allocated instances, whichever is greater.
-        if (this.cache.length > this.autoShrinkThreshold && this.numAllocated <= this.cache.length / 2) {
-            const newLength = Math.max(this.autoShrinkThreshold, this.numAllocated * 1.25);
-            for (let i = newLength; i < this.cache.length; i++) {
-                this.destructor(this.cache[i]);
-            }
-            this.cache.length = newLength;
-        }
-        if (this.onFreed !== undefined) {
-            this.onFreed(resource);
-        }
-    }
-}
-
-/**
  * SBAS group names.
  */
 var SBASGroupName;
@@ -20209,6 +20542,52 @@ var SBASGroupName;
     /** Multi-functional Satellite Augmentation System (Japan). */
     SBASGroupName["MSAS"] = "MSAS";
 })(SBASGroupName || (SBASGroupName = {}));
+/**
+ * Possible state on GPS satellites.
+ */
+var GPSSatelliteState;
+(function (GPSSatelliteState) {
+    /** There is no current valid state. */
+    GPSSatelliteState["None"] = "None";
+    /** The satellite is out of view and cannot be reached. */
+    GPSSatelliteState["Unreachable"] = "Unreachable";
+    /** The satellite has been found and data is being downloaded. */
+    GPSSatelliteState["Acquired"] = "Acquired";
+    /** The satellite is faulty. */
+    GPSSatelliteState["Faulty"] = "Faulty";
+    /** The satellite has been found, data is downloaded, but is not presently used in the GPS solution. */
+    GPSSatelliteState["DataCollected"] = "DataCollected";
+    /** The satellite is being active used in the GPS solution. */
+    GPSSatelliteState["InUse"] = "InUse";
+    /** The satellite is being active used in the GPS solution and SBAS differential corrections are being applied. */
+    GPSSatelliteState["InUseDiffApplied"] = "InUseDiffApplied";
+})(GPSSatelliteState || (GPSSatelliteState = {}));
+/**
+ * Possible {@link GPSSatComputer} states.
+ */
+var GPSSystemState;
+(function (GPSSystemState) {
+    /** The GPS receiver is searching for any visible satellites to acquire. */
+    GPSSystemState["Searching"] = "Searching";
+    /** The GPS receiver is in the process of acquiring satellites. */
+    GPSSystemState["Acquiring"] = "Acquiring";
+    /** A 3D solution has been acquired. */
+    GPSSystemState["SolutionAcquired"] = "SolutionAcquired";
+    /** A 3D solution using differential computations has been acquired. */
+    GPSSystemState["DiffSolutionAcquired"] = "DiffSolutionAcquired";
+})(GPSSystemState || (GPSSystemState = {}));
+/**
+ * Possible SBAS connection states.
+ */
+var GPSSystemSBASState;
+(function (GPSSystemSBASState) {
+    /** SBAS is disabled. */
+    GPSSystemSBASState["Disabled"] = "Disabled";
+    /** SBAS is enabled but not receiving differential corrections. */
+    GPSSystemSBASState["Inactive"] = "Inactive";
+    /** SBAS is enabled and is receiving differential corrections. */
+    GPSSystemSBASState["Active"] = "Active";
+})(GPSSystemSBASState || (GPSSystemSBASState = {}));
 /**
  * An instrument that computes GPS satellite information.
  */
@@ -20225,8 +20604,12 @@ class GPSSatComputer {
      * satellite positions are calculated, satellite states change, or the system is reset. A `replica` system will
      * listen for the aforementioned sync events on the event bus and set its state accordingly. A system with a sync
      * role of `none` does neither; it maintains its own independent state and does not sync it to other systems.
+    * Defaults to `none`.
+     * @param options Options with which to configure the computer.
      */
-    constructor(index, bus, ephemerisFile, sbasFile, updateInterval, enabledSBASGroups, syncRole = 'none') {
+    constructor(index, bus, ephemerisFile, sbasFile, updateInterval, enabledSBASGroups, syncRole = 'none', options) {
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t;
+        var _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4, _5, _6, _7;
         this.index = index;
         this.bus = bus;
         this.ephemerisFile = ephemerisFile;
@@ -20242,23 +20625,27 @@ class GPSSatComputer {
         this.pdopTopic = `gps_system_pdop_${this.index}`;
         this.hdopTopic = `gps_system_hdop_${this.index}`;
         this.vdopTopic = `gps_system_vdop_${this.index}`;
+        this.channelStateSyncTopic = `gps_system_sync_channel_state_changed_${this.index}`;
         this.satCalcSyncTopic = `gps_system_sync_sat_calc_${this.index}`;
         this.satStateSyncTopic = `gps_system_sync_sat_state_changed_${this.index}`;
         this.resetSyncTopic = `gps_system_sync_reset_${this.index}`;
-        this.satStateRequestSyncTopic = `gps_system_sync_sat_state_request_${this.index}`;
-        this.satStateResponseSyncTopic = `gps_system_sync_sat_state_response_${this.index}`;
+        this.stateRequestSyncTopic = `gps_system_sync_state_request_${this.index}`;
+        this.stateResponseSyncTopic = `gps_system_sync_state_response_${this.index}`;
         this.ephemerisData = {};
         this.sbasData = [];
         this.sbasServiceAreas = new Map();
-        this.currentSbasGroupsInView = new Set();
+        this.currentAvailableSbasGroups = new Set();
         this.satellites = [];
+        this.publishedSatStates = [];
+        this.channels = [];
         this.ppos = new GeoPoint(0, 0);
         this.pposVec = new Float64Array(2);
-        this.vecHeap = new ResourceHeap(() => Vec3Math.create(), () => { });
+        this.lastKnownPosition = new GeoPoint(NaN, NaN);
+        this.distanceFromLastKnownPos = 0;
         this.altitude = 0;
-        this.previousSimTime = 0;
-        this.previousUpdate = 0;
         this.simTime = 0;
+        this.previousSimTime = 0;
+        this.lastUpdateTime = 0;
         this._state = GPSSystemState.Searching;
         this._sbasState = GPSSystemSBASState.Disabled;
         this.dops = Vec3Math.create();
@@ -20268,14 +20655,77 @@ class GPSSatComputer {
         this.isInit = false;
         this.needAcquireAndUse = false;
         this.needSatCalc = false;
+        this.pendingChannelStateUpdates = new Map();
         this.pendingSatStateUpdates = new Map();
+        this.almanacProgress = 0;
+        this.lastAlamanacTime = undefined;
+        this._isAlmanacValid = false;
+        this.covarMatrix = [
+            new Float64Array(4),
+            new Float64Array(4),
+            new Float64Array(4),
+            new Float64Array(4),
+        ];
+        this.ephemerisCollectedSatelliteFilter = (sat) => {
+            return GPSSatComputer.EPHEMERIS_COLLECTED_SATELLITE_STATES.has(sat.state.get());
+        };
+        this.losSatelliteFilter = (sat) => {
+            return sat.signalStrength.get() > 0.05
+                && ((this.distanceFromLastKnownPos < 0.0290367 // 100 nautical miles
+                    && (this._isAlmanacValid || sat.isCachedEphemerisValid(this.simTime)))
+                    || GPSSatComputer.EPHEMERIS_COLLECTED_SATELLITE_STATES.has(sat.state.get()));
+        };
+        this.losSatelliteFilterOmniscient = (sat) => {
+            return sat.signalStrength.get() > 0.05;
+        };
+        this.untrackedSatelliteFilter = (sat) => {
+            return !this.channels.includes(sat) && sat.state.get() !== GPSSatelliteState.Unreachable;
+        };
+        this.satelliteCosts = [];
+        this.satelliteCostCompare = (indexA, indexB) => {
+            return this.satelliteCosts[indexA] - this.satelliteCosts[indexB];
+        };
+        this.collectingDataSatelliteFilter = (sat) => {
+            return sat !== null && GPSSatComputer.COLLECTING_DATA_SATELLITE_STATES.has(sat.state.get());
+        };
+        this.channelCount = Math.max((_a = options === null || options === void 0 ? void 0 : options.channelCount) !== null && _a !== void 0 ? _a : Infinity, 4);
+        this.satInUseMaxCount = SubscribableUtils.toSubscribable((_b = options === null || options === void 0 ? void 0 : options.satInUseMaxCount) !== null && _b !== void 0 ? _b : Infinity, true);
+        this.satInUsePdopTarget = SubscribableUtils.toSubscribable((_c = options === null || options === void 0 ? void 0 : options.satInUsePdopTarget) !== null && _c !== void 0 ? _c : -1, true);
+        this.satInUseOptimumCount = SubscribableUtils.toSubscribable((_d = options === null || options === void 0 ? void 0 : options.satInUseOptimumCount) !== null && _d !== void 0 ? _d : 4, true);
+        this.satelliteTimingOptions = Object.assign({}, options === null || options === void 0 ? void 0 : options.timingOptions);
+        (_e = (_u = this.satelliteTimingOptions).almanacExpireTime) !== null && _e !== void 0 ? _e : (_u.almanacExpireTime = 7776000000);
+        (_f = (_v = this.satelliteTimingOptions).ephemerisExpireTime) !== null && _f !== void 0 ? _f : (_v.ephemerisExpireTime = 7200000);
+        (_g = (_w = this.satelliteTimingOptions).acquisitionTimeout) !== null && _g !== void 0 ? _g : (_w.acquisitionTimeout = 30000);
+        (_h = (_x = this.satelliteTimingOptions).acquisitionTime) !== null && _h !== void 0 ? _h : (_x.acquisitionTime = 30000);
+        (_j = (_y = this.satelliteTimingOptions).acquisitionTimeRange) !== null && _j !== void 0 ? _j : (_y.acquisitionTimeRange = 15000);
+        (_k = (_z = this.satelliteTimingOptions).acquisitionTimeWithEphemeris) !== null && _k !== void 0 ? _k : (_z.acquisitionTimeWithEphemeris = 15000);
+        (_l = (_0 = this.satelliteTimingOptions).acquisitionTimeRangeWithEphemeris) !== null && _l !== void 0 ? _l : (_0.acquisitionTimeRangeWithEphemeris = 5000);
+        (_m = (_1 = this.satelliteTimingOptions).unreachableExpireTime) !== null && _m !== void 0 ? _m : (_1.unreachableExpireTime = 3600000);
+        (_o = (_2 = this.satelliteTimingOptions).ephemerisDownloadTime) !== null && _o !== void 0 ? _o : (_2.ephemerisDownloadTime = 30000);
+        (_p = (_3 = this.satelliteTimingOptions).almanacDownloadTime) !== null && _p !== void 0 ? _p : (_3.almanacDownloadTime = 750000);
+        (_q = (_4 = this.satelliteTimingOptions).sbasEphemerisDownloadTime) !== null && _q !== void 0 ? _q : (_4.sbasEphemerisDownloadTime = 60500);
+        (_r = (_5 = this.satelliteTimingOptions).sbasEphemerisDownloadTimeRange) !== null && _r !== void 0 ? _r : (_5.sbasEphemerisDownloadTimeRange = 59500);
+        (_s = (_6 = this.satelliteTimingOptions).sbasCorrectionDownloadTime) !== null && _s !== void 0 ? _s : (_6.sbasCorrectionDownloadTime = 150500);
+        (_t = (_7 = this.satelliteTimingOptions).sbasCorrectionDownloadTimeRange) !== null && _t !== void 0 ? _t : (_7.sbasCorrectionDownloadTimeRange = 149500);
         this.enabledSBASGroups = 'isSubscribableSet' in enabledSBASGroups ? enabledSBASGroups : SetSubject.create(enabledSBASGroups);
+        // Initialize these properties directly from SimVars in case the computer is created before values are published
+        // to the bus.
+        this.ppos.set(SimVar.GetSimVarValue('PLANE LATITUDE', SimVarValueType.Degree), SimVar.GetSimVarValue('PLANE LONGITUDE', SimVarValueType.Degree));
+        this.altitude = SimVar.GetSimVarValue('PLANE ALTITUDE', SimVarValueType.Meters);
+        this.simTime = (SimVar.GetSimVarValue('E:ABSOLUTE TIME', SimVarValueType.Seconds) - 62135596800) * 1000;
         this.bus.getSubscriber().on('gps-position').handle(pos => {
             this.ppos.set(pos.lat, pos.long);
             Vec2Math.set(pos.lat, pos.long, this.pposVec);
             this.altitude = pos.alt;
         });
         this.bus.getSubscriber().on('simTime').handle(time => this.simTime = time);
+    }
+    /**
+     * Gets the current satellites that are being tracked by this computer.
+     * @returns The collection of current satellites.
+     */
+    get sats() {
+        return this.satellites;
     }
     /**
      * Gets the current GPS system state.
@@ -20329,7 +20779,7 @@ class GPSSatComputer {
             const sbasDef = this.sbasData[i];
             this.sbasServiceAreas.set(sbasDef.group, sbasDef.coverage);
             for (const satDef of sbasDef.constellation) {
-                const sat = new GPSSatellite(satDef.prn, sbasDef.group);
+                const sat = new GPSSatellite(satDef.prn, sbasDef.group, undefined, this.satelliteTimingOptions);
                 tempGeoPoint.set(0, satDef.lon);
                 const positionCartesian = Vec3Math.multScalar(tempGeoPoint.toCartesian(tempVec), orbitHeight, tempVec);
                 sat.positionCartesian.set(positionCartesian);
@@ -20346,24 +20796,38 @@ class GPSSatComputer {
         this.publisher.pub(this.hdopTopic, this._hdop, false, true);
         this.publisher.pub(this.vdopTopic, this._vdop, false, true);
         this.loadEphemerisData().then(() => this.loadSbasData()).then(() => {
+        this.publishedSatStates.length = this.satellites.length;
+            this.publishedSatStates.fill(GPSSatelliteState.None);
+            this.channelCount = Math.min(this.channelCount, this.satellites.length);
+            this.channels.length = this.channelCount;
+            this.channels.fill(null);
             this.isInit = true;
             // Setup sync logic.
             if (this.syncRole === 'replica') {
                 const sub = this.bus.getSubscriber();
+                sub.on(this.channelStateSyncTopic).handle(data => { this.pendingChannelStateUpdates.set(data.index, data); });
                 sub.on(this.satCalcSyncTopic).handle(() => { this.needSatCalc = true; });
                 sub.on(this.satStateSyncTopic).handle(data => { this.pendingSatStateUpdates.set(data.prn, data); });
                 sub.on(this.resetSyncTopic).handle(() => { this.reset(); });
-                sub.on(this.satStateResponseSyncTopic).handle(response => {
+                sub.on(this.stateResponseSyncTopic).handle(response => {
                     this.needSatCalc = true;
-                    response.forEach(data => { this.pendingSatStateUpdates.set(data.prn, data); });
+                    for (const channelState of response.channels) {
+                        this.pendingChannelStateUpdates.set(channelState.index, channelState);
+                    }
+                    for (const satState of response.satStates) {
+                        this.pendingSatStateUpdates.set(satState.prn, satState);
+}
                 });
                 // Request initial state.
-                this.syncPublisher.pub(this.satStateRequestSyncTopic, undefined, true, false);
+                this.syncPublisher.pub(this.stateRequestSyncTopic, undefined, true, false);
             }
             else if (this.syncRole === 'primary') {
                 const sub = this.bus.getSubscriber();
-                sub.on(this.satStateRequestSyncTopic).handle(() => {
-                    this.syncPublisher.pub(this.satStateResponseSyncTopic, this.satellites.map(sat => { return { prn: sat.prn, state: sat.state.get() }; }), true, false);
+                sub.on(this.stateRequestSyncTopic).handle(() => {
+                    this.syncPublisher.pub(this.stateResponseSyncTopic, {
+                        channels: this.channels.map((sat, index) => { return { index, prn: sat === null ? null : sat.prn }; }),
+                        satStates: this.satellites.map(sat => { return { prn: sat.prn, state: sat.state.get() }; })
+                    }, true, false);
                 });
             }
             if (this.needAcquireAndUse) {
@@ -20386,7 +20850,7 @@ class GPSSatComputer {
                     if (request.status === 200) {
                         this.ephemerisData = JSON.parse(request.responseText);
                         for (const prn in this.ephemerisData) {
-                            this.satellites.push(new GPSSatellite(parseInt(prn), undefined, this.ephemerisData[prn]));
+                            this.satellites.push(new GPSSatellite(parseInt(prn), undefined, this.ephemerisData[prn], this.satelliteTimingOptions));
                         }
                         resolve();
                     }
@@ -20422,12 +20886,77 @@ class GPSSatComputer {
         });
     }
     /**
-     * Instantly acquires and starts using all satellites with sufficient signal strength. If signal strength allows,
-     * SBAS satellites are instantly promoted to the {@link GPSSatelliteState.Acquired} state, and GPS satellites are
-     * instantly promoted to the {@link GPSSatelliteState.InUse}/{@link GPSSatelliteState.InUseDiffApplied} state.
-     *
-     * If this system is not initialized, the operation will be delayed until just after initialization, unless `reset()`
-     * is called between now and then.
+     * Gets the index of a satellite with a given PRN identifier.
+     * @param prn The PRN identifier for which to get the satellite index.
+     * @returns The index of the satellite with the specified PRN identifier, or `-1` if the PRN does not belong to any
+     * satellite.
+     */
+    getSatelliteIndexFromPrn(prn) {
+        for (let i = 0; i < this.satellites.length; i++) {
+            if (this.satellites[i].prn === prn) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    /**
+     * Calculates the horizon zenith angle.
+     * @returns The calculated horizon zenith angle based on the current altitude.
+     */
+    calcHorizonAngle() {
+        return Math.acos(6378100 / (6378100 + this.altitude));
+    }
+    /**
+     * Syncs this computer's last known position with a given value.
+     * @param pos The position with which to sync the last known position. Defaults to the airplane's current position.
+     */
+    syncLastKnownPosition(pos = this.ppos) {
+        this.lastKnownPosition.set(pos);
+    }
+    /**
+     * Erases this computer's last known position.
+     */
+    eraseLastKnownPosition() {
+        this.lastKnownPosition.set(NaN, NaN);
+    }
+    /**
+     * Checks whether this computer's downloaded almanac data is valid at a given simulation time.
+     * @param simTime The simulation time at which to check for almanac validity, as a Javascript timestamp. Defaults to
+     * the current simulation time.
+     * @returns Whether this computer's downloaded almanac data is valid at the specified simulation time.
+     */
+    isAlmanacValid(simTime = this.simTime) {
+        return this.lastAlamanacTime !== undefined && Math.abs(simTime - this.lastAlamanacTime) < this.satelliteTimingOptions.almanacExpireTime;
+    }
+    /**
+     * Forces this computer to immediately download a complete alamanac.
+     * @param simTime The simulation time at which the almanac is considered to have been downloaded, as a Javascript
+     * timestamp. Defaults to the current simulation time.
+     */
+    downloadAlamanac(simTime = this.simTime) {
+        this.almanacProgress = 0;
+        this.lastAlamanacTime = simTime;
+    }
+    /**
+     * Erases this computer's downloaded almanac and any partial download progress.
+     */
+    eraseAlamanac() {
+        this.almanacProgress = 0;
+        this.lastAlamanacTime = undefined;
+    }
+    /**
+     * Erases this computer's cached ephemeris data for all satellites.
+     */
+    eraseCachedEphemeris() {
+        for (let i = 0; i < this.satellites.length; i++) {
+            this.satellites[i].eraseCachedEphemeris();
+        }
+    }
+    /**
+     * Instantly chooses the optimal satellites to track for all receiver channels, then acquires and downloads all data
+     * (ephemeris, almanac, and differential corrections) from tracked satellites with sufficient signal strength. If
+     * this system is not initialized, the operation will be delayed until just after initialization, unless `reset()` is
+     * called in the interim.
      *
      * Has no effect if this system is a replica.
      */
@@ -20436,15 +20965,15 @@ class GPSSatComputer {
             return;
         }
         if (this.isInit) {
-            this.updateSatellites(0, true, true);
+            this.updateSatellites(this.simTime, 0, true, true);
         }
         else {
             this.needAcquireAndUse = true;
         }
     }
     /**
-     * Resets the GPSSatComputer system. This will set the of the system to {@link GPSSystemState.Searching} and the
-     * state of every satellite to {@link GPSSatelliteState.None}.
+     * Resets the GPSSatComputer system. This will set the state of the system to {@link GPSSystemState.Searching},
+     * unassign all receiver channels, and set the state of every satellite to {@link GPSSatelliteState.None}.
      *
      * If this system is not initialized, this method has no effect other than to cancel any pending operations triggered
      * by previous calls to `acquireAndUseSatellites()`.
@@ -20454,13 +20983,16 @@ class GPSSatComputer {
         if (!this.isInit) {
             return;
         }
-        this.satellites.forEach(sat => {
+        for (let i = 0; i < this.channels.length; i++) {
+            this.channels[i] = null;
+        }
+        for (const sat of this.satellites) {
             const currentState = sat.state.get();
             sat.state.set(GPSSatelliteState.None);
             if (currentState !== GPSSatelliteState.None) {
                 this.publisher.pub(this.satStateChangedTopic, sat, false, false);
             }
-        });
+        }
         const currentState = this._state;
         this._state = GPSSystemState.Searching;
         if (currentState !== GPSSystemState.Searching) {
@@ -20480,33 +21012,41 @@ class GPSSatComputer {
         if (this.syncRole !== 'replica') {
             if (deltaTime < 0 || deltaTime > (this.updateInterval * 2)) {
                 this.previousSimTime = this.simTime;
-                this.previousUpdate = this.simTime;
+                this.lastUpdateTime = this.simTime;
                 return;
             }
         }
         const shouldUpdatePositions = this.syncRole === 'replica'
             ? this.needSatCalc
-            : this.simTime >= this.previousUpdate + this.updateInterval;
+            : this.simTime >= this.lastUpdateTime + this.updateInterval;
         this.needSatCalc = false;
-        this.updateSatellites(deltaTime, shouldUpdatePositions, false);
+        this.updateSatellites(this.simTime, deltaTime, shouldUpdatePositions, false);
     }
     /**
      * Updates the states and optionally the orbital positions of all satellites.
+     * @param simTime The current simulation time, as a Javascript timestamp.
      * @param deltaTime The time elapsed, in milliseconds, since the last satellite update.
      * @param shouldUpdatePositions Whether to update the orbital positions of the satellites.
-     * @param forceAcquireAndUse Whether to immediately force satellites to the highest possible use state
-     * ({@link GPSSatelliteState.Acquired} for SBAS satellites and {@link GPSSatelliteState.InUse}/
-     * {@link GPSSatelliteState.InUseDiffApplied} for GPS satellites) if signal strength is sufficient.
+     * @param forceAcquireAndUse Whether to immediately choose the optimal satellites to track for all receiver channels,
+     * then acquire and download all data (ephemeris, almanac, and differential corrections) from tracked satellites with
+     * sufficient signal strength.
      */
-    updateSatellites(deltaTime, shouldUpdatePositions, forceAcquireAndUse) {
+    updateSatellites(simTime, deltaTime, shouldUpdatePositions, forceAcquireAndUse) {
         var _a, _b, _c, _d;
         let numAcquiring = 0;
-        let numActiveSbas = 0;
+        let canApplyDiffCorrections = false;
         let shouldUpdateDop = shouldUpdatePositions;
         if (shouldUpdatePositions && this.syncRole === 'primary') {
             (_a = this.syncPublisher) === null || _a === void 0 ? void 0 : _a.pub(this.satCalcSyncTopic, undefined, true, false);
         }
-        this.currentSbasGroupsInView.clear();
+        if (forceAcquireAndUse) {
+            this.lastKnownPosition.set(this.ppos);
+        }
+        this.distanceFromLastKnownPos = isNaN(this.lastKnownPosition.lat) || isNaN(this.lastKnownPosition.lon)
+            ? Infinity
+            : this.ppos.distance(this.lastKnownPosition);
+        this._isAlmanacValid = this.isAlmanacValid();
+        this.updateAvailableSbasGroups();
         const enabledSBASGroups = this.enabledSBASGroups.get();
         for (let i = 0; i < this.satellites.length; i++) {
             const sat = this.satellites[i];
@@ -20515,51 +21055,80 @@ class GPSSatComputer {
                 sat.applyProjection(this.ppos, this.altitude);
             }
             sat.calculateSignalStrength(this.altitude);
+}
+        if (this.syncRole === 'replica') {
+            for (const update of this.pendingChannelStateUpdates.values()) {
+                const sat = update.prn === null ? null : ((_b = this.satellites[this.getSatelliteIndexFromPrn(update.prn)]) !== null && _b !== void 0 ? _b : null);
+                this.assignSatelliteToChannel(update.index, sat);
+            }
+        }
+        else if (shouldUpdatePositions) {
+            this.updateChannelAssignments(forceAcquireAndUse);
+        }
+        this.pendingChannelStateUpdates.clear();
+        for (let i = 0; i < this.satellites.length; i++) {
+            const sat = this.satellites[i];
             const updatedState = this.syncRole === 'replica'
-                ? sat.forceUpdateState((_c = (_b = this.pendingSatStateUpdates.get(sat.prn)) === null || _b === void 0 ? void 0 : _b.state) !== null && _c !== void 0 ? _c : sat.state.get())
-                : sat.updateState(deltaTime, this._state === GPSSystemState.DiffSolutionAcquired, forceAcquireAndUse);
+                ? sat.forceUpdateState(simTime, (_d = (_c = this.pendingSatStateUpdates.get(sat.prn)) === null || _c === void 0 ? void 0 : _c.state) !== null && _d !== void 0 ? _d : sat.state.get())
+                : sat.updateState(simTime, deltaTime, this.distanceFromLastKnownPos, forceAcquireAndUse);
             if (updatedState) {
-                this.publisher.pub(this.satStateChangedTopic, sat, false, false);
-                if (this.syncRole === 'primary') {
-                    this.syncPublisher.pub(this.satStateSyncTopic, { prn: sat.prn, state: sat.state.get() }, true, false);
-                }
-                shouldUpdateDop = true;
+                                shouldUpdateDop = true;
             }
             const satState = sat.state.get();
-            if (satState === GPSSatelliteState.Acquired || satState === GPSSatelliteState.DataCollected) {
+            if (satState === GPSSatelliteState.DataCollected
+                || satState === GPSSatelliteState.InUse
+                || satState === GPSSatelliteState.InUseDiffApplied) {
                 numAcquiring++;
-                if (sat.sbasGroup !== undefined && enabledSBASGroups.has(sat.sbasGroup)) {
-                    numActiveSbas++;
-                    this.currentSbasGroupsInView.add(sat.sbasGroup);
+                if (sat.areDiffCorrectionsDownloaded && this.currentAvailableSbasGroups.has(sat.sbasGroup)) {
+                    canApplyDiffCorrections = true;
                 }
+            }
+else if (satState === GPSSatelliteState.Acquired) {
+                numAcquiring++;
             }
         }
         this.pendingSatStateUpdates.clear();
-        let withinSbasArea = false;
-        for (const group of this.currentSbasGroupsInView) {
-            const coverage = this.sbasServiceAreas.get(group);
-            if (coverage !== undefined) {
-                withinSbasArea = (_d = Vec2Math.pointWithinPolygon(coverage, this.pposVec)) !== null && _d !== void 0 ? _d : false;
-            }
-            if (withinSbasArea) {
-                break;
-            }
-        }
-        const newSBASState = withinSbasArea
+        const newSBASState = canApplyDiffCorrections
             ? GPSSystemSBASState.Active
             : enabledSBASGroups.size === 0 ? GPSSystemSBASState.Disabled : GPSSystemSBASState.Inactive;
-        let newSystemState = GPSSystemState.Searching;
-        if (numAcquiring > 0) {
-            newSystemState = GPSSystemState.Acquiring;
-        }
-        let pdop = this._pdop, hdop = this._hdop, vdop = this._vdop;
+                let pdop = this._pdop, hdop = this._hdop, vdop = this._vdop;
         if (shouldUpdateDop) {
+if (this.syncRole !== 'replica') {
+                [pdop, hdop, vdop] = this.selectSatellites(this.dops);
+            }
+            else if (shouldUpdateDop) {
             [pdop, hdop, vdop] = this.calculateDop(this.dops);
         }
-        const is3dSolutionPossible = pdop >= 0;
-        if (is3dSolutionPossible) {
-            newSystemState = numActiveSbas > 0 && withinSbasArea ? GPSSystemState.DiffSolutionAcquired : GPSSystemState.SolutionAcquired;
         }
+        let newSystemState = GPSSystemState.Searching;
+        if (pdop >= 0) {
+            newSystemState = canApplyDiffCorrections ? GPSSystemState.DiffSolutionAcquired : GPSSystemState.SolutionAcquired;
+            this.lastKnownPosition.set(this.ppos);
+        }
+        else if (numAcquiring > 0) {
+            newSystemState = GPSSystemState.Acquiring;
+        }
+        else if (this.distanceFromLastKnownPos < 0.0290367 /* 100 nautical miles */) {
+            // Set system state to 'Acquiring' if we are attempting to acquire at least one satellite for which we have
+            // predicted geometry data (either from the almanac or cached ephemeris data).
+            for (let i = 0; i < this.channels.length; i++) {
+                const sat = this.channels[i];
+                if (sat && sat.state.get() === GPSSatelliteState.None && (this._isAlmanacValid || sat.isCachedEphemerisValid(this.simTime))) {
+                    newSystemState = GPSSystemState.Acquiring;
+                    break;
+                }
+            }
+        }
+        if (this.syncRole !== 'replica') {
+            for (let i = 0; i < this.channels.length; i++) {
+                const sat = this.channels[i];
+                if (sat) {
+                    sat.updateDiffCorrectionsApplied(canApplyDiffCorrections);
+                }
+            }
+            this.updateAlmanacState(simTime, deltaTime, forceAcquireAndUse);
+        }
+this.diffAndPublishSatelliteStates();
         if (this._state !== newSystemState) {
             this._state = newSystemState;
             this.publisher.pub(this.stateChangedTopic, newSystemState, false, true);
@@ -20569,70 +21138,448 @@ class GPSSatComputer {
             this.publisher.pub(this.sbasStateChangedTopic, newSBASState, false, true);
         }
         if (shouldUpdatePositions) {
-            this.previousUpdate = this.simTime;
+            this.lastUpdateTime = this.simTime;
             this.publisher.pub(this.satPosCalcTopic, undefined, false, false);
         }
         this.setDop(pdop, hdop, vdop);
         this.previousSimTime = this.simTime;
     }
     /**
-     * Gets the current satellites that are being tracked by this computer.
-     * @returns The collection of current satellites.
+     * Updates which SBAS groups are enabled and whose coverage area contain the airplane's current position.
      */
-    get sats() {
-        return this.satellites;
+    updateAvailableSbasGroups() {
+        const enabledSBASGroups = this.enabledSBASGroups.get();
+        for (let i = 0; i < this.sbasData.length; i++) {
+            const sbasData = this.sbasData[i];
+            if (enabledSBASGroups.has(sbasData.group) && Vec2Math.pointWithinPolygon(sbasData.coverage, this.pposVec)) {
+                this.currentAvailableSbasGroups.add(sbasData.group);
+            }
+            else {
+                this.currentAvailableSbasGroups.delete(sbasData.group);
+            }
+        }
     }
     /**
-     * Calculates the horizon zenith angle.
-     * @returns The calculated horizon zenith angle based on the current altitude.
+     * Updates the satellites assigned to be tracked by this computer's receiver channels.
+     * @param forceAcquireAndUse Whether to immediately choose the optimal satellites to track and acquire all data from
+     * tracked satellites if signal strength is sufficient.
      */
-    calcHorizonAngle() {
-        return Math.acos(6378100 / (6378100 + this.altitude));
+    updateChannelAssignments(forceAcquireAndUse) {
+        // If we have at least one channel for every satellite, then we will simply assign each satellite to its own
+        // channel.
+        if (this.channelCount >= this.satellites.length) {
+            const end = Math.min(this.channelCount, this.satellites.length);
+            for (let i = 0; i < end; i++) {
+                if (this.channels[i] === null) {
+                    this.assignSatelliteToChannel(i, this.satellites[i]);
+                }
+            }
+            return;
+        }
+        const losSatellites = this.satellites.filter(forceAcquireAndUse ? this.losSatelliteFilterOmniscient : this.losSatelliteFilter);
+        let losSatellitesNotTrackedIndexes;
+        let openChannelIndexes;
+        let isTrackingSbasSatelliteInLos = false;
+        if (forceAcquireAndUse) {
+            losSatellitesNotTrackedIndexes = ArrayUtils.range(losSatellites.length);
+            openChannelIndexes = ArrayUtils.range(this.channelCount, this.channelCount - 1, -1);
+        }
+        else {
+            losSatellitesNotTrackedIndexes = [];
+            for (let i = 0; i < losSatellites.length; i++) {
+                const sat = losSatellites[i];
+                if (this.channels.includes(sat)) {
+                    if (sat.sbasGroup !== undefined && this.currentAvailableSbasGroups.has(sat.sbasGroup)) {
+                        isTrackingSbasSatelliteInLos = true;
+                    }
+                }
+                else {
+                    losSatellitesNotTrackedIndexes.push(i);
+                }
+            }
+            openChannelIndexes = [];
+            for (let i = this.channels.length - 1; i >= 0; i--) {
+                const sat = this.channels[i];
+                if (!sat || sat.state.get() === GPSSatelliteState.Unreachable) {
+                    openChannelIndexes.push(i);
+                }
+            }
+        }
+        if (openChannelIndexes.length === 0 && this.channels.every(this.ephemerisCollectedSatelliteFilter)) {
+            // There are no open channels and we have collected ephemeris data from every tracked satellite.
+            const trackedLosMatrix = GPSSatComputer.getLosMatrix(this.channels);
+            const trackedCovarMatrix = GPSSatComputer.calculateCovarMatrix(trackedLosMatrix, this.covarMatrix);
+            if (!isFinite(trackedCovarMatrix[0][0]) || !isFinite(trackedCovarMatrix[1][1]) || !isFinite(trackedCovarMatrix[2][2])) {
+                // The currently tracked satellites are not sufficient to produce a 3D position solution. In this case we
+                // will replace a random tracked satellite with an untracked.
+                openChannelIndexes.push(Math.trunc(Math.random() * this.channelCount));
+            }
+            else {
+                // The currently tracked satellites are sufficient to produce a 3D position solution. In this case we will
+                // only try to replace a tracked satellite if we are tracking at least one redundant satellite, we are not
+                // tracking an SBAS satellite within LOS, and there is a SBAS satellite within LOS available for us to track.
+                // If the above is true, then we will replace the tracked satellite with the smallest contribution to reducing
+                // PDOP with the SBAS satellite with highest signal strength.
+                if (this.channelCount > 4 && !isTrackingSbasSatelliteInLos) {
+                    let highestSbasSignal = 0;
+                    let highestSbasSignalIndex = -1;
+                    for (let i = 0; i < losSatellitesNotTrackedIndexes.length; i++) {
+                        const index = losSatellitesNotTrackedIndexes[i];
+                        const sat = losSatellites[index];
+                        const signalStrength = sat.signalStrength.get();
+                        if (sat.sbasGroup !== undefined && this.currentAvailableSbasGroups.has(sat.sbasGroup) && signalStrength > highestSbasSignal) {
+                            highestSbasSignal = signalStrength;
+                            highestSbasSignalIndex = index;
+                        }
+                    }
+                    if (highestSbasSignalIndex >= 0) {
+                        const sTranspose = this.channels.map(GPSSatComputer.createVec4);
+                        GPSSatComputer.calculateDowndateSTranspose(trackedLosMatrix, trackedCovarMatrix, sTranspose);
+                        const pDiag = GPSSatComputer.calculateDowndatePDiag(trackedLosMatrix, sTranspose, new Float64Array(trackedLosMatrix.length));
+                        GPSSatComputer.calculateSatelliteCosts(sTranspose, pDiag, this.satelliteCosts);
+                        let satToReplaceCost = Infinity;
+                        let satToReplaceChannelIndex = -1;
+                        for (let i = 0; i < this.channels.length; i++) {
+                            const cost = this.satelliteCosts[i];
+                            if (cost < satToReplaceCost) {
+                                satToReplaceCost = cost;
+                                satToReplaceChannelIndex = i;
+                            }
+                        }
+                        if (satToReplaceChannelIndex >= 0) {
+                            this.assignSatelliteToChannel(satToReplaceChannelIndex, losSatellites[highestSbasSignalIndex]);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+        if (openChannelIndexes.length > 0) {
+            if (openChannelIndexes.length < losSatellitesNotTrackedIndexes.length) {
+                // We don't have enough open channels to begin tracking all satellites currently within line-of-sight.
+                // Therefore, we will choose those with the largest contribution to reducing PDOP.
+                const losMatrix = GPSSatComputer.getLosMatrix(losSatellites);
+                const covarMatrix = GPSSatComputer.calculateCovarMatrix(losMatrix, this.covarMatrix);
+                const sTranspose = losSatellites.map(GPSSatComputer.createVec4);
+                GPSSatComputer.calculateDowndateSTranspose(losMatrix, covarMatrix, sTranspose);
+                const pDiag = GPSSatComputer.calculateDowndatePDiag(losMatrix, sTranspose, new Float64Array(losMatrix.length));
+                GPSSatComputer.calculateSatelliteCosts(sTranspose, pDiag, this.satelliteCosts);
+                // If we are not already tracking an SBAS satellite within LOS, we will prioritize adding the SBAS satellite
+                // with the highest cost over non-SBAS satellites.
+                if (!isTrackingSbasSatelliteInLos) {
+                    let highestSbasCost = -Infinity;
+                    let highestSbasCostIndex = -1;
+                    for (let i = 0; i < this.satelliteCosts.length; i++) {
+                        const sbasGroup = losSatellites[i].sbasGroup;
+                        if (sbasGroup !== undefined && this.currentAvailableSbasGroups.has(sbasGroup)) {
+                            const cost = this.satelliteCosts[i];
+                            if (cost > highestSbasCost) {
+                                highestSbasCost = cost;
+                                highestSbasCostIndex = i;
+                            }
+                        }
+                    }
+                    if (highestSbasCostIndex >= 0) {
+                        this.satelliteCosts[highestSbasCostIndex] = Infinity;
+                    }
+                }
+                const satelliteIndexes = ArrayUtils.range(losSatellites.length);
+                satelliteIndexes.sort(this.satelliteCostCompare);
+                for (let i = satelliteIndexes.length - 1; i >= 0; i--) {
+                    if (losSatellitesNotTrackedIndexes.includes(i)) {
+                        const sat = losSatellites[i];
+                        const channelIndex = openChannelIndexes.pop();
+                        this.assignSatelliteToChannel(channelIndex, sat);
+                        if (openChannelIndexes.length === 0) {
+                            break;
+                        }
+                    }
+                }
+            }
+            else {
+                // We have enough open channels to begin tracking all satellites currently within LOS.
+                for (let i = 0; i < losSatellitesNotTrackedIndexes.length; i++) {
+                    const channelIndex = openChannelIndexes.pop();
+                    this.assignSatelliteToChannel(channelIndex, losSatellites[i]);
+                }
+            }
+            // If we still have open channels available, fill them with random satellites that have not been marked as
+            // unreachable.
+            if (openChannelIndexes.length > 0) {
+                const untrackedSatellites = this.satellites.filter(this.untrackedSatelliteFilter);
+                let untrackedIndex = 0;
+                while (openChannelIndexes.length > 0 && untrackedIndex < untrackedSatellites.length) {
+                    const channelIndex = openChannelIndexes.pop();
+                    this.assignSatelliteToChannel(channelIndex, untrackedSatellites[untrackedIndex++]);
+                }
+            }
+        }
     }
     /**
-     * Calculates dilution of precision values (PDOP, HDOP, VDOP) for the current satellite constellation.
+     * Assigns a satellite to a receiver channel.
+     * @param channelIndex The index of the receiver channel.
+     * @param sat The satellite to assign, or `null` if the channel is to be assigned no satellite.
+     */
+    assignSatelliteToChannel(channelIndex, sat) {
+        const oldSat = this.channels[channelIndex];
+        if (oldSat === sat) {
+            return;
+        }
+        if (oldSat && oldSat.state.get() !== GPSSatelliteState.Unreachable) {
+            oldSat.setTracked(false);
+        }
+        this.channels[channelIndex] = sat;
+        if (sat !== null) {
+            sat.setTracked(true);
+        }
+        if (this.syncRole === 'primary') {
+            this.syncPublisher.pub(this.channelStateSyncTopic, { index: channelIndex, prn: sat === null ? null : sat.prn }, true, false);
+        }
+    }
+    /**
+     * Calculates dilution of precision values (PDOP, HDOP, VDOP) for the satellite constellation consisting of all
+     * satellites that are currently in-use.
      * @param out The vector to which to write the results.
-     * @returns Dilution of precision values for the current satellite constellation, as `[PDOP, HDOP, VDOP]`.
+     * @returns Dilution of precision values for the current in-use satellite constellation, as `[PDOP, HDOP, VDOP]`. If
+     * the constellation is insufficient to provide a 3D position solution, then `[-1, -1, -1]` will be returned.
      */
     calculateDop(out) {
         Vec3Math.set(-1, -1, -1, out);
-        const satsInUse = this.satellites.filter(sat => {
-            const state = sat.state.get();
-            return state === GPSSatelliteState.InUse || state === GPSSatelliteState.InUseDiffApplied;
-        });
+        const satsInUse = this.satellites.filter(GPSSatComputer.inUseSatelliteFilter);
         if (satsInUse.length < 4) {
             return out;
         }
+const losMatrix = GPSSatComputer.getLosMatrix(satsInUse);
+        const covarMatrix = GPSSatComputer.calculateCovarMatrix(losMatrix, this.covarMatrix);
+        // Grab the variance terms var(x), var(y), var(z) along the diagonal of the covariance matrix
+        const varX = covarMatrix[0][0];
+        const varY = covarMatrix[1][1];
+        const varZ = covarMatrix[2][2];
+        if (!isFinite(varX) || !isFinite(varY) || !isFinite(varZ)) {
+            return out;
+        }
+        const horizSumVar = varX + varY;
+        const pdop = Math.sqrt(horizSumVar + varZ);
+        const hdop = Math.sqrt(horizSumVar);
+        const vdop = Math.sqrt(varZ);
+        return Vec3Math.set(pdop, hdop, vdop, out);
+    }
+    /**
+     * Selects satellites to use for calculating position solutions and returns the dilution of precision values for
+     * the selected constellation.
+     * @param out The vector to which to write the dilution of precision values.
+     * @returns Dilution of precision values for the selected satellite constellation, as `[PDOP, HDOP, VDOP]`. If the
+     * constellation is insufficient to provide a 3D position solution, then `[-1, -1, -1]` will be returned.
+     */
+    selectSatellites(out) {
+        Vec3Math.set(-1, -1, -1, out);
+        const satellitesToUse = this.satellites.filter(GPSSatComputer.readySatelliteFilter);
+        if (satellitesToUse.length < 4) {
+            this.updateSatelliteInUseStates(satellitesToUse, []);
+            return out;
+        }
+        const losMatrix = GPSSatComputer.getLosMatrix(satellitesToUse);
+        const covarMatrix = GPSSatComputer.calculateCovarMatrix(losMatrix, this.covarMatrix);
+        const maxCount = MathUtils.clamp(this.satInUseMaxCount.get(), 4, this.channelCount);
+        if (!VecNMath.isFinite(covarMatrix[0])
+            || !VecNMath.isFinite(covarMatrix[1])
+            || !VecNMath.isFinite(covarMatrix[2])
+            || !VecNMath.isFinite(covarMatrix[3])) {
+            const satellitesToDiscard = satellitesToUse.splice(maxCount);
+            this.updateSatelliteInUseStates(satellitesToUse, satellitesToDiscard);
+            return out;
+        }
+        const satellitesToDiscard = [];
+        const pdopTarget = this.satInUsePdopTarget.get();
+        const optimumCount = Math.max(this.satInUseOptimumCount.get(), 4);
+        const pdopTargetSq = pdopTarget < 0 ? -1 : pdopTarget * pdopTarget;
+        let pdopSq = covarMatrix[0][0] + covarMatrix[1][1] + covarMatrix[2][2];
+        if (satellitesToUse.length > maxCount || (satellitesToUse.length > optimumCount && pdopSq < pdopTargetSq)) {
+            // There are more in-sight satellites than we can select. Therefore we will attempt to discard excess satellites
+            // in manner that minimizes the increase to PDOP relative to selecting all in-sight satellites.
+            // We will use the "downdate" selection algorithm presented in Walter, T, Blanch, J and Kropp, V, 2016.
+            // Define Sᵀ = LC and P = I - LCLᵀ, where L is the line-of-sight matrix and C is the covariance matrix.
+            // Then Ci = C + (Si)(Si)ᵀ / P(i, i), where Ci is the covariance matrix after removing the ith satellite and
+            // Si is the ith column of S.
+            // If PDOP = sqrt(C(1, 1) + C(2, 2) + C(3, 3)), then from the above it can be seen that removing the ith
+            // satellite increases PDOP² by (S(1, i)² + S(2, i)² + S(3, i)²) / P(i, i). Defining this to be the cost of
+            // removing satellite i, we are then guaranteed that removing the satellite with the lowest cost will result
+            // in the smallest increase to PDOP.
+            const sTranspose = satellitesToUse.map(GPSSatComputer.createVec4);
+            GPSSatComputer.calculateDowndateSTranspose(losMatrix, covarMatrix, sTranspose);
+            const pDiag = GPSSatComputer.calculateDowndatePDiag(losMatrix, sTranspose, new Float64Array(losMatrix.length));
+            GPSSatComputer.calculateSatelliteCosts(sTranspose, pDiag, this.satelliteCosts);
+            const satelliteIndexes = ArrayUtils.range(satellitesToUse.length);
+            satelliteIndexes.sort(this.satelliteCostCompare);
+            pdopSq = covarMatrix[0][0] + covarMatrix[1][1] + covarMatrix[2][2];
+            let indexToRemove = satelliteIndexes[0];
+            while (satellitesToUse.length > maxCount
+                || (satellitesToUse.length > optimumCount
+                    && pdopSq + this.satelliteCosts[indexToRemove] <= pdopTargetSq)) {
+                satellitesToDiscard.push(satellitesToUse[indexToRemove]);
+                satellitesToUse.splice(indexToRemove, 1);
+                losMatrix.splice(indexToRemove, 1);
+                // Reset satellite index array.
+                satelliteIndexes.length--;
+                for (let i = 0; i < satelliteIndexes.length; i++) {
+                    satelliteIndexes[i] = i;
+                }
+                // Update covariance matrix after removing a satellite.
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        covarMatrix[i][j] += sTranspose[indexToRemove][i] * sTranspose[indexToRemove][j] / pDiag[indexToRemove];
+                    }
+                }
+                // Recompute satellite costs.
+                sTranspose.length--;
+                GPSSatComputer.calculateDowndateSTranspose(losMatrix, covarMatrix, sTranspose);
+                GPSSatComputer.calculateDowndatePDiag(losMatrix, sTranspose, pDiag);
+                GPSSatComputer.calculateSatelliteCosts(sTranspose, pDiag, this.satelliteCosts);
+                satelliteIndexes.sort(this.satelliteCostCompare);
+                pdopSq = covarMatrix[0][0] + covarMatrix[1][1] + covarMatrix[2][2];
+                indexToRemove = satelliteIndexes[0];
+            }
+        }
+        this.updateSatelliteInUseStates(satellitesToUse, satellitesToDiscard);
+        // Grab the variance terms var(x), var(y), var(z) along the diagonal of the covariance matrix
+        const varX = covarMatrix[0][0];
+        const varY = covarMatrix[1][1];
+        const varZ = covarMatrix[2][2];
+        if (!isFinite(varX) || !isFinite(varY) || !isFinite(varZ)) {
+            return out;
+        }
+        const horizSumVar = varX + varY;
+        const pdop = Math.sqrt(horizSumVar + varZ);
+        const hdop = Math.sqrt(horizSumVar);
+        const vdop = Math.sqrt(varZ);
+        return Vec3Math.set(pdop, hdop, vdop, out);
+    }
+    /**
+     * Updates the in-use state of satellites.
+     * @param satellitesToUse The satellites to use for position solution calculations.
+     * @param satellitesToNotUse The satellites to not use for position solution calculations.
+     */
+    updateSatelliteInUseStates(satellitesToUse, satellitesToNotUse) {
+        for (let i = 0; i < satellitesToUse.length; i++) {
+            satellitesToUse[i].updateInUse(true);
+        }
+        for (let i = 0; i < satellitesToNotUse.length; i++) {
+            satellitesToNotUse[i].updateInUse(false);
+        }
+    }
+    /**
+     * Updates the almanac download state.
+     * @param simTime The current simulation time, as a Javascript timestamp.
+     * @param deltaTime The time elapsed, in milliseconds, since the last update.
+     * @param forceDownload Whether to force the entire almanac to be instantly downloaded.
+     */
+    updateAlmanacState(simTime, deltaTime, forceDownload) {
+        if (forceDownload) {
+            this.lastAlamanacTime = simTime;
+            this.almanacProgress = 0;
+        }
+        else {
+            const isCollectingData = this.channels.some(this.collectingDataSatelliteFilter);
+            if (isCollectingData) {
+                this.almanacProgress += deltaTime / this.satelliteTimingOptions.almanacDownloadTime;
+                if (this.almanacProgress >= 1) {
+                    this.lastAlamanacTime = simTime;
+                    this.almanacProgress -= 1;
+                }
+            }
+            else {
+                this.almanacProgress = 0;
+            }
+        }
+    }
+    /**
+     * For each satellite, checks if its state is different from the most recently published state, and if so publishes
+     * the new state. If this computer's sync role is `primary`, then a satellite state sync event will be published
+     * alongside any regular state events.
+     */
+    diffAndPublishSatelliteStates() {
+        for (let i = 0; i < this.satellites.length; i++) {
+            const sat = this.satellites[i];
+            const state = sat.state.get();
+            if (this.publishedSatStates[i] !== state) {
+                this.publishedSatStates[i] = state;
+                this.publisher.pub(this.satStateChangedTopic, sat, false, false);
+                if (this.syncRole === 'primary') {
+                    this.syncPublisher.pub(this.satStateSyncTopic, { prn: sat.prn, state }, true, false);
+                }
+            }
+        }
+    }
+    /**
+     * Sets this system's dilution of precision values, and if they are different from the current values, publishes the
+     * new values to the event bus.
+     * @param pdop The position DOP value to set.
+     * @param hdop The horizontal DOP value to set.
+     * @param vdop The vertical DOP value to set.
+     */
+    setDop(pdop, hdop, vdop) {
+        if (this._pdop !== pdop) {
+            this._pdop = pdop;
+            this.publisher.pub(this.pdopTopic, pdop, false, true);
+        }
+        if (this._hdop !== hdop) {
+            this._hdop = hdop;
+            this.publisher.pub(this.hdopTopic, hdop, false, true);
+        }
+        if (this._vdop !== vdop) {
+            this._vdop = vdop;
+            this.publisher.pub(this.vdopTopic, vdop, false, true);
+        }
+    }
+    /**
+     * Creates a line-of-sight position matrix for a satellite constellation. Each row in the matrix is a 4-vector of
+     * a satellite's position relative to the airplane, as `[x, y, z, 1]`. The index of the matrix row containing a
+     * satellite's position vector matches the index of the satellite in the provided array.
+     * @param satellites The satellites in the constellation.
+     * @returns The line-of-sight position matrix for the specified satellite constellation.
+     */
+    static getLosMatrix(satellites) {
+        const los = [];
         // Get unit line-of-sight vectors for each satellite
-        for (let i = 0; i < satsInUse.length; i++) {
-            const [zenith, hour] = satsInUse[i].position.get();
-            satsInUse[i] = Vec3Math.setFromSpherical(1, zenith, hour, this.vecHeap.allocate());
+        for (let i = 0; i < satellites.length; i++) {
+            const [zenith, hour] = satellites[i].position.get();
+            los[i] = Vec3Math.setFromSpherical(1, zenith, hour, new Float64Array(4));
+            los[i][3] = 1;
         }
-        const satVecs = satsInUse;
-        // First define line-of-sight matrix L composed of row vectors Si = [xi, yi, zi, 1], where xi, yi, zi are the
-        // components of the unit line-of-sight vector for satellite i. Then compute the covariance matrix as C = (LᵀL)⁻¹.
+        return los;
+    }
+    /**
+     * Calculates a position-covariance matrix for a satellite constellation.
+     * @param los The line-of-sight position matrix for the satellite constellation.
+     * @param out The matrix to which to write the result.
+     * @returns The position-covariance matrix for the specified satellite constellation.
+     */
+    static calculateCovarMatrix(los, out) {
+        if (los.length < 4) {
+            for (let i = 0; i < 4; i++) {
+                out[i].fill(NaN, 0, 4);
+            }
+            return out;
+        }
+        // The covariance matrix is defined as C = (LᵀL)⁻¹, where L is the satellite line-of-sight matrix.
         // P = LᵀL is guaranteed to be symmetric, so we need only compute the upper triangular part of the product.
-        const P11 = satVecs.reduce((sum, vec) => sum + vec[0] * vec[0], 0);
-        const P12 = satVecs.reduce((sum, vec) => sum + vec[0] * vec[1], 0);
-        const P13 = satVecs.reduce((sum, vec) => sum + vec[0] * vec[2], 0);
-        const P14 = satVecs.reduce((sum, vec) => sum + vec[0], 0);
-        const P22 = satVecs.reduce((sum, vec) => sum + vec[1] * vec[1], 0);
-        const P23 = satVecs.reduce((sum, vec) => sum + vec[1] * vec[2], 0);
-        const P24 = satVecs.reduce((sum, vec) => sum + vec[1], 0);
-        const P33 = satVecs.reduce((sum, vec) => sum + vec[2] * vec[2], 0);
-        const P34 = satVecs.reduce((sum, vec) => sum + vec[2], 0);
-        const P44 = satVecs.length;
-        for (let i = 0; i < satVecs.length; i++) {
-            this.vecHeap.free(satVecs[i]);
-        }
+        const P11 = los.reduce(GPSSatComputer.covarMultiplyFuncs[0][0], 0);
+        const P12 = los.reduce(GPSSatComputer.covarMultiplyFuncs[0][1], 0);
+        const P13 = los.reduce(GPSSatComputer.covarMultiplyFuncs[0][2], 0);
+        const P14 = los.reduce(GPSSatComputer.covarMultiplyFuncs[0][3], 0);
+        const P22 = los.reduce(GPSSatComputer.covarMultiplyFuncs[1][0], 0);
+        const P23 = los.reduce(GPSSatComputer.covarMultiplyFuncs[1][1], 0);
+        const P24 = los.reduce(GPSSatComputer.covarMultiplyFuncs[1][2], 0);
+        const P33 = los.reduce(GPSSatComputer.covarMultiplyFuncs[2][0], 0);
+        const P34 = los.reduce(GPSSatComputer.covarMultiplyFuncs[2][1], 0);
+        const P44 = los.length;
         // Perform block-wise inversion of LᵀL (which is 4x4, so neatly decomposes into four 2x2 matrices) with optimizations
         // presented in Ingemarsson, C and Gustafsson O, 2015.
         // P = [A  B]
         //     [Bᵀ D]
         // C = P⁻¹ = [E  F]
         //           [Fᵀ H]
-        // Since we only care about the variance terms along the diagonal of C, we can skip calculating F.
-        // V = A⁻¹ (A is symmetric, therefore V is also symmetric, so we only need to compute the upper triangular part)
+                // V = A⁻¹ (A is symmetric, therefore V is also symmetric, so we only need to compute the upper triangular part)
         const detA = 1 / (P11 * P22 - P12 * P12);
         const V11 = P22 * detA;
         const V12 = -P12 * detA;
@@ -20650,49 +21597,114 @@ class GPSSatComputer {
         const H11 = Hi22 * detHi;
         const H12 = -Hi12 * detHi;
         const H22 = Hi11 * detHi;
-        // Z = XH
+        // Z = XH, F = -Z
         const Z11 = X11 * H11 + X12 * H12;
         const Z12 = X11 * H12 + X12 * H22;
         const Z21 = X21 * H11 + X22 * H12;
         const Z22 = X21 * H12 + X22 * H22;
-        // E = V + ZXᵀ (We can skip calculating E12 and E21 since we only care about the diagonal)
+        // E = V + ZXᵀ (E is symmetric, so we only need to compute the upper triangular part)
         const E11 = V11 + Z11 * X11 + Z12 * X12;
+        const E12 = V12 + Z11 * X21 + Z12 * X22;
         const E22 = V22 + Z21 * X21 + Z22 * X22;
-        // Grab the variance terms var(x), var(y), var(z) along the diagonal of C
-        const varX = E11;
-        const varY = E22;
-        const varZ = H11;
-        if (!isFinite(varX) || !isFinite(varY) || !isFinite(varZ)) {
+        out[0][0] = E11;
+        out[0][1] = E12;
+        out[0][2] = -Z11;
+        out[0][3] = -Z12;
+        out[1][0] = E12; // E is symmetric, so E21 = E12
+        out[1][1] = E22;
+        out[1][2] = -Z21;
+        out[1][3] = -Z22;
+        out[2][0] = -Z11;
+        out[2][1] = -Z21;
+        out[2][2] = H11;
+        out[2][3] = H12;
+        out[3][0] = -Z12;
+        out[3][1] = -Z22;
+        out[3][2] = H12; // H is symmetric, so H21 = H12
+        out[3][3] = H22;
             return out;
         }
-        const horizSumVar = varX + varY;
-        const pdop = Math.sqrt(horizSumVar + varZ);
-        const hdop = Math.sqrt(horizSumVar);
-        const vdop = Math.sqrt(varZ);
-        return Vec3Math.set(pdop, hdop, vdop, out);
+        /**
+     * Calculates the transpose of the `S` matrix in the downdate satellite selection algorithm for a satellite
+     * constellation. The index of a satellite's corresponding row in the `Sᵀ` matrix matches the index of its position
+     * vector in the provided line-of-sight position matrix.
+     * @param los The line-of-sight position matrix for the satellite constellation.
+     * @param covar The position-covariance matrix for the satellite constellation.
+     * @param out The matrix to which to write the result.
+     * @returns The transpose of the `S` matrix in the downdate satellite selection algorithm for the specified satellite
+     * constellation.
+     */
+    static calculateDowndateSTranspose(los, covar, out) {
+        for (let i = 0; i < los.length; i++) {
+            for (let j = 0; j < 4; j++) {
+                out[i][j] = 0;
+                for (let k = 0; k < 4; k++) {
+                    out[i][j] += los[i][k] * covar[k][j];
+                }
+            }
+        }
+        return out;
     }
     /**
-     * Sets this system's dilution of precision values, and if they are different from the current values, publishes the
-     * new values to the event bus.
-     * @param pdop The position DOP value to set.
-     * @param hdop The horizontal DOP value to set.
-     * @param vdop The vertical DOP valu to set.
+     * Calculates the diagonal of the `P` matrix in the downdate satellite selection algorithm for a satellite
+     * constellation.
+     * @param los The line-of-sight position matrix for the satellite constellation.
+     * @param sTranspose The transpose of the `S` matrix in the downdate satellite selection algorithm for the satellite
+     * constellation.
+     * @param out The vector to which to write the result.
+     * @returns The diagonal of the `P` matrix in the downdate satellite selection algorithm for the specified satellite
+     * constellation.
      */
-    setDop(pdop, hdop, vdop) {
-        if (this._pdop !== pdop) {
-            this._pdop = pdop;
-            this.publisher.pub(this.pdopTopic, pdop, false, true);
+    static calculateDowndatePDiag(los, sTranspose, out) {
+        out.fill(1);
+        for (let i = 0; i < los.length; i++) {
+            for (let j = 0; j < 4; j++) {
+                out[i] -= sTranspose[i][j] * los[i][j];
+            }
         }
-        if (this._hdop !== hdop) {
-            this._hdop = hdop;
-            this.publisher.pub(this.hdopTopic, hdop, false, true);
-        }
-        if (this._vdop !== vdop) {
-            this._vdop = vdop;
-            this.publisher.pub(this.vdopTopic, vdop, false, true);
-        }
+        return out;
     }
-}
+    /**
+     * Calculates the costs of removing each satellite from a constellation. The cost of removing a satellite is defined
+     * as the amount by which `PDOP²` will increase when the satellite is removed relative to the full constellation. The
+     * index of a satellite's cost in the returned array matches the index of the satellite's corresponding row in the
+     * provided `Sᵀ` matrix.
+     * @param sTranspose The transpose of the `S` matrix in the downdate satellite selection algorithm for the satellite
+     * constellation.
+     * @param pDiag The diagonal of the `P` matrix in the downdate satellite selection algorithm for the satellite
+     * constellation.
+     * @param out The array to which to write the results.
+     * @returns The costs of removing each satellite from a constellation.
+     */
+    static calculateSatelliteCosts(sTranspose, pDiag, out) {
+        out.length = sTranspose.length;
+        for (let i = 0; i < sTranspose.length; i++) {
+            out[i] = (sTranspose[i][0] * sTranspose[i][0] + sTranspose[i][1] * sTranspose[i][1] + sTranspose[i][2] * sTranspose[i][2]) / pDiag[i];
+        }
+        return out;
+    }
+        }
+GPSSatComputer.EPHEMERIS_COLLECTED_SATELLITE_STATES = new Set([GPSSatelliteState.DataCollected, GPSSatelliteState.InUse, GPSSatelliteState.InUseDiffApplied]);
+GPSSatComputer.inUseSatelliteFilter = (sat) => {
+    const state = sat.state.get();
+    return state === GPSSatelliteState.InUse || state === GPSSatelliteState.InUseDiffApplied;
+};
+GPSSatComputer.readySatelliteFilter = (sat) => {
+    const state = sat.state.get();
+    return state === GPSSatelliteState.DataCollected || state === GPSSatelliteState.InUse || state === GPSSatelliteState.InUseDiffApplied;
+};
+GPSSatComputer.createVec4 = () => new Float64Array(4);
+GPSSatComputer.COLLECTING_DATA_SATELLITE_STATES = new Set([
+    GPSSatelliteState.Acquired,
+    GPSSatelliteState.DataCollected,
+    GPSSatelliteState.InUse,
+    GPSSatelliteState.InUseDiffApplied
+]);
+GPSSatComputer.covarMultiplyFuncs = [
+    [0, 1, 2, 3].map(col => (sum, vec) => sum + vec[0] * vec[col]),
+    [1, 2, 3].map(col => (sum, vec) => sum + vec[1] * vec[col]),
+    [2, 3].map(col => (sum, vec) => sum + vec[2] * vec[col])
+];
 /**
  * A tracked GPS satellite.
  */
@@ -20702,13 +21714,13 @@ class GPSSatellite {
      * @param prn The GPS PRN number for this satellite.
      * @param sbasGroup Whether or not this satellite is a SBAS satellite.
      * @param ephemeris The ephemeris data to use for position calculation.
+     * @param timingOptions Options with which to configure the timing of this satellite's state changes.
      */
-    constructor(prn, sbasGroup, ephemeris) {
+    constructor(prn, sbasGroup, ephemeris, timingOptions) {
         this.prn = prn;
         this.sbasGroup = sbasGroup;
         this.ephemeris = ephemeris;
-        this.stateChangeTime = (5 + (10 * Math.random())) * 1000;
-        this.stateChangeTimeRemaining = 0;
+        this.timingOptions = timingOptions;
         this.vec3Cache = [new Float64Array(3), new Float64Array(3), new Float64Array(3), new Float64Array(3), new Float64Array(3)];
         /** The current satellite state. */
         this.state = Subject.create(GPSSatelliteState.None);
@@ -20718,8 +21730,36 @@ class GPSSatellite {
         this.positionCartesian = Vec3Subject.create(new Float64Array(3));
         /** The current satellite signal strength. */
         this.signalStrength = Subject.create(0);
-        this.isApplyingDiffCorrections = false;
+        this.isTracked = false;
         this.hasComputedPosition = false;
+        this._lastEphemerisTime = undefined;
+        this._lastUnreachableTime = undefined;
+        this._areDiffCorrectionsDownloaded = false;
+        this.timeSpentAcquiring = undefined;
+        this.timeToAcquire = undefined;
+        this.timeToDownloadEphemeris = undefined;
+        this.timeToDownloadCorrections = undefined;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * The most recent simulation time at which this satellite's ephemeris was downloaded, as a Javascript timestamp, or
+     * `undefined` if this satellite's ephemeris has not yet been downloaded.
+     */
+    get lastEphemerisTime() {
+        return this._lastEphemerisTime;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /**
+     * The most recent simulation time at which this satellite was confirmed to be unreachable, as a Javascript
+     * timestamp, or `undefined` if this satellite has not been confirmed to be unreachable.
+     */
+    get lastUnreachableTime() {
+        return this._lastUnreachableTime;
+    }
+    // eslint-disable-next-line jsdoc/require-returns
+    /** Whether SBAS differential correction data have been downloaded from this satellite. */
+    get areDiffCorrectionsDownloaded() {
+        return this._areDiffCorrectionsDownloaded;
     }
     /**
      * Computes the current satellite positions given the loaded ephemeris data.
@@ -20843,34 +21883,100 @@ class GPSSatellite {
     static calcHorizonAngle(altitude) {
         return Math.acos(6378100 / (6378100 + Math.max(altitude, 0)));
     }
+/**
+     * Checks whether this satellite's cached ephemeris data is valid at a given simulation time.
+     * @param simTime The simulation time at which to check for ephemeris validity, as a Javascript timestamp.
+     * @returns Whether this satellite's cached ephemeris data is valid at the specified simulation time.
+     */
+    isCachedEphemerisValid(simTime) {
+        return this._lastEphemerisTime !== undefined && Math.abs(simTime - this._lastEphemerisTime) < this.timingOptions.ephemerisExpireTime;
+    }
+    /**
+     * Erases this satellite's cached ephemeris data.
+     */
+    eraseCachedEphemeris() {
+        this._lastEphemerisTime = undefined;
+    }
+    /**
+     * Sets whether this satellite is being tracked by a receiver channel.
+     * @param tracked Whether this satellite is being tracked by a receiver channel.
+     */
+    setTracked(tracked) {
+        if (this.isTracked === tracked) {
+            return;
+        }
+        this.isTracked = tracked;
+        this.timeSpentAcquiring = undefined;
+        this.timeToAcquire = undefined;
+        this.timeToDownloadEphemeris = undefined;
+        this._areDiffCorrectionsDownloaded = false;
+        this.timeToDownloadCorrections = undefined;
+        if (tracked || this.state.get() !== GPSSatelliteState.Unreachable) {
+            this.state.set(GPSSatelliteState.None);
+        }
+    }
     /**
      * Updates the state of the satellite.
-     * @param deltaTime The amount of sim time that has passed, in milliseconds.
-     * @param applyDiffCorrections Whether or not to apply differential corrections to this GPS satellite.
+     * @param simTime The current simulation time, as a Javascript timestamp.
+     * @param deltaTime The amount of sim time that has elapsed since the last update, in milliseconds.
+     * @param distanceFromLastKnownPos The distance, in great-arc radians, from the airplane's current actual position to
+     * its last known position.
      * @param forceAcquireAndUse Whether to force this satellite to the highest possible use state
-     * ({@link GPSSatelliteState.Acquired} if this is an SBAS satellite or {@link GPSSatelliteState.InUse}/
-     * {@link GPSSatelliteState.InUseDiffApplied} if this is a GPS satellite) if signal strength is sufficient.
-     * @returns True if the satellite state changed, false otherwise.
+     * ({@link GPSSatelliteState.DataCollected}) if signal strength is sufficient.
+     * @returns Whether this satellite's state changed as a result of the update.
      */
-    updateState(deltaTime, applyDiffCorrections, forceAcquireAndUse) {
-        const reachable = this.signalStrength.get() > 0.05;
-        if (this.stateChangeTimeRemaining >= 0) {
-            this.stateChangeTimeRemaining -= deltaTime;
+    updateState(simTime, deltaTime, distanceFromLastKnownPos, forceAcquireAndUse) {
+        const stateChanged = this.isTracked
+            ? this.updateStateTracked(simTime, deltaTime, distanceFromLastKnownPos, forceAcquireAndUse)
+            : this.updateStateUntracked(simTime);
+        switch (this.state.get()) {
+            case GPSSatelliteState.Unreachable:
+                if (this.isTracked) {
+                    this._lastUnreachableTime = simTime;
+                }
+                break;
+            case GPSSatelliteState.DataCollected:
+            case GPSSatelliteState.InUse:
+            case GPSSatelliteState.InUseDiffApplied:
+                this._lastEphemerisTime = simTime;
+                break;
         }
-        if (forceAcquireAndUse) {
-            this.isApplyingDiffCorrections = applyDiffCorrections;
-            const state = this.state.get();
+        return stateChanged;
+    }
+    /**
+     * Updates the state of the satellite while it is being tracked.
+     * @param simTime The current simulation time, as a Javascript timestamp.
+     * @param deltaTime The amount of sim time that has elapsed since the last update, in milliseconds.
+     * @param distanceFromLastKnownPos The distance, in great-arc radians, from the airplane's current actual position to
+     * its last known position.
+     * @param forceAcquireAndUse Whether to force this satellite to the highest possible use state
+     * ({@link GPSSatelliteState.DataCollected}) if signal strength is sufficient.
+     * @returns Whether this satellite's state changed as a result of the update.
+     */
+    updateStateTracked(simTime, deltaTime, distanceFromLastKnownPos, forceAcquireAndUse) {
+        const reachable = this.signalStrength.get() > 0.05;
+                if (forceAcquireAndUse) {
+                        const state = this.state.get();
             if (reachable) {
-                const targetState = this.sbasGroup === undefined
-                    ? applyDiffCorrections ? GPSSatelliteState.InUseDiffApplied : GPSSatelliteState.InUse
-                    : GPSSatelliteState.Acquired;
-                if (state !== targetState) {
-                    this.state.set(targetState);
+                if (this.sbasGroup !== undefined) {
+                    this._areDiffCorrectionsDownloaded = true;
+                    this.timeToDownloadCorrections = undefined;
+                }
+                if (state !== GPSSatelliteState.DataCollected) {
+                    this.timeSpentAcquiring = undefined;
+                    this.timeToAcquire = undefined;
+                    this.timeToDownloadEphemeris = undefined;
+                    this.state.set(GPSSatelliteState.DataCollected);
                     return true;
                 }
             }
             else {
                 if (state !== GPSSatelliteState.Unreachable) {
+                    this.timeSpentAcquiring = undefined;
+                    this.timeToAcquire = undefined;
+                    this.timeToDownloadEphemeris = undefined;
+                    this._areDiffCorrectionsDownloaded = false;
+                    this.timeToDownloadCorrections = undefined;
                     this.state.set(GPSSatelliteState.Unreachable);
                     return true;
                 }
@@ -20879,70 +21985,104 @@ class GPSSatellite {
         else {
             switch (this.state.get()) {
                 case GPSSatelliteState.None:
+                    if (this.timeSpentAcquiring === undefined) {
+                        this.timeSpentAcquiring = 0;
+                    }
+                    this.timeSpentAcquiring += deltaTime;
                     if (reachable) {
+                    if (this.timeToAcquire === undefined) {
+                            this.timeToAcquire = distanceFromLastKnownPos < 5.80734e-4 /* 2 nautical miles */ && this.isCachedEphemerisValid(simTime)
+                                ? this.timingOptions.acquisitionTimeWithEphemeris + (Math.random() - 0.5) * this.timingOptions.acquisitionTimeRangeWithEphemeris
+                                : this.timingOptions.acquisitionTime + (Math.random() - 0.5) * this.timingOptions.acquisitionTimeRange;
+                        }
+                        this.timeToAcquire -= deltaTime;
+                        if (this.timeToAcquire <= 0) {
+                            this.timeSpentAcquiring = undefined;
+                            this.timeToAcquire = undefined;
+                            // If we have valid cached ephemeris data for this satellite, then we can use the cached data for
+                            // calculating position solutions immediately instead of having to wait to download new ephemeris data.
+                            if (this.isCachedEphemerisValid(simTime)) {
+                                this.state.set(GPSSatelliteState.DataCollected);
+                            }
+                            else {
                         this.state.set(GPSSatelliteState.Acquired);
-                        this.stateChangeTimeRemaining = this.stateChangeTime;
+                        }
                         return true;
                     }
+}
                     else {
+                        this.timeToAcquire = undefined;
+                        if (this.timeSpentAcquiring >= this.timingOptions.acquisitionTimeout) {
+                            this.timeSpentAcquiring = undefined;
                         this.state.set(GPSSatelliteState.Unreachable);
-                        this.stateChangeTimeRemaining = this.stateChangeTime;
-                        return true;
+                                                return true;
+                        }
                     }
+                    break;
                 case GPSSatelliteState.Unreachable:
-                    if (reachable) {
-                        this.state.set(GPSSatelliteState.Acquired);
-                        this.stateChangeTimeRemaining = this.stateChangeTime;
-                        return true;
+                    if (this._lastUnreachableTime === undefined) {
+                        this._lastUnreachableTime = simTime;
+                    }
+                    else if (Math.abs(simTime - this._lastUnreachableTime) >= this.timingOptions.unreachableExpireTime) {
+                        this._lastUnreachableTime = undefined;
+                        this.state.set(GPSSatelliteState.None);
+                                                return true;
                     }
                     break;
                 case GPSSatelliteState.Acquired:
                     if (!reachable) {
-                        this.state.set(GPSSatelliteState.Unreachable);
+                        this.timeToDownloadEphemeris = undefined;
+                        this._areDiffCorrectionsDownloaded = false;
+                        this.timeToDownloadCorrections = undefined;
+                        this.state.set(GPSSatelliteState.None);
                         return true;
                     }
-                    else if (this.stateChangeTimeRemaining <= 0 && this.sbasGroup === undefined) {
+                    else {
+                        if (this.timeToDownloadEphemeris === undefined) {
+                            this.timeToDownloadEphemeris = this.sbasGroup === undefined
+                                ? this.timingOptions.ephemerisDownloadTime
+                                : this.timingOptions.sbasEphemerisDownloadTime + (Math.random() - 0.5) * this.timingOptions.sbasEphemerisDownloadTimeRange;
+                        }
+                        this.timeToDownloadEphemeris -= deltaTime;
+                        this.updateSbasCorrectionsDownload(deltaTime);
+                        if (this.timeToDownloadEphemeris <= 0) {
+                            this.timeToDownloadEphemeris = undefined;
                         this.state.set(GPSSatelliteState.DataCollected);
-                        this.stateChangeTimeRemaining = this.stateChangeTime;
-                        return true;
+                                                return true;
+                        }
                     }
                     break;
                 case GPSSatelliteState.DataCollected:
                     if (!reachable) {
-                        this.state.set(GPSSatelliteState.Unreachable);
+                        this._areDiffCorrectionsDownloaded = false;
+                        this.timeToDownloadCorrections = undefined;
+                        this.state.set(GPSSatelliteState.None);
                         return true;
                     }
-                    else if (this.stateChangeTimeRemaining <= 0) {
-                        this.state.set(GPSSatelliteState.InUse);
-                        this.stateChangeTimeRemaining = this.stateChangeTime;
-                        return true;
+                    else {
+                        this.updateSbasCorrectionsDownload(deltaTime);
                     }
                     break;
                 case GPSSatelliteState.InUse:
                     if (!reachable) {
-                        this.state.set(GPSSatelliteState.Unreachable);
+                        this._areDiffCorrectionsDownloaded = false;
+                        this.timeToDownloadCorrections = undefined;
+                        this.state.set(GPSSatelliteState.None);
                         return true;
                     }
-                    else if (applyDiffCorrections) {
-                        if (this.isApplyingDiffCorrections && this.stateChangeTimeRemaining <= 0) {
-                            this.state.set(GPSSatelliteState.InUseDiffApplied);
-                            return true;
-                        }
-                        else if (!this.isApplyingDiffCorrections) {
-                            this.isApplyingDiffCorrections = true;
-                            this.stateChangeTimeRemaining = this.stateChangeTime;
-                        }
+                    else {
+                        this.updateSbasCorrectionsDownload(deltaTime);
                     }
                     break;
                 case GPSSatelliteState.InUseDiffApplied:
                     if (!reachable) {
-                        this.state.set(GPSSatelliteState.Unreachable);
+                        this._areDiffCorrectionsDownloaded = false;
+                        this.timeToDownloadCorrections = undefined;
+                        this.state.set(GPSSatelliteState.None);
                         return true;
                     }
-                    else if (!applyDiffCorrections) {
-                        this.isApplyingDiffCorrections = false;
-                        this.state.set(GPSSatelliteState.InUse);
-                        return true;
+                    else {
+                        this.updateSbasCorrectionsDownload(deltaTime);
                     }
                     break;
             }
@@ -20950,13 +22090,67 @@ class GPSSatellite {
         return false;
     }
     /**
-     * Forces an update of this satellite's state to a specific value.
-     * @param state The state to which to update this satellite.
-     * @returns Whether the satellite's state was changed as a result of the forced update.
+* Updates the download state of SBAS differential corrections from this satellite.
+     * @param deltaTime The amount of sim time that has elapsed since the last update, in milliseconds.
      */
-    forceUpdateState(state) {
-        this.stateChangeTimeRemaining = 0;
-        this.isApplyingDiffCorrections = state === GPSSatelliteState.InUseDiffApplied;
+    updateSbasCorrectionsDownload(deltaTime) {
+        if (this.sbasGroup === undefined || this._areDiffCorrectionsDownloaded) {
+            return;
+        }
+        if (this.timeToDownloadCorrections === undefined) {
+            this.timeToDownloadCorrections = this.timingOptions.sbasCorrectionDownloadTime + (Math.random() - 0.5) * this.timingOptions.sbasCorrectionDownloadTimeRange;
+        }
+        this.timeToDownloadCorrections -= deltaTime;
+        if (this.timeToDownloadCorrections <= 0) {
+            this._areDiffCorrectionsDownloaded = true;
+            this.timeToDownloadCorrections = undefined;
+        }
+    }
+    /**
+     * Updates the state of the satellite while it is not being tracked.
+     * @param simTime The current simulation time, as a Javascript timestamp.
+     * @returns Whether this satellite's state changed as a result of the update.
+     */
+    updateStateUntracked(simTime) {
+        if (this.state.get() === GPSSatelliteState.Unreachable) {
+            if (this._lastUnreachableTime === undefined) {
+                this._lastUnreachableTime = simTime;
+            }
+            else if (Math.abs(simTime - this._lastUnreachableTime) >= this.timingOptions.unreachableExpireTime) {
+                this._lastUnreachableTime = undefined;
+                this.state.set(GPSSatelliteState.None);
+                return true;
+            }
+        }
+        return false;
+    }
+    /**
+     * Forces an update of this satellite's state to a specific value.
+     * @param simTime The current simulation time, as a Javascript timestamp.
+     * @param state The state to which to update this satellite.
+     * @returns Whether this satellite's state changed as a result of the update.
+     */
+    forceUpdateState(simTime, state) {
+        switch (state) {
+            case GPSSatelliteState.Unreachable:
+                this.timeSpentAcquiring = undefined;
+                this.timeToAcquire = undefined;
+                if (this.isTracked) {
+                    this._lastUnreachableTime = simTime;
+                }
+            // fallthrough
+            case GPSSatelliteState.None:
+                this.timeToDownloadEphemeris = undefined;
+                this._areDiffCorrectionsDownloaded = false;
+                this.timeToDownloadCorrections = undefined;
+                break;
+            case GPSSatelliteState.DataCollected:
+            case GPSSatelliteState.InUse:
+            case GPSSatelliteState.InUseDiffApplied:
+                this.timeToDownloadEphemeris = undefined;
+                this._lastEphemerisTime = simTime;
+                break;
+        }
         if (this.state.get() !== state) {
             this.state.set(state);
             return true;
@@ -20965,53 +22159,52 @@ class GPSSatellite {
             return false;
         }
     }
+/**
+ * Updates whether this satellite is being used to calculate a position solution.
+     * @param inUse Whether the satellite is being used to calculate a position solution.
+     * @returns Whether this satellite's state changed as a result of the update.
+     */
+    updateInUse(inUse) {
+        if (inUse) {
+            if (this.state.get() === GPSSatelliteState.DataCollected) {
+                this.state.set(GPSSatelliteState.InUse);
+                return true;
+            }
+        }
+        else {
+            switch (this.state.get()) {
+                case GPSSatelliteState.InUse:
+                case GPSSatelliteState.InUseDiffApplied:
+                    this.state.set(GPSSatelliteState.DataCollected);
+                    return true;
+            }
+        }
+        return false;
+    }
+    /**
+     * Updates whether differential corrections are applied to this satellite's ranging data when they are used to
+     * calculate a position solution.
+     * @param apply Whether differential corrections are applied.
+     * @returns Whether this satellite's state changed as a result of the update.
+     */
+    updateDiffCorrectionsApplied(apply) {
+        switch (this.state.get()) {
+            case GPSSatelliteState.InUse:
+                if (apply) {
+                    this.state.set(GPSSatelliteState.InUseDiffApplied);
+                    return true;
+                }
+                break;
+            case GPSSatelliteState.InUseDiffApplied:
+                if (!apply) {
+                    this.state.set(GPSSatelliteState.InUse);
+                    return true;
+                }
+                break;
+        }
+        return false;
+    }
 }
-/**
- * Possible state on GPS satellites.
- */
-var GPSSatelliteState;
-(function (GPSSatelliteState) {
-    /** There is no current valid state. */
-    GPSSatelliteState["None"] = "None";
-    /** The satellite is out of view and cannot be reached. */
-    GPSSatelliteState["Unreachable"] = "Unreachable";
-    /** The satellite has been found and data is being downloaded. */
-    GPSSatelliteState["Acquired"] = "Acquired";
-    /** The satellite is faulty. */
-    GPSSatelliteState["Faulty"] = "Faulty";
-    /** The satellite has been found, data is downloaded, but is not presently used in the GPS solution. */
-    GPSSatelliteState["DataCollected"] = "DataCollected";
-    /** The satellite is being active used in the GPS solution. */
-    GPSSatelliteState["InUse"] = "InUse";
-    /** The satellite is being active used in the GPS solution and SBAS differential corrections are being applied. */
-    GPSSatelliteState["InUseDiffApplied"] = "InUseDiffApplied";
-})(GPSSatelliteState || (GPSSatelliteState = {}));
-/**
- * Possible {@link GPSSatComputer} states.
- */
-var GPSSystemState;
-(function (GPSSystemState) {
-    /** The GPS receiver is trying to locate satellites. */
-    GPSSystemState["Searching"] = "Searching";
-    /** The GPS receiver has found satellites and is acquiring a solution. */
-    GPSSystemState["Acquiring"] = "Acquiring";
-    /** A 3D solution has been acquired. */
-    GPSSystemState["SolutionAcquired"] = "SolutionAcquired";
-    /** A 3D solution using differential computations has been acquired. */
-    GPSSystemState["DiffSolutionAcquired"] = "DiffSolutionAcquired";
-})(GPSSystemState || (GPSSystemState = {}));
-/**
- * Possible SBAS connection states.
- */
-var GPSSystemSBASState;
-(function (GPSSystemSBASState) {
-    /** SBAS is disabled. */
-    GPSSystemSBASState["Disabled"] = "Disabled";
-    /** SBAS is enabled but not receiving differential corrections. */
-    GPSSystemSBASState["Inactive"] = "Inactive";
-    /** SBAS is enabled and is receiving differential corrections. */
-    GPSSystemSBASState["Active"] = "Active";
-})(GPSSystemSBASState || (GPSSystemSBASState = {}));
 
 /// <reference types="@microsoft/msfs-types/pages/vcockpit/instruments/shared/baseinstrument" />
 /**
@@ -21951,7 +23144,8 @@ var FSComponent;
         'rect': true,
         'stop': true,
         'svg': true,
-        'text': true
+        'text': true,
+        'tspan': true,
     };
     /**
      * A fragment of existing elements with no specific root.
@@ -23946,6 +25140,609 @@ class LayerEntry {
 }
 
 /**
+ * An abstract implementation of {@link CssTransform}
+ */
+class AbstractCssTransform {
+    /**
+     * Constructor.
+     * @param initialParams The transform's initial parameters.
+     */
+    constructor(initialParams) {
+        this.params = new Float64Array(initialParams);
+        this.cachedParams = new Float64Array(initialParams);
+    }
+    /** @inheritdoc */
+    resolve() {
+        if (this.stringValue !== undefined && VecNMath.equals(this.params, this.cachedParams)) {
+            return this.stringValue;
+        }
+        VecNMath.copy(this.params, this.cachedParams);
+        this.stringValue = this.buildString(this.params);
+        return this.stringValue;
+    }
+}
+/**
+ * A CSS `matrix` transform.
+ */
+class CssMatrixTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `matrix` transform, initialized to the identity transformation.
+     */
+    constructor() {
+        super(CssMatrixTransform.DEFAULT_PARAMS);
+    }
+    // eslint-disable-next-line jsdoc/require-jsdoc
+    set(arg1, skewY, skewX, scaleY, translateX, translateY) {
+        let scaleX;
+        if (typeof arg1 === 'number') {
+            scaleX = arg1;
+        }
+        else {
+            [scaleX, skewX, skewY, scaleY, translateX, translateY] = arg1.getParameters();
+        }
+        this.params[0] = scaleX;
+        this.params[1] = skewY;
+        this.params[2] = skewX;
+        this.params[3] = scaleY;
+        this.params[4] = translateX;
+        this.params[5] = translateY;
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `matrix(${params.join(', ')})`;
+    }
+}
+CssMatrixTransform.DEFAULT_PARAMS = [1, 0, 0, 1, 0, 0];
+/**
+ * A CSS `rotate` transform.
+ */
+class CssRotateTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `rotate` transform, initialized to zero rotation.
+     * @param unit The angle unit to use for this transform.
+     */
+    constructor(unit) {
+        super(CssRotateTransform.DEFAULT_PARAMS);
+        this.unit = unit;
+    }
+    /**
+     * Sets this transform's rotation angle.
+     * @param angle The angle to set.
+     * @param precision The precision with which to set the angle. A value of `0` denotes infinite precision. Defaults
+     * to `0`.
+     */
+    set(angle, precision = 0) {
+        this.params[0] = precision === 0 ? angle : MathUtils.round(angle, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `rotate(${params[0]}${this.unit})`;
+    }
+}
+CssRotateTransform.DEFAULT_PARAMS = [0];
+/**
+ * A CSS `rotate3d` transform.
+ */
+class CssRotate3dTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
+     * @param unit The angle unit to use for this transform.
+     */
+    constructor(unit) {
+        super(CssRotate3dTransform.DEFAULT_PARAMS);
+        this.unit = unit;
+    }
+    /**
+     * Sets this transform's rotation.
+     * @param x The x component of the rotation axis vector.
+     * @param y The y component of the rotation axis vector.
+     * @param z The z component of the rotation axis vector.
+     * @param angle The rotation angle to set.
+     * @param precision The precision with which to set the angle. A value of `0` denotes infinite precision. Defaults
+     * to `0`.
+     */
+    set(x, y, z, angle, precision = 0) {
+        this.params[0] = x;
+        this.params[1] = y;
+        this.params[2] = z;
+        this.params[3] = precision === 0 ? angle : MathUtils.round(angle, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `rotate3d(${params[0]}, ${params[1]}, ${params[2]}, ${params[3]}${this.unit})`;
+    }
+}
+CssRotate3dTransform.DEFAULT_PARAMS = [0, 0, 1, 0];
+/**
+ * A CSS `translateX` transform.
+ */
+class CssTranslateXTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `translateX` transform, initialized to zero translation.
+     * @param unit The unit to use for this transform.
+     */
+    constructor(unit) {
+        super(CssTranslateXTransform.DEFAULT_PARAMS);
+        this.unit = unit;
+    }
+    /**
+     * Sets this transform's translation.
+     * @param x The translation to set.
+     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     */
+    set(x, precision = 0) {
+        this.params[0] = precision === 0 ? x : MathUtils.round(x, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `translateX(${params[0]}${this.unit})`;
+    }
+}
+CssTranslateXTransform.DEFAULT_PARAMS = [0];
+/**
+ * A CSS `translateY` transform.
+ */
+class CssTranslateYTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `translateY` transform, initialized to zero translation.
+     * @param unit The unit to use for this transform.
+     */
+    constructor(unit) {
+        super(CssTranslateYTransform.DEFAULT_PARAMS);
+        this.unit = unit;
+    }
+    /**
+     * Sets this transform's translation.
+     * @param y The translation to set.
+     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     */
+    set(y, precision = 0) {
+        this.params[0] = precision === 0 ? y : MathUtils.round(y, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `translateY(${params[0]}${this.unit})`;
+    }
+}
+CssTranslateYTransform.DEFAULT_PARAMS = [0];
+/**
+ * A CSS `translateZ` transform.
+ */
+class CssTranslateZTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `translateZ` transform, initialized to zero translation.
+     * @param unit The unit to use for this transform.
+     */
+    constructor(unit) {
+        super(CssTranslateZTransform.DEFAULT_PARAMS);
+        this.unit = unit;
+    }
+    /**
+     * Sets this transform's translation.
+     * @param z The translation to set.
+     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     */
+    set(z, precision = 0) {
+        this.params[0] = precision === 0 ? z : MathUtils.round(z, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `translateZ(${params[0]}${this.unit})`;
+    }
+}
+CssTranslateZTransform.DEFAULT_PARAMS = [0];
+/**
+ * A CSS `translate` transform.
+ */
+class CssTranslateTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `translate` transform, initialized to zero translation.
+     * @param unitX The unit to use for this transform's x translation.
+     * @param unitY The unit to use for this transform's y translation. Defaults to the same unit as the x translation.
+     */
+    constructor(unitX, unitY = unitX) {
+        super(CssTranslateTransform.DEFAULT_PARAMS);
+        this.unitX = unitX;
+        this.unitY = unitY;
+    }
+    /**
+     * Sets this transform's translation.
+     * @param x The x translation to set.
+     * @param y The y translation to set.
+     * @param precisionX The precision with which to set the x translation. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     * @param precisionY The precision with which to set the y translation. A value of `0` denotes infinite precision.
+     * Defaults to the x translation precision value.
+     */
+    set(x, y, precisionX = 0, precisionY = precisionX) {
+        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
+        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `translate(${params[0]}${this.unitX}, ${params[1]}${this.unitY})`;
+    }
+}
+CssTranslateTransform.DEFAULT_PARAMS = [0, 0];
+/**
+ * A CSS `translate3d` transform.
+ */
+class CssTranslate3dTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `translate3d` transform, initialized to zero translation.
+     * @param unitX The unit to use for this transform's x translation.
+     * @param unitY The unit to use for this transform's y translation. Defaults to the same unit as the x translation.
+     * @param unitZ The unit to use for this transform's z translation. Defaults to the same unit as the x translation.
+     */
+    constructor(unitX, unitY = unitX, unitZ = unitX) {
+        super(CssTranslate3dTransform.DEFAULT_PARAMS);
+        this.unitX = unitX;
+        this.unitY = unitY;
+        this.unitZ = unitZ;
+    }
+    /**
+     * Sets this transform's translation.
+     * @param x The x translation to set.
+     * @param y The y translation to set.
+     * @param z The z translation to set.
+     * @param precisionX The precision with which to set the x translation. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     * @param precisionY The precision with which to set the y translation. A value of `0` denotes infinite precision.
+     * Defaults to the x translation precision value.
+     * @param precisionZ The precision with which to set the z translation. A value of `0` denotes infinite precision.
+     * Defaults to the x translation precision value.
+     */
+    set(x, y, z, precisionX = 0, precisionY = precisionX, precisionZ = precisionX) {
+        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
+        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
+        this.params[2] = precisionZ === 0 ? z : MathUtils.round(z, precisionZ);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `translate3d(${params[0]}${this.unitX}, ${params[1]}${this.unitY}, ${params[2]}${this.unitZ})`;
+    }
+}
+CssTranslate3dTransform.DEFAULT_PARAMS = [0, 0, 0];
+/**
+ * A CSS `scaleX` transform.
+ */
+class CssScaleXTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `scaleX` transform, initialized to the identity scaling.
+     */
+    constructor() {
+        super(CssScaleXTransform.DEFAULT_PARAMS);
+    }
+    /**
+     * Sets this transform's scaling.
+     * @param x The scaling to set.
+     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
+     * to `0`.
+     */
+    set(x, precision = 0) {
+        this.params[0] = precision === 0 ? x : MathUtils.round(x, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `scaleX(${params[0]})`;
+    }
+}
+CssScaleXTransform.DEFAULT_PARAMS = [1];
+/**
+ * A CSS `scaleY` transform.
+ */
+class CssScaleYTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `scaleY` transform, initialized to the identity scaling.
+     */
+    constructor() {
+        super(CssScaleYTransform.DEFAULT_PARAMS);
+    }
+    /**
+     * Sets this transform's scaling.
+     * @param y The scaling to set.
+     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
+     * to `0`.
+     */
+    set(y, precision = 0) {
+        this.params[0] = precision === 0 ? y : MathUtils.round(y, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `scaleY(${params[0]})`;
+    }
+}
+CssScaleYTransform.DEFAULT_PARAMS = [1];
+/**
+ * A CSS `scaleZ` transform.
+ */
+class CssScaleZTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
+     */
+    constructor() {
+        super(CssScaleZTransform.DEFAULT_PARAMS);
+    }
+    /**
+     * Sets this transform's scaling.
+     * @param z The scaling to set.
+     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
+     * to `0`.
+     */
+    set(z, precision = 0) {
+        this.params[0] = precision === 0 ? z : MathUtils.round(z, precision);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `scaleZ(${params[0]})`;
+    }
+}
+CssScaleZTransform.DEFAULT_PARAMS = [1];
+/**
+ * A CSS `scale` transform.
+ */
+class CssScaleTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `scale` transform, initialized to the identity scaling.
+     */
+    constructor() {
+        super(CssScaleTransform.DEFAULT_PARAMS);
+    }
+    /**
+     * Sets this transform's scaling.
+     * @param x The x scaling to set.
+     * @param y The y scaling to set.
+     * @param precisionX The precision with which to set the x scaling. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     * @param precisionY The precision with which to set the y scaling. A value of `0` denotes infinite precision.
+     * Defaults to the x scaling precision value.
+     */
+    set(x, y, precisionX = 0, precisionY = precisionX) {
+        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
+        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `scale(${params[0]}, ${params[1]})`;
+    }
+}
+CssScaleTransform.DEFAULT_PARAMS = [1, 1];
+/**
+ * A CSS `scale3d` transform.
+ */
+class CssScale3dTransform extends AbstractCssTransform {
+    /**
+     * Creates a new instance of a CSS `scale3d` transform, initialized to the identity scaling.
+     */
+    constructor() {
+        super(CssScale3dTransform.DEFAULT_PARAMS);
+    }
+    /**
+     * Sets this transform's scaling.
+     * @param x The x scaling to set.
+     * @param y The y scaling to set.
+     * @param z The z scaling to set.
+     * @param precisionX The precision with which to set the x scaling. A value of `0` denotes infinite precision.
+     * Defaults to `0`.
+     * @param precisionY The precision with which to set the y scaling. A value of `0` denotes infinite precision.
+     * Defaults to the x scaling precision value.
+     * @param precisionZ The precision with which to set the z scaling. A value of `0` denotes infinite precision.
+     * Defaults to the x scaling precision value.
+     */
+    set(x, y, z, precisionX = 0, precisionY = precisionX, precisionZ = precisionX) {
+        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
+        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
+        this.params[2] = precisionZ === 0 ? z : MathUtils.round(y, precisionZ);
+    }
+    /** @inheritdoc */
+    buildString(params) {
+        return `scale3d(${params[0]}, ${params[1]}, ${params[2]})`;
+    }
+}
+CssScale3dTransform.DEFAULT_PARAMS = [1, 1, 1];
+/**
+ * A concatenated chain of CSS transforms.
+ */
+class CssTransformChain {
+    /**
+     * Creates a new chain of CSS transforms.
+     * @param transforms The individual child transforms that will constitute the new transform chain. The order of
+     * the children passed to the constructor determines the order of concatenation. Concatenation follows the standard
+     * CSS transform convention: for a concatenation of transforms `[A, B, C]`, the resulting transformation is
+     * equivalent to the one produced by multiplying the transformation matrices in the order `(A * B) * C`.
+     */
+    constructor(...transforms) {
+        this.stringValues = [];
+        this.transforms = transforms;
+    }
+    /**
+     * Gets one of this chain's child transforms.
+     * @param index The index of the child to get.
+     * @returns The child transform at the specified index in this chain.
+     * @throws RangeError if `index` is out of bounds.
+     */
+    getChild(index) {
+        if (index < 0 || index >= this.transforms.length) {
+            throw new RangeError();
+        }
+        return this.transforms[index];
+    }
+    /** @inheritdoc */
+    resolve() {
+        let needRebuildString = false;
+        for (let i = 0; i < this.transforms.length; i++) {
+            const stringValue = this.transforms[i].resolve();
+            if (this.stringValues[i] !== stringValue) {
+                this.stringValues[i] = stringValue;
+                needRebuildString = true;
+            }
+        }
+        if (needRebuildString || this.chainedStringValue === undefined) {
+            this.chainedStringValue = this.stringValues.join(' ');
+        }
+        return this.chainedStringValue;
+    }
+}
+/**
+ * A subscribable subject whose value is a CSS transform string resolved from a {@link CssTransform}.
+ */
+class CssTransformSubject extends AbstractSubscribable {
+    /**
+     * Constructor.
+     * @param transform The new subject's CSS transform.
+     */
+    constructor(transform) {
+        super();
+        this._transform = transform;
+        this.stringValue = transform.resolve();
+        this.transform = transform;
+    }
+    /** @inheritdoc */
+    get() {
+        return this.stringValue;
+    }
+    /**
+     * Resolves this subject's CSS transform to a CSS transform string, and sets this subject's value to the resolved
+     * string. If this changes this subject's value, subscribers will be notified.
+     */
+    resolve() {
+        const stringValue = this._transform.resolve();
+        if (stringValue !== this.stringValue) {
+            this.stringValue = stringValue;
+            this.notify();
+        }
+    }
+    /**
+     * Creates a new instance of {@link CssTransformSubject} whose value is resolved from a CSS transform.
+     * @param transform A CSS transform.
+     * @returns A new instance of {@link CssTransformSubject} whose value is resolved from the specified CSS transform.
+     */
+    static create(transform) {
+        return new CssTransformSubject(transform);
+    }
+}
+/**
+ * A utility class for building CSS transforms.
+ */
+class CssTransformBuilder {
+    /**
+     * Creates a new instance of a CSS `matrix` transform, initialized to the identity transformation.
+     * @returns A new instance of a CSS `matrix` transform, initialized to the identity transformation.
+     */
+    static matrix() {
+        return new CssMatrixTransform();
+    }
+    /**
+     * Creates a new instance of a CSS `rotate` transform, initialized to zero rotation.
+     * @param unit The angle unit to use for the new transform.
+     * @returns A new instance of a CSS `rotate` transform, initialized to zero rotation.
+     */
+    static rotate(unit) {
+        return new CssRotateTransform(unit);
+    }
+    /**
+     * Creates a new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
+     * @param unit The angle unit to use for the new transform.
+     * @returns A new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
+     */
+    static rotate3d(unit) {
+        return new CssRotate3dTransform(unit);
+    }
+    /**
+     * Creates a new instance of a CSS `translateX` transform, initialized to zero translation.
+     * @param unit The unit to use for the new transform.
+     * @returns A new instance of a CSS `translateX` transform, initialized to zero translation.
+     */
+    static translateX(unit) {
+        return new CssTranslateXTransform(unit);
+    }
+    /**
+     * Creates a new instance of a CSS `translateY` transform, initialized to zero translation.
+     * @param unit The unit to use for the new transform.
+     * @returns A new instance of a CSS `translateY` transform, initialized to zero translation.
+     */
+    static translateY(unit) {
+        return new CssTranslateYTransform(unit);
+    }
+    /**
+     * Creates a new instance of a CSS `translateZ` transform, initialized to zero translation.
+     * @param unit The unit to use for the new transform.
+     * @returns A new instance of a CSS `translateZ` transform, initialized to zero translation.
+     */
+    static translateZ(unit) {
+        return new CssTranslateZTransform(unit);
+    }
+    /**
+     * Creates a new instance of a CSS `translate` transform, initialized to zero translation.
+     * @param unitX The unit to use for the new transform's x translation.
+     * @param unitY The unit to use for the new transform's y translation.
+     * @returns A new instance of a CSS `translate` transform, initialized to zero translation.
+     */
+    static translate(unitX, unitY) {
+        return new CssTranslateTransform(unitX, unitY);
+    }
+    /**
+     * Creates a new instance of a CSS `translate3d` transform, initialized to zero translation.
+     * @param unitX The unit to use for the new transform's x translation.
+     * @param unitY The unit to use for the new transform's y translation.
+     * @param unitZ The unit to use for the new transform's z translation.
+     * @returns A new instance of a CSS `translate3d` transform, initialized to zero translation.
+     */
+    static translate3d(unitX, unitY, unitZ) {
+        return new CssTranslate3dTransform(unitX, unitY, unitZ);
+    }
+    /**
+     * Creates a new instance of a CSS `scaleX` transform, initialized to the identity scaling.
+     * @returns A new instance of a CSS `scaleX` transform, initialized to the identity scaling.
+     */
+    static scaleX() {
+        return new CssScaleXTransform();
+    }
+    /**
+     * Creates a new instance of a CSS `scaleY` transform, initialized to the identity scaling.
+     * @returns A new instance of a CSS `scaleY` transform, initialized to the identity scaling.
+     */
+    static scaleY() {
+        return new CssScaleYTransform();
+    }
+    /**
+     * Creates a new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
+     * @returns A new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
+     */
+    static scaleZ() {
+        return new CssScaleZTransform();
+    }
+    /**
+     * Creates a new instance of a CSS `scale` transform, initialized to the identity scaling.
+     * @returns A new instance of a CSS `scale` transform, initialized to the identity scaling.
+     */
+    static scale() {
+        return new CssScaleTransform();
+    }
+    /**
+     * Creates a new instance of a CSS `scale3d` transform, initialized to the identity scaling.
+     * @returns A new instance of a CSS `scale3d` transform, initialized to the identity scaling.
+     */
+    static scale3d() {
+        return new CssScale3dTransform();
+    }
+    /**
+     * Concatenates zero or more CSS transformations.
+     * @param transforms The individual transforms to concatentate. The order of the transforms passed to the function
+     * determines the order of concatenation. Concatenation follows the standard CSS transform convention: for a
+     * concatenation of transforms `[A, B, C]`, the resulting transformation is equivalent to the one produced by
+     * multiplying the transformation matrices in the order `(A * B) * C`.
+     * @returns A new {@link CssTransformChain} object representing the concatenation of the specified transforms.
+     */
+    static concat(...transforms) {
+        return new CssTransformChain(...transforms);
+    }
+}
+
+/**
  * A path stream which does nothing on any input.
  */
 class NullPathStream {
@@ -24599,609 +26396,6 @@ AffineTransformPathStream.vec2Cache = [new Float64Array(2)];
 AffineTransformPathStream.transformCache = [new Transform2D()];
 
 /**
- * An abstract implementation of {@link CssTransform}
- */
-class AbstractCssTransform {
-    /**
-     * Constructor.
-     * @param initialParams The transform's initial parameters.
-     */
-    constructor(initialParams) {
-        this.params = new Float64Array(initialParams);
-        this.cachedParams = new Float64Array(initialParams);
-    }
-    /** @inheritdoc */
-    resolve() {
-        if (this.stringValue !== undefined && VecNMath.equals(this.params, this.cachedParams)) {
-            return this.stringValue;
-        }
-        VecNMath.copy(this.params, this.cachedParams);
-        this.stringValue = this.buildString(this.params);
-        return this.stringValue;
-    }
-}
-/**
- * A CSS `matrix` transform.
- */
-class CssMatrixTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `matrix` transform, initialized to the identity transformation.
-     */
-    constructor() {
-        super(CssMatrixTransform.DEFAULT_PARAMS);
-    }
-    // eslint-disable-next-line jsdoc/require-jsdoc
-    set(arg1, skewY, skewX, scaleY, translateX, translateY) {
-        let scaleX;
-        if (typeof arg1 === 'number') {
-            scaleX = arg1;
-        }
-        else {
-            [scaleX, skewX, skewY, scaleY, translateX, translateY] = arg1.getParameters();
-        }
-        this.params[0] = scaleX;
-        this.params[1] = skewY;
-        this.params[2] = skewX;
-        this.params[3] = scaleY;
-        this.params[4] = translateX;
-        this.params[5] = translateY;
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `matrix(${params.join(', ')})`;
-    }
-}
-CssMatrixTransform.DEFAULT_PARAMS = [1, 0, 0, 1, 0, 0];
-/**
- * A CSS `rotate` transform.
- */
-class CssRotateTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `rotate` transform, initialized to zero rotation.
-     * @param unit The angle unit to use for this transform.
-     */
-    constructor(unit) {
-        super(CssRotateTransform.DEFAULT_PARAMS);
-        this.unit = unit;
-    }
-    /**
-     * Sets this transform's rotation angle.
-     * @param angle The angle to set.
-     * @param precision The precision with which to set the angle. A value of `0` denotes infinite precision. Defaults
-     * to `0`.
-     */
-    set(angle, precision = 0) {
-        this.params[0] = precision === 0 ? angle : MathUtils.round(angle, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `rotate(${params[0]}${this.unit})`;
-    }
-}
-CssRotateTransform.DEFAULT_PARAMS = [0];
-/**
- * A CSS `rotate3d` transform.
- */
-class CssRotate3dTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
-     * @param unit The angle unit to use for this transform.
-     */
-    constructor(unit) {
-        super(CssRotate3dTransform.DEFAULT_PARAMS);
-        this.unit = unit;
-    }
-    /**
-     * Sets this transform's rotation.
-     * @param x The x component of the rotation axis vector.
-     * @param y The y component of the rotation axis vector.
-     * @param z The z component of the rotation axis vector.
-     * @param angle The rotation angle to set.
-     * @param precision The precision with which to set the angle. A value of `0` denotes infinite precision. Defaults
-     * to `0`.
-     */
-    set(x, y, z, angle, precision = 0) {
-        this.params[0] = x;
-        this.params[1] = y;
-        this.params[2] = z;
-        this.params[3] = precision === 0 ? angle : MathUtils.round(angle, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `rotate3d(${params[0]}, ${params[1]}, ${params[2]}, ${params[3]}${this.unit})`;
-    }
-}
-CssRotate3dTransform.DEFAULT_PARAMS = [0, 0, 1, 0];
-/**
- * A CSS `translateX` transform.
- */
-class CssTranslateXTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `translateX` transform, initialized to zero translation.
-     * @param unit The unit to use for this transform.
-     */
-    constructor(unit) {
-        super(CssTranslateXTransform.DEFAULT_PARAMS);
-        this.unit = unit;
-    }
-    /**
-     * Sets this transform's translation.
-     * @param x The translation to set.
-     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     */
-    set(x, precision = 0) {
-        this.params[0] = precision === 0 ? x : MathUtils.round(x, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `translateX(${params[0]}${this.unit})`;
-    }
-}
-CssTranslateXTransform.DEFAULT_PARAMS = [0];
-/**
- * A CSS `translateY` transform.
- */
-class CssTranslateYTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `translateY` transform, initialized to zero translation.
-     * @param unit The unit to use for this transform.
-     */
-    constructor(unit) {
-        super(CssTranslateYTransform.DEFAULT_PARAMS);
-        this.unit = unit;
-    }
-    /**
-     * Sets this transform's translation.
-     * @param y The translation to set.
-     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     */
-    set(y, precision = 0) {
-        this.params[0] = precision === 0 ? y : MathUtils.round(y, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `translateY(${params[0]}${this.unit})`;
-    }
-}
-CssTranslateYTransform.DEFAULT_PARAMS = [0];
-/**
- * A CSS `translateZ` transform.
- */
-class CssTranslateZTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `translateZ` transform, initialized to zero translation.
-     * @param unit The unit to use for this transform.
-     */
-    constructor(unit) {
-        super(CssTranslateZTransform.DEFAULT_PARAMS);
-        this.unit = unit;
-    }
-    /**
-     * Sets this transform's translation.
-     * @param z The translation to set.
-     * @param precision The precision with which to set the translation. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     */
-    set(z, precision = 0) {
-        this.params[0] = precision === 0 ? z : MathUtils.round(z, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `translateZ(${params[0]}${this.unit})`;
-    }
-}
-CssTranslateZTransform.DEFAULT_PARAMS = [0];
-/**
- * A CSS `translate` transform.
- */
-class CssTranslateTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `translate` transform, initialized to zero translation.
-     * @param unitX The unit to use for this transform's x translation.
-     * @param unitY The unit to use for this transform's y translation. Defaults to the same unit as the x translation.
-     */
-    constructor(unitX, unitY = unitX) {
-        super(CssTranslateTransform.DEFAULT_PARAMS);
-        this.unitX = unitX;
-        this.unitY = unitY;
-    }
-    /**
-     * Sets this transform's translation.
-     * @param x The x translation to set.
-     * @param y The y translation to set.
-     * @param precisionX The precision with which to set the x translation. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     * @param precisionY The precision with which to set the y translation. A value of `0` denotes infinite precision.
-     * Defaults to the x translation precision value.
-     */
-    set(x, y, precisionX = 0, precisionY = precisionX) {
-        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
-        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `translate(${params[0]}${this.unitX}, ${params[1]}${this.unitY})`;
-    }
-}
-CssTranslateTransform.DEFAULT_PARAMS = [0, 0];
-/**
- * A CSS `translate3d` transform.
- */
-class CssTranslate3dTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `translate3d` transform, initialized to zero translation.
-     * @param unitX The unit to use for this transform's x translation.
-     * @param unitY The unit to use for this transform's y translation. Defaults to the same unit as the x translation.
-     * @param unitZ The unit to use for this transform's z translation. Defaults to the same unit as the x translation.
-     */
-    constructor(unitX, unitY = unitX, unitZ = unitX) {
-        super(CssTranslate3dTransform.DEFAULT_PARAMS);
-        this.unitX = unitX;
-        this.unitY = unitY;
-        this.unitZ = unitZ;
-    }
-    /**
-     * Sets this transform's translation.
-     * @param x The x translation to set.
-     * @param y The y translation to set.
-     * @param z The z translation to set.
-     * @param precisionX The precision with which to set the x translation. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     * @param precisionY The precision with which to set the y translation. A value of `0` denotes infinite precision.
-     * Defaults to the x translation precision value.
-     * @param precisionZ The precision with which to set the z translation. A value of `0` denotes infinite precision.
-     * Defaults to the x translation precision value.
-     */
-    set(x, y, z, precisionX = 0, precisionY = precisionX, precisionZ = precisionX) {
-        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
-        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
-        this.params[2] = precisionZ === 0 ? z : MathUtils.round(z, precisionZ);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `translate3d(${params[0]}${this.unitX}, ${params[1]}${this.unitY}, ${params[2]}${this.unitZ})`;
-    }
-}
-CssTranslate3dTransform.DEFAULT_PARAMS = [0, 0, 0];
-/**
- * A CSS `scaleX` transform.
- */
-class CssScaleXTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `scaleX` transform, initialized to the identity scaling.
-     */
-    constructor() {
-        super(CssScaleXTransform.DEFAULT_PARAMS);
-    }
-    /**
-     * Sets this transform's scaling.
-     * @param x The scaling to set.
-     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
-     * to `0`.
-     */
-    set(x, precision = 0) {
-        this.params[0] = precision === 0 ? x : MathUtils.round(x, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `scaleX(${params[0]})`;
-    }
-}
-CssScaleXTransform.DEFAULT_PARAMS = [1];
-/**
- * A CSS `scaleY` transform.
- */
-class CssScaleYTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `scaleY` transform, initialized to the identity scaling.
-     */
-    constructor() {
-        super(CssScaleYTransform.DEFAULT_PARAMS);
-    }
-    /**
-     * Sets this transform's scaling.
-     * @param y The scaling to set.
-     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
-     * to `0`.
-     */
-    set(y, precision = 0) {
-        this.params[0] = precision === 0 ? y : MathUtils.round(y, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `scaleY(${params[0]})`;
-    }
-}
-CssScaleYTransform.DEFAULT_PARAMS = [1];
-/**
- * A CSS `scaleZ` transform.
- */
-class CssScaleZTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
-     */
-    constructor() {
-        super(CssScaleZTransform.DEFAULT_PARAMS);
-    }
-    /**
-     * Sets this transform's scaling.
-     * @param z The scaling to set.
-     * @param precision The precision with which to set the scaling. A value of `0` denotes infinite precision. Defaults
-     * to `0`.
-     */
-    set(z, precision = 0) {
-        this.params[0] = precision === 0 ? z : MathUtils.round(z, precision);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `scaleZ(${params[0]})`;
-    }
-}
-CssScaleZTransform.DEFAULT_PARAMS = [1];
-/**
- * A CSS `scale` transform.
- */
-class CssScaleTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `scale` transform, initialized to the identity scaling.
-     */
-    constructor() {
-        super(CssScaleTransform.DEFAULT_PARAMS);
-    }
-    /**
-     * Sets this transform's scaling.
-     * @param x The x scaling to set.
-     * @param y The y scaling to set.
-     * @param precisionX The precision with which to set the x scaling. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     * @param precisionY The precision with which to set the y scaling. A value of `0` denotes infinite precision.
-     * Defaults to the x scaling precision value.
-     */
-    set(x, y, precisionX = 0, precisionY = precisionX) {
-        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
-        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `scale(${params[0]}, ${params[1]})`;
-    }
-}
-CssScaleTransform.DEFAULT_PARAMS = [1, 1];
-/**
- * A CSS `scale3d` transform.
- */
-class CssScale3dTransform extends AbstractCssTransform {
-    /**
-     * Creates a new instance of a CSS `scale3d` transform, initialized to the identity scaling.
-     */
-    constructor() {
-        super(CssScale3dTransform.DEFAULT_PARAMS);
-    }
-    /**
-     * Sets this transform's scaling.
-     * @param x The x scaling to set.
-     * @param y The y scaling to set.
-     * @param z The z scaling to set.
-     * @param precisionX The precision with which to set the x scaling. A value of `0` denotes infinite precision.
-     * Defaults to `0`.
-     * @param precisionY The precision with which to set the y scaling. A value of `0` denotes infinite precision.
-     * Defaults to the x scaling precision value.
-     * @param precisionZ The precision with which to set the z scaling. A value of `0` denotes infinite precision.
-     * Defaults to the x scaling precision value.
-     */
-    set(x, y, z, precisionX = 0, precisionY = precisionX, precisionZ = precisionX) {
-        this.params[0] = precisionX === 0 ? x : MathUtils.round(x, precisionX);
-        this.params[1] = precisionY === 0 ? y : MathUtils.round(y, precisionY);
-        this.params[2] = precisionZ === 0 ? z : MathUtils.round(y, precisionZ);
-    }
-    /** @inheritdoc */
-    buildString(params) {
-        return `scale3d(${params[0]}, ${params[1]}, ${params[2]})`;
-    }
-}
-CssScale3dTransform.DEFAULT_PARAMS = [1, 1, 1];
-/**
- * A concatenated chain of CSS transforms.
- */
-class CssTransformChain {
-    /**
-     * Creates a new chain of CSS transforms.
-     * @param transforms The individual child transforms that will constitute the new transform chain. The order of
-     * the children passed to the constructor determines the order of concatenation. Concatenation follows the standard
-     * CSS transform convention: for a concatenation of transforms `[A, B, C]`, the resulting transformation is
-     * equivalent to the one produced by multiplying the transformation matrices in the order `(A * B) * C`.
-     */
-    constructor(...transforms) {
-        this.stringValues = [];
-        this.transforms = transforms;
-    }
-    /**
-     * Gets one of this chain's child transforms.
-     * @param index The index of the child to get.
-     * @returns The child transform at the specified index in this chain.
-     * @throws RangeError if `index` is out of bounds.
-     */
-    getChild(index) {
-        if (index < 0 || index >= this.transforms.length) {
-            throw new RangeError();
-        }
-        return this.transforms[index];
-    }
-    /** @inheritdoc */
-    resolve() {
-        let needRebuildString = false;
-        for (let i = 0; i < this.transforms.length; i++) {
-            const stringValue = this.transforms[i].resolve();
-            if (this.stringValues[i] !== stringValue) {
-                this.stringValues[i] = stringValue;
-                needRebuildString = true;
-            }
-        }
-        if (needRebuildString || this.chainedStringValue === undefined) {
-            this.chainedStringValue = this.stringValues.join(' ');
-        }
-        return this.chainedStringValue;
-    }
-}
-/**
- * A subscribable subject whose value is a CSS transform string resolved from a {@link CssTransform}.
- */
-class CssTransformSubject extends AbstractSubscribable {
-    /**
-     * Constructor.
-     * @param transform The new subject's CSS transform.
-     */
-    constructor(transform) {
-        super();
-        this._transform = transform;
-        this.stringValue = transform.resolve();
-        this.transform = transform;
-    }
-    /** @inheritdoc */
-    get() {
-        return this.stringValue;
-    }
-    /**
-     * Resolves this subject's CSS transform to a CSS transform string, and sets this subject's value to the resolved
-     * string. If this changes this subject's value, subscribers will be notified.
-     */
-    resolve() {
-        const stringValue = this._transform.resolve();
-        if (stringValue !== this.stringValue) {
-            this.stringValue = stringValue;
-            this.notify();
-        }
-    }
-    /**
-     * Creates a new instance of {@link CssTransformSubject} whose value is resolved from a CSS transform.
-     * @param transform A CSS transform.
-     * @returns A new instance of {@link CssTransformSubject} whose value is resolved from the specified CSS transform.
-     */
-    static create(transform) {
-        return new CssTransformSubject(transform);
-    }
-}
-/**
- * A utility class for building CSS transforms.
- */
-class CssTransformBuilder {
-    /**
-     * Creates a new instance of a CSS `matrix` transform, initialized to the identity transformation.
-     * @returns A new instance of a CSS `matrix` transform, initialized to the identity transformation.
-     */
-    static matrix() {
-        return new CssMatrixTransform();
-    }
-    /**
-     * Creates a new instance of a CSS `rotate` transform, initialized to zero rotation.
-     * @param unit The angle unit to use for the new transform.
-     * @returns A new instance of a CSS `rotate` transform, initialized to zero rotation.
-     */
-    static rotate(unit) {
-        return new CssRotateTransform(unit);
-    }
-    /**
-     * Creates a new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
-     * @param unit The angle unit to use for the new transform.
-     * @returns A new instance of a CSS `rotate3d` transform, initialized to zero rotation about the z axis.
-     */
-    static rotate3d(unit) {
-        return new CssRotate3dTransform(unit);
-    }
-    /**
-     * Creates a new instance of a CSS `translateX` transform, initialized to zero translation.
-     * @param unit The unit to use for the new transform.
-     * @returns A new instance of a CSS `translateX` transform, initialized to zero translation.
-     */
-    static translateX(unit) {
-        return new CssTranslateXTransform(unit);
-    }
-    /**
-     * Creates a new instance of a CSS `translateY` transform, initialized to zero translation.
-     * @param unit The unit to use for the new transform.
-     * @returns A new instance of a CSS `translateY` transform, initialized to zero translation.
-     */
-    static translateY(unit) {
-        return new CssTranslateYTransform(unit);
-    }
-    /**
-     * Creates a new instance of a CSS `translateZ` transform, initialized to zero translation.
-     * @param unit The unit to use for the new transform.
-     * @returns A new instance of a CSS `translateZ` transform, initialized to zero translation.
-     */
-    static translateZ(unit) {
-        return new CssTranslateZTransform(unit);
-    }
-    /**
-     * Creates a new instance of a CSS `translate` transform, initialized to zero translation.
-     * @param unitX The unit to use for the new transform's x translation.
-     * @param unitY The unit to use for the new transform's y translation.
-     * @returns A new instance of a CSS `translate` transform, initialized to zero translation.
-     */
-    static translate(unitX, unitY) {
-        return new CssTranslateTransform(unitX, unitY);
-    }
-    /**
-     * Creates a new instance of a CSS `translate3d` transform, initialized to zero translation.
-     * @param unitX The unit to use for the new transform's x translation.
-     * @param unitY The unit to use for the new transform's y translation.
-     * @param unitZ The unit to use for the new transform's z translation.
-     * @returns A new instance of a CSS `translate3d` transform, initialized to zero translation.
-     */
-    static translate3d(unitX, unitY, unitZ) {
-        return new CssTranslate3dTransform(unitX, unitY, unitZ);
-    }
-    /**
-     * Creates a new instance of a CSS `scaleX` transform, initialized to the identity scaling.
-     * @returns A new instance of a CSS `scaleX` transform, initialized to the identity scaling.
-     */
-    static scaleX() {
-        return new CssScaleXTransform();
-    }
-    /**
-     * Creates a new instance of a CSS `scaleY` transform, initialized to the identity scaling.
-     * @returns A new instance of a CSS `scaleY` transform, initialized to the identity scaling.
-     */
-    static scaleY() {
-        return new CssScaleYTransform();
-    }
-    /**
-     * Creates a new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
-     * @returns A new instance of a CSS `scaleZ` transform, initialized to the identity scaling.
-     */
-    static scaleZ() {
-        return new CssScaleZTransform();
-    }
-    /**
-     * Creates a new instance of a CSS `scale` transform, initialized to the identity scaling.
-     * @returns A new instance of a CSS `scale` transform, initialized to the identity scaling.
-     */
-    static scale() {
-        return new CssScaleTransform();
-    }
-    /**
-     * Creates a new instance of a CSS `scale3d` transform, initialized to the identity scaling.
-     * @returns A new instance of a CSS `scale3d` transform, initialized to the identity scaling.
-     */
-    static scale3d() {
-        return new CssScale3dTransform();
-    }
-    /**
-     * Concatenates zero or more CSS transformations.
-     * @param transforms The individual transforms to concatentate. The order of the transforms passed to the function
-     * determines the order of concatenation. Concatenation follows the standard CSS transform convention: for a
-     * concatenation of transforms `[A, B, C]`, the resulting transformation is equivalent to the one produced by
-     * multiplying the transformation matrices in the order `(A * B) * C`.
-     * @returns A new {@link CssTransformChain} object representing the concatenation of the specified transforms.
-     */
-    static concat(...transforms) {
-        return new CssTransformChain(...transforms);
-    }
-}
-
-/**
  * A utility class for creating number formatters.
  *
  * Each number formatter is a function which generates output strings from input numeric values. The formatting
@@ -25219,7 +26413,7 @@ class NumberFormatter {
         if (isNaN(number)) {
             return opts.nanString;
         }
-        const { precision, roundFunc, maxDigits, forceDecimalZeroes, pad, showCommas, useMinusSign, forceSign, cache } = opts;
+        const { precision, roundFunc, maxDigits, forceDecimalZeroes, pad, showCommas, useMinusSign, forceSign, hideSign, cache } = opts;
         const sign = number < 0 ? -1 : 1;
         const abs = Math.abs(number);
         let rounded = abs;
@@ -25277,34 +26471,41 @@ class NumberFormatter {
             parts[0] = parts[0].replace(NumberFormatter.COMMAS_REGEX, ',');
             formatted = parts.join('.');
         }
-        formatted = ((forceSign || signText !== '+') ? signText : '') + formatted;
+        if (!hideSign && (forceSign || signText !== '+')) {
+            formatted = signText + formatted;
+}
         if (cache) {
             opts.cachedString = formatted;
         }
         return formatted;
     }
     /**
+     * Resolves an internal options object from a partial options object. Any option not explicitly defined by the
+     * partial options object will revert to its default value.
+     * @param options A partial options object.
+     * @returns A new internal options object containing the full set of options resolved from the specified partial
+     * options object.
+     */
+    static resolveOptions(options) {
+        var _a;
+        var _b;
+        const resolved = Object.assign({}, options);
+        for (const key in NumberFormatter.DEFAULT_OPTIONS) {
+            (_a = (_b = resolved)[key]) !== null && _a !== void 0 ? _a : (_b[key] = NumberFormatter.DEFAULT_OPTIONS[key]);
+        }
+        resolved.roundFunc = NumberFormatter.roundFuncs[resolved.round];
+        return resolved;
+    }
+    /**
      * Creates a function which formats numeric values to strings. The formatting behavior of the function can be
      * customized using a number of options. Please refer to the {@link NumberFormatterOptions} type documentation for
      * more information on each individual option.
-     * @param options Options to customize the formatter. Options not explicitly defined will be set to the following
-     * default values:
-     * * `precision = 0`
-     * * `round = 0`
-     * * `maxDigits = Infinity`
-     * * `forceDecimalZeroes = true`
-     * * `pad = 1`
-     * * `showCommas = false`
-     * * `useMinusSign = false`
-     * * `forceSign = false`
-     * * `nanString = 'NaN'`
-     * * `cache = false`
+     * @param options Options with which to customize the formatter.
      * @returns A function which formats numeric values to strings.
      */
     static create(options) {
-        const optsToUse = Object.assign({}, NumberFormatter.DEFAULT_OPTIONS, options);
-        optsToUse.roundFunc = NumberFormatter.roundFuncs[optsToUse.round];
-        return (number) => {
+        const optsToUse = NumberFormatter.resolveOptions(options);
+                return (number) => {
             return NumberFormatter.formatNumber(number, optsToUse);
         };
     }
@@ -25318,6 +26519,7 @@ NumberFormatter.DEFAULT_OPTIONS = {
     showCommas: false,
     useMinusSign: false,
     forceSign: false,
+    hideSign: false,
     nanString: 'NaN',
     cache: false
 };
@@ -25598,10 +26800,7 @@ class Tcas {
         var _a, _b, _c, _d, _e, _f, _g, _h;
         this.bus = bus;
         this.tfcInstrument = tfcInstrument;
-        this.maxIntruderCount = maxIntruderCount;
-        this.realTimeUpdateFreq = realTimeUpdateFreq;
-        this.simTimeUpdateFreq = simTimeUpdateFreq;
-        this.operatingModeSub = Subject.create(TcasOperatingMode.Standby);
+                this.operatingModeSub = Subject.create(TcasOperatingMode.Standby);
         this.intrudersSorted = [];
         this.intrudersFiltered = [];
         this.intrudersRA = new Set();
@@ -25626,6 +26825,9 @@ class Tcas {
             horizontal: UnitType.NMILE.createNumber(0),
             vertical: UnitType.FOOT.createNumber(0)
         };
+        this.maxIntruderCount = SubscribableUtils.toSubscribable(maxIntruderCount, true);
+        this.realTimeUpdateFreq = SubscribableUtils.toSubscribable(realTimeUpdateFreq, true);
+        this.simTimeUpdateFreq = SubscribableUtils.toSubscribable(simTimeUpdateFreq, true);
         this.sensitivity = this.createSensitivity();
         this.ownAirplane = new OwnAirplane(this.ownAirplaneSubs);
         const fullRAOptions = {
@@ -25688,13 +26890,17 @@ class Tcas {
         // add all existing contacts
         this.tfcInstrument.forEachContact(contact => { this.onContactAdded(contact.uid); });
         // init own airplane subjects
-        sub.on('gps-position').atFrequency(this.realTimeUpdateFreq).handle(lla => {
+        const atFreqSubs = [];
+        this.realTimeUpdateFreq.sub(freq => {
+            for (const atFreqSub of atFreqSubs) {
+                atFreqSub.destroy();
+            }
+            atFreqSubs.length = 0;
+            atFreqSubs.push(sub.on('gps-position').atFrequency(freq).handle(lla => {
             this.ownAirplaneSubs.position.set(lla.lat, lla.long);
             this.ownAirplaneSubs.altitude.set(lla.alt, UnitType.METER);
-        });
-        sub.on('ground_speed').whenChanged().atFrequency(this.realTimeUpdateFreq).handle(gs => { this.ownAirplaneSubs.groundSpeed.set(gs); });
-        sub.on('vertical_speed').whenChanged().atFrequency(this.realTimeUpdateFreq).handle(vs => { this.ownAirplaneSubs.verticalSpeed.set(vs); });
-        sub.on('radio_alt').whenChanged().atFrequency(this.realTimeUpdateFreq).handle(alt => { this.ownAirplaneSubs.radarAltitude.set(alt); });
+        }), sub.on('ground_speed').atFrequency(freq).handle(gs => { this.ownAirplaneSubs.groundSpeed.set(gs); }), sub.on('vertical_speed').atFrequency(freq).handle(vs => { this.ownAirplaneSubs.verticalSpeed.set(vs); }), sub.on('radio_alt').atFrequency(freq).handle(alt => { this.ownAirplaneSubs.radarAltitude.set(alt); }));
+        }, true);
         this.ownAirplaneSubs.groundTrack.setConsumer(sub.on('track_deg_true'));
         this.ownAirplaneSubs.isOnGround.setConsumer(sub.on('on_ground'));
         // init sim time subject
@@ -25840,8 +27046,8 @@ class Tcas {
                 return;
         }
         const realTime = Date.now();
-        if (Math.abs(simTime - this.lastUpdateSimTime) < 1000 / this.simTimeUpdateFreq
-            || Math.abs(realTime - this.lastUpdateRealTime) < 1000 / this.realTimeUpdateFreq) {
+        if (Math.abs(simTime - this.lastUpdateSimTime) < 1000 / this.simTimeUpdateFreq.get()
+            || Math.abs(realTime - this.lastUpdateRealTime) < 1000 / this.realTimeUpdateFreq.get()) {
             return;
         }
         this.doUpdate(simTime);
@@ -25880,7 +27086,7 @@ class Tcas {
         const oldCulled = this.intrudersFiltered;
         this.intrudersFiltered = [];
         const len = this.intrudersSorted.length;
-        for (let i = 0; i < len && this.intrudersFiltered.length < this.maxIntruderCount; i++) {
+        for (let i = 0; i < len && this.intrudersFiltered.length < this.maxIntruderCount.get(); i++) {
             const intruder = this.intrudersSorted[i];
             if (intruder.isPredictionValid && this.filterIntruder(intruder)) {
                 this.intrudersFiltered.push(intruder);
@@ -31125,6 +32331,12 @@ var BoeingNdHdgTrkUpMode;
     BoeingNdHdgTrkUpMode[BoeingNdHdgTrkUpMode["HDG"] = 0] = "HDG";
     BoeingNdHdgTrkUpMode[BoeingNdHdgTrkUpMode["TRK"] = 1] = "TRK";
 })(BoeingNdHdgTrkUpMode || (BoeingNdHdgTrkUpMode = {}));
+/** Type for whether ND is in HDG up or TRK up mode. */
+var BoeingFuelIndicatorStyle;
+(function (BoeingFuelIndicatorStyle) {
+    BoeingFuelIndicatorStyle[BoeingFuelIndicatorStyle["DIGITAL"] = 0] = "DIGITAL";
+    BoeingFuelIndicatorStyle[BoeingFuelIndicatorStyle["ANALOG"] = 1] = "ANALOG";
+})(BoeingFuelIndicatorStyle || (BoeingFuelIndicatorStyle = {}));
 /**
  * IRS alignment time modes.
  */
@@ -31154,6 +32366,10 @@ const boeingMsfsUserSettings = [
     {
         name: 'boeingMsfsNdHdgTrkUpMode',
         defaultValue: BoeingNdHdgTrkUpMode.TRK,
+    },
+    {
+name: 'boeingMsfsFuelIndicatorStyle',
+        defaultValue: BoeingFuelIndicatorStyle.ANALOG,
     },
     {
         name: 'boeingMsfsIrsAlignTime',
@@ -31369,6 +32585,13 @@ var EFBTakeoffThrustMode;
     EFBTakeoffThrustMode["TO2"] = "TO 2 -20";
     EFBTakeoffThrustMode["WINDSHEAR"] = "WINDSHEAR";
 })(EFBTakeoffThrustMode || (EFBTakeoffThrustMode = {}));
+/** Modes of the take performance calculation result. */
+var EFBTakeoffCalculationMode;
+(function (EFBTakeoffCalculationMode) {
+    EFBTakeoffCalculationMode["ATM"] = "ATM";
+    EFBTakeoffCalculationMode["FULL"] = "FULL";
+    EFBTakeoffCalculationMode["RTOW"] = "RTOW";
+})(EFBTakeoffCalculationMode || (EFBTakeoffCalculationMode = {}));
 /** Climb thrust modes. */
 var ClimbThrustMode;
 (function (ClimbThrustMode) {
@@ -31471,6 +32694,7 @@ class FlapComputer {
      */
     constructor(bus, config) {
         this.bus = bus;
+        this.flapsHandleIndex = ConsumerSubject.create(null, 0);
         this.flapsLeftAngle = ConsumerSubject.create(null, 0);
         this.flapsRightAngle = ConsumerSubject.create(null, 0);
         this.slatsLeftAngle = ConsumerSubject.create(null, 0);
@@ -31489,6 +32713,10 @@ class FlapComputer {
         this.flapPositionConfig = [...config.flap_positions].sort((a, b) => a.flapAngle === b.flapAngle ? a.slatAngle - b.slatAngle : a.flapAngle - b.flapAngle);
         this.flapSpeedLimitLookup = new LerpLookupTable(this.flapPositionConfig.filter((c) => isFinite(c.speedLimit)).map((c) => [c.speedLimit, c.label]));
         this.speedData = config.speed_data;
+        this.flapsHandlePosition = this.flapsHandleIndex.map(index => this.flapPositionConfig[index]);
+        const leadingEdgeInTransit = MappedSubject.create(([slatsLeftAngle, flapsHandlePosition]) => {
+            return Math.abs(flapsHandlePosition.slatAngle - slatsLeftAngle) > 0.01;
+        }, this.slatsLeftAngle, this.flapsHandlePosition);
         const pub = this.bus.getPublisher();
         this.flapInterpolatedPosition.sub((pos) => pub.pub('flap_computer_interpolated_position', pos));
         this.flapInterpolatedLimitSpeed.sub((pos) => pub.pub('flap_computer_interpolated_limit_speed', pos));
@@ -31497,6 +32725,7 @@ class FlapComputer {
         this.flapLimitSpeed.sub((speed) => pub.pub('flap_computer_limit_speed', speed));
         this.flapManeuverSpeed.sub((speed) => pub.pub('flap_computer_maneuver_speed', speed));
         this.holdingSpeed.sub((speed) => pub.pub('flap_computer_holding_speed', speed));
+        leadingEdgeInTransit.sub((x) => pub.pub('flap_computer_leading_edge_in_transit', x));
         this.listenToEvents();
     }
     /** Update the flap setting from the flap and slat angles */
@@ -31554,6 +32783,7 @@ class FlapComputer {
     /** Setup event listeners */
     listenToEvents() {
         const sub = this.bus.getSubscriber();
+        this.flapsHandleIndex.setConsumer(sub.on('flaps_handle_index'));
         this.flapsLeftAngle.setConsumer(sub.on('flaps_left_angle').withPrecision(2));
         this.flapsRightAngle.setConsumer(sub.on('flaps_right_angle').withPrecision(2));
         this.slatsLeftAngle.setConsumer(sub.on('slats_left_angle').withPrecision(2));
@@ -39102,12 +40332,16 @@ PerformancePlanRepository.SYNC_PLAN_INDEX = PerformancePlanRepository.DEFAULT_VA
  */
 class AirspeedIndicator extends DisplayComponent {
     constructor() {
-        var _a;
+        var _a, _b, _c, _d, _e;
         super(...arguments);
         this.maxSpeedRangeRef = FSComponent.createRef();
         this.minManeuverSpeedRangeRef = FSComponent.createRef();
         this.minSpeedRangeRef = FSComponent.createRef();
         this.selectedSpeedBugRef = FSComponent.createRef();
+        this.v80ktsSpeedBugRef = FSComponent.createRef();
+        this.spareSpeedBugRef = FSComponent.createRef();
+        this.v2Plus15SpeedBugRef = FSComponent.createRef();
+        this.vrefPlus20SpeedBugRef = FSComponent.createRef();
         this.vnavSpeedBandRef = FSComponent.createRef();
         this.flapSpeedBugPositions = Array.from(this.props.flapSpeedBugDataProvider.data.keys());
         this.flapSpeedBugRefs = new Map(Array.from(this.props.flapSpeedBugDataProvider.data.keys(), position => [position, FSComponent.createRef()]));
@@ -39118,6 +40352,10 @@ class AirspeedIndicator extends DisplayComponent {
         this.vrefBugRef = FSComponent.createRef();
         this.vrefBugClampedRef = FSComponent.createRef();
         this.showManeuverSpeedBands = SubscribableUtils.toSubscribable((_a = this.props.showManeuverSpeedBands) !== null && _a !== void 0 ? _a : true, true);
+        this.show80ktsBug = SubscribableUtils.toSubscribable((_b = this.props.show80ktsBug) !== null && _b !== void 0 ? _b : false, true);
+        this.showSpareBug = SubscribableUtils.toSubscribable((_c = this.props.showSpareBug) !== null && _c !== void 0 ? _c : false, true);
+        this.showV2Plus15Bug = SubscribableUtils.toSubscribable((_d = this.props.showV2Plus15Bug) !== null && _d !== void 0 ? _d : false, true);
+        this.showVrefPlus20Bug = SubscribableUtils.toSubscribable((_e = this.props.showVrefPlus20Bug) !== null && _e !== void 0 ? _e : false, true);
         this.v1Setting = this.props.vSpeedSettings.getSettings(VSpeedType.V1).value;
         this.vrSetting = this.props.vSpeedSettings.getSettings(VSpeedType.Vr).value;
         this.v2Setting = this.props.vSpeedSettings.getSettings(VSpeedType.V2).value;
@@ -39155,7 +40393,14 @@ class AirspeedIndicator extends DisplayComponent {
         this.pauseableSubs.push(this.props.dataProvider.ias.sub(this.updateIas.bind(this), true, this.isPaused), this.props.dataProvider.maximumIas.sub(this.updateMaximumSpeed.bind(this), false, this.isPaused), this.props.dataProvider.minimumManeuveringIas.sub(updateMinimumManeuveringSpeed, false, this.isPaused), this.props.dataProvider.minimumIas.sub(this.updateMinimumSpeed.bind(this), false, this.isPaused), this.showManeuverSpeedBands.sub(updateMinimumManeuveringSpeed, false, this.isPaused), this.props.dataProvider.iasTrend.sub(this.onTrendChanged.bind(this), this.isPaused), this.isRadioAltAbove100.sub(this.onRadioAltAbove100Changed.bind(this), true, this.isPaused), this.props.flapRetractionDataProvider.isFirstFlapRetractionStarted.sub(this.updateMinimumManeuveringSpeedVisibility.bind(this), false, this.isPaused), this.props.dataProvider.selectedSpeedIas.sub(this.updateSelectedSpeedBug.bind(this), false, this.isPaused), this.props.vnavSpeedBandDataProvider.minimumIas.sub(updateVNavSpeedBand, false, this.isPaused), this.props.vnavSpeedBandDataProvider.maximumIas.sub(updateVNavSpeedBand, false, this.isPaused), ...Array.from(this.props.flapSpeedBugDataProvider.data, ([position, data]) => {
             // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
             return data.maneuverIas.sub(this.updateFlapSpeedBug.bind(this, this.flapSpeedBugRefs.get(position), data), true, this.isPaused);
-        }), this.vrSetting.sub(this.updateVSpeedBug.bind(this, this.vrBugRef, this.vrSetting), false, this.isPaused), this.v2Setting.sub(this.updateVSpeedBug.bind(this, this.v2BugRef, this.v2Setting), false, this.isPaused), this.v1Setting.sub(this.onV1Changed.bind(this), false, this.isPaused), this.vrefSetting.sub(this.onVrefChanged.bind(this), false, this.isPaused), this.v1Setting.pipe(this.v1ReadoutText, value => value.toFixed(0), this.isPaused), this.props.performancePlan.approachFlapSpeed.pipe(this.vrefReadoutText, data => {
+        }), this.vrSetting.sub(this.updateVSpeedBug.bind(this, this.vrBugRef, this.vrSetting), false, this.isPaused), MappedSubject.create(this.v2Setting, this.showV2Plus15Bug, this.show80ktsBug).sub(([v2Setting, showV2Plus15Bug, show80KtsBug]) => {
+            this.updateVSpeedBug(this.v2BugRef, this.v2Setting);
+            showV2Plus15Bug && this.updateWhiteSpeedBug(this.v2Plus15SpeedBugRef, v2Setting + 15);
+            show80KtsBug && this.updateWhiteSpeedBug(this.v80ktsSpeedBugRef, v2Setting !== 0 ? 80 : 0);
+        }, false, this.isPaused), this.v1Setting.sub(this.onV1Changed.bind(this), false, this.isPaused), this.vrefSetting.sub(() => {
+            this.updateVSpeedBug(this.vrefBugRef, this.vrefSetting);
+            this.props.showVrefPlus20Bug && this.updateWhiteSpeedBug(this.vrefPlus20SpeedBugRef, this.vrefSetting.value + 20);
+        }, false, this.isPaused), this.v1Setting.pipe(this.v1ReadoutText, value => value.toFixed(0), this.isPaused), this.props.performancePlan.approachFlapSpeed.pipe(this.vrefReadoutText, data => {
             var _a;
             if (data === null) {
                 return '';
@@ -39256,6 +40501,7 @@ class AirspeedIndicator extends DisplayComponent {
             this.updateFlapSpeedBug(this.flapSpeedBugRefs.get(position), this.props.flapSpeedBugDataProvider.data.get(position));
         }
         this.updateAllVSpeedBugs();
+        this.updateAllWhiteSpeedBugs();
     }
     /**
      * Updates this indicator's displayed maximum speed.
@@ -39365,19 +40611,42 @@ class AirspeedIndicator extends DisplayComponent {
         this.updateVSpeedReadoutVisibility(this.v1ReadoutHidden, this.v1Setting, -Infinity, this.v1BugPositionClamp);
         this.updateVSpeedReadoutVisibility(this.vrefReadoutHidden, this.vrefSetting, -Infinity, Infinity);
     }
+/**
+     * Updates the visibility and positions of all white speed bugs.
+     */
+    updateAllWhiteSpeedBugs() {
+        this.show80ktsBug.get() && this.updateWhiteSpeedBug(this.v80ktsSpeedBugRef, this.props.vSpeedSettings.getSettings(VSpeedType.V2).value.value !== 0 ? 80 : 0);
+        // this.showSpareBug.get() && this.updateWhiteSpeedBug(this.spareSpeedBugRef, 80);
+        this.showV2Plus15Bug.get() && this.updateWhiteSpeedBug(this.v2Plus15SpeedBugRef, this.props.vSpeedSettings.getSettings(VSpeedType.V2).value.value + 15);
+        this.showVrefPlus20Bug.get() && this.updateWhiteSpeedBug(this.vrefPlus20SpeedBugRef, this.props.vSpeedSettings.getSettings(VSpeedType.Vref).value.value + 20);
+    }
     /**
      * Updates the visibility and position of a V-speed bug.
      * @param ref A reference to the speed bug to update.
      * @param setting The user setting that controls the value of the bug's V-speed.
      */
     updateVSpeedBug(ref, setting) {
-        const ias = setting.value;
-        if (ias <= 50) {
+        const speed = setting.value;
+        if (speed <= 50) {
             ref.instance.setIsVisible(false);
         }
         else {
             ref.instance.setIsVisible(true);
-            ref.instance.updatePosition(this.getTapeWindowPosition(ias));
+            ref.instance.updatePosition(this.getTapeWindowPosition(speed));
+        }
+    }
+    /**
+     * Updates the visibility and position of a white speed bug.
+     * @param ref A reference to the speed bug to update.
+     * @param speed The speed value for this speed bug.
+     */
+    updateWhiteSpeedBug(ref, speed) {
+        if (speed <= 50) {
+            ref.instance.setIsVisible(false);
+        }
+        else {
+            ref.instance.setIsVisible(true);
+            ref.instance.updatePosition(this.getTapeWindowPosition(speed));
         }
     }
     /**
@@ -39468,6 +40737,22 @@ class AirspeedIndicator extends DisplayComponent {
                                 FSComponent.buildComponent("line", { x1: '50%', y1: "0%", x2: "50%", y2: "100%", class: "airspeed-trend-vector-stroke" })),
                             FSComponent.buildComponent("svg", { class: "airspeed-trend-vector-svg airspeed-trend-vector-pointer", viewBox: "0 0 18 18", style: "position: absolute; top: 0px; overflow: visible;" },
                                 FSComponent.buildComponent("path", { d: "M 0 18 l 9 -18 l 9 18 z", class: "airspeed-trend-vector-stroke" })))),
+                    this.show80ktsBug && FSComponent.buildComponent(SpeedBug, { ref: this.v80ktsSpeedBugRef, tapeWindowHeight: this.props.windowHeight, class: "airspeed-bug-white hidden" },
+                        FSComponent.buildComponent("svg", { viewBox: "0 -14 56 28", preserveAspectRatio: "none", class: "airspeed-bug-white-symbol", style: "overflow: visible;" },
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke shadow" }),
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke" }))),
+                    this.showSpareBug && FSComponent.buildComponent(SpeedBug, { ref: this.spareSpeedBugRef, tapeWindowHeight: this.props.windowHeight, class: "airspeed-bug-white hidden" },
+                        FSComponent.buildComponent("svg", { viewBox: "0 -14 56 28", preserveAspectRatio: "none", class: "airspeed-bug-white-symbol", style: "overflow: visible;" },
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke shadow" }),
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke" }))),
+                    this.showV2Plus15Bug && FSComponent.buildComponent(SpeedBug, { ref: this.v2Plus15SpeedBugRef, tapeWindowHeight: this.props.windowHeight, class: "airspeed-bug-white hidden" },
+                        FSComponent.buildComponent("svg", { viewBox: "0 -14 56 28", preserveAspectRatio: "none", class: "airspeed-bug-white-symbol", style: "overflow: visible;" },
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke shadow" }),
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke" }))),
+                    this.showVrefPlus20Bug && FSComponent.buildComponent(SpeedBug, { ref: this.vrefPlus20SpeedBugRef, tapeWindowHeight: this.props.windowHeight, class: "airspeed-bug-white hidden" },
+                        FSComponent.buildComponent("svg", { viewBox: "0 -14 56 28", preserveAspectRatio: "none", class: "airspeed-bug-white-symbol", style: "overflow: visible;" },
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke shadow" }),
+                            FSComponent.buildComponent("path", { d: "M 5 0 L 22 -11 l 24 0 l 0 21 l -25 0 z", class: "airspeed-bug-white-stroke" }))),
                     FSComponent.buildComponent(SpeedBug, { ref: this.selectedSpeedBugRef, tapeWindowHeight: this.props.windowHeight, clamp: true, class: "airspeed-bug-selected" },
                         FSComponent.buildComponent("svg", { viewBox: "0 -14 56 28", preserveAspectRatio: "none", class: "airspeed-bug-selected-symbol", style: "overflow: visible;" },
                             FSComponent.buildComponent("path", { d: "M 0 0 L 22 -14 l 34 0 l 0 28 l -34 0 z", class: "airspeed-bug-selected-stroke shadow" }),
@@ -39476,13 +40761,13 @@ class AirspeedIndicator extends DisplayComponent {
                     Array.from(this.flapSpeedBugRefs).map(([position, ref]) => {
                         return (FSComponent.buildComponent(TickLabelSpeedBug, { ref: ref, tapeWindowHeight: this.props.windowHeight, tick: true, label: position === 0 ? 'UP' : position.toString().padStart(2, ' '), class: "airspeed-bug-flap" }));
                     }),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrBugRef, tapeWindowHeight: this.props.windowHeight, tick: true, label: this.truncateVrLabel.map(truncate => truncate ? '  R' : 'VR'), class: "airspeed-bug-vspeed" }),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v2BugRef, tapeWindowHeight: this.props.windowHeight, tick: true, label: "V2", class: "airspeed-bug-vspeed" }),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v1BugRef, tapeWindowHeight: this.props.windowHeight, tick: true, class: "airspeed-bug-vspeed airspeed-bug-vspeed-large" }),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v1BugClampedRef, tapeWindowHeight: this.props.windowHeight, label: "V1", clamp: Vec2Math.create(this.v1BugPositionClamp, Infinity), class: "airspeed-bug-vspeed" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrBugRef, tapeWindowHeight: this.props.windowHeight, tick: true, label: this.truncateVrLabel.map(truncate => truncate ? '  R' : 'VR'), class: "airspeed-bug-vspeed  airspeed-bug-vr" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v2BugRef, tapeWindowHeight: this.props.windowHeight, tick: true, label: "V2", class: "airspeed-bug-vspeed airspeed-bug-v2" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v1BugRef, tapeWindowHeight: this.props.windowHeight, tick: true, class: "airspeed-bug-vspeed airspeed-bug-vspeed-large  airspeed-bug-v1" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.v1BugClampedRef, tapeWindowHeight: this.props.windowHeight, label: "V1", clamp: Vec2Math.create(this.v1BugPositionClamp, Infinity), class: "airspeed-bug-vspeed  airspeed-bug-v1-clamped" }),
                     FSComponent.buildComponent("div", { class: { 'airspeed-vspeed-readout': true, 'airspeed-v1-readout': true, 'hidden': this.v1ReadoutHidden } }, this.v1ReadoutText),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrefBugRef, tapeWindowHeight: this.props.windowHeight, tick: true, class: "airspeed-bug-vspeed airspeed-bug-vspeed-large" }),
-                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrefBugClampedRef, tapeWindowHeight: this.props.windowHeight, label: "REF", clamp: Vec2Math.create(-Infinity, this.vrefBugPositionClamp), class: "airspeed-bug-vspeed" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrefBugRef, tapeWindowHeight: this.props.windowHeight, label: "REF", tick: true, class: "airspeed-bug-vspeed airspeed-bug-vspeed-large airspeed-bug-vref" }),
+                    FSComponent.buildComponent(TickLabelSpeedBug, { ref: this.vrefBugClampedRef, tapeWindowHeight: this.props.windowHeight, label: "REF", clamp: Vec2Math.create(-Infinity, this.vrefBugPositionClamp), class: "airspeed-bug-vspeed airspeed-bug-vref-clamped" }),
                     FSComponent.buildComponent("div", { class: { 'airspeed-vspeed-readout': true, 'airspeed-vref-readout': true, 'hidden': this.vrefReadoutHidden } }, this.vrefReadoutText)),
                 FSComponent.buildComponent("div", { class: "airspeed-readout" },
                     FSComponent.buildComponent("svg", { viewBox: "0 0 103 96", preserveAspectRatio: "none", "stroke-linejoin": "round", class: { 'airspeed-readout-box': true, 'warning': this.isReadoutAlertActive }, style: "overflow: visible;" },
@@ -42243,7 +43528,9 @@ class DefaultLateralDeviationDataProvider {
         this.facAvailable = ConsumerSubject.create(null, false).pause();
         this.locDeviationPipe = this.ilsNavIndicator.lateralDeviation.pipe(this._locDeviation, dev => dev === null ? 0 : dev * 2.5, true);
         this.apMaster = ConsumerSubject.create(null, false).pause();
-        this.fdActive = ConsumerSubject.create(null, false).pause();
+        this.fd1Active = ConsumerSubject.create(null, false).pause();
+        this.fd2Active = ConsumerSubject.create(null, false).pause();
+        this.fdActive = MappedSubject.create(SubscribableMapFunctions.or(), this.fd1Active, this.fd2Active);
         this.radioAltitude = ConsumerSubject.create(null, 0).pause();
         this.fmsPosSystemState = ConsumerSubject.create(null, undefined).pause();
         this.isFmsPosDataValid = this.fmsPosSystemState.map(state => {
@@ -42281,7 +43568,8 @@ class DefaultLateralDeviationDataProvider {
             this.lateralNavSource,
             this.fmaData,
             this.apMaster,
-            this.fdActive,
+            this.fd1Active,
+            this.fd2Active,
             this.radioAltitude,
             this.fmsPosSystemState,
             this.hasLocDeviation,
@@ -42314,7 +43602,8 @@ class DefaultLateralDeviationDataProvider {
         this.lateralNavSource.setConsumer(sub.on('lateral_nav_source'));
         this.fmaData.setConsumer(sub.on('fma_data'));
         this.apMaster.setConsumer(sub.on('ap_master_status'));
-        this.fdActive.setConsumer(sub.on('ap_boeing_flight_director_is_active_1'));
+        this.fd1Active.setConsumer(sub.on('ap_boeing_flight_director_is_active_1'));
+        this.fd2Active.setConsumer(sub.on('ap_boeing_flight_director_is_active_2'));
         this.radioAltitude.setConsumer(sub.on('ra_radio_alt_1'));
         this.fmsPosIndexSub = this.fmsPosIndex.sub(index => {
             this.fmsPosSystemState.setConsumer(sub.on(`fms_pos_state_${index}`));
@@ -42502,7 +43791,32 @@ class NavigationSourceDisplay extends DisplayComponent {
         this.isGpDeviationValid = this.props.verticalDeviationDataProvider.gpDeviation.map(NavigationSourceDisplay.isDeviationValid).pause();
         this.isGsDeviationValid = this.props.verticalDeviationDataProvider.gsDeviation.map(NavigationSourceDisplay.isDeviationValid).pause();
         this.isApTogaActive = MappedSubject.create(SubscribableMapFunctions.or(), this.props.lateralDeviationDataProvider.isApLateralTogaActive, this.props.isVerticalTogaNp ? this.props.lateralDeviationDataProvider.isApVerticalTogaActive : Subject.create(false)).pause();
-        this.text = MappedSubject.create(([isLateralNp, isFacDeviationValid, isLocDeviationValid, isVerticalNp, isGpDeviationValid, isGsDeviationValid, isApTogaActive]) => {
+        this.text = MappedSubject.create(this.getSourceText.bind(this), this.props.lateralDeviationDataProvider.isLateralNavSourceNp, this.isFacDeviationValid, this.isLocDeviationValid, this.props.verticalDeviationDataProvider.isVerticalNavSourceNp, this.isGpDeviationValid, this.isGsDeviationValid, this.isApTogaActive).pause();
+        this.isTextSmall = this.text.map(text => text.length > 3);
+        this.isTextHidden = this.text.map(text => text.length === 0);
+        this.isPaused = true;
+        this.pauseable = [
+            this.isFacDeviationValid,
+            this.isLocDeviationValid,
+            this.isGpDeviationValid,
+            this.isGsDeviationValid,
+            this.isApTogaActive,
+            this.text
+        ];
+    }
+    /**
+     * Formats the navigation source text to display on the PFD.
+     * @param root0 Params.
+     * @param root0."0" Is the lateral non-precision source active.
+     * @param root0."1" Is the FAC deviation valid.
+     * @param root0."2" Is the LOC deviation valid.
+     * @param root0."3" Is the vertical non-precision source active.
+     * @param root0."4" Is the GP deviation valid.
+     * @param root0."5" Is the GS deviation valid.
+     * @param root0."6" Is TO/GA active.
+     * @returns The text to display.
+     */
+    getSourceText([isLateralNp, isFacDeviationValid, isLocDeviationValid, isVerticalNp, isGpDeviationValid, isGsDeviationValid, isApTogaActive]) {
             // Sim doesn't have GLS, so we are not going to consider those cases.
             if (isVerticalNp || isGpDeviationValid || isApTogaActive) {
                 // Vertical source is FMC.
@@ -42534,19 +43848,7 @@ class NavigationSourceDisplay extends DisplayComponent {
                 }
             }
             return '';
-        }, this.props.lateralDeviationDataProvider.isLateralNavSourceNp, this.isFacDeviationValid, this.isLocDeviationValid, this.props.verticalDeviationDataProvider.isVerticalNavSourceNp, this.isGpDeviationValid, this.isGsDeviationValid, this.isApTogaActive).pause();
-        this.isTextSmall = this.text.map(text => text.length > 3);
-        this.isTextHidden = this.text.map(text => text.length === 0);
-        this.isPaused = true;
-        this.pauseable = [
-            this.isFacDeviationValid,
-            this.isLocDeviationValid,
-            this.isGpDeviationValid,
-            this.isGsDeviationValid,
-            this.isApTogaActive,
-            this.text
-        ];
-    }
+            }
     /**
      * Resumes this component. When the component is resumed, it will update its rendering.
      */
@@ -42661,7 +43963,9 @@ class DefaultVerticalDeviationDataProvider {
         this.gpAvailable = ConsumerSubject.create(null, false).pause();
         this.gsDeviationPipe = this.ilsNavIndicator.verticalDeviation.pipe(this._gsDeviation, dev => dev === null ? 0 : -dev * 2.5, true);
         this.apMaster = ConsumerSubject.create(null, false).pause();
-        this.fdActive = ConsumerSubject.create(null, false).pause();
+        this.fd1Active = ConsumerSubject.create(null, false).pause();
+        this.fd2Active = ConsumerSubject.create(null, false).pause();
+        this.fdActive = MappedSubject.create(SubscribableMapFunctions.or(), this.fd1Active, this.fd2Active);
         this.radioAltitude = ConsumerSubject.create(null, 0).pause();
         this.fmsPosSystemState = ConsumerSubject.create(null, undefined).pause();
         this.isFmsPosDataValid = this.fmsPosSystemState.map(state => {
@@ -42688,7 +43992,8 @@ class DefaultVerticalDeviationDataProvider {
             this.gpAvailable,
             this._gpDeviation,
             this.apMaster,
-            this.fdActive,
+            this.fd1Active,
+            this.fd2Active,
             this.radioAltitude,
             this.fmsPosSystemState,
             this.hasGsDeviation
@@ -42720,7 +44025,8 @@ class DefaultVerticalDeviationDataProvider {
         this.verticalNavSource.setConsumer(sub.on('vertical_nav_source'));
         this.fmaData.setConsumer(sub.on('fma_data'));
         this.apMaster.setConsumer(sub.on('ap_master_status'));
-        this.fdActive.setConsumer(sub.on('ap_boeing_flight_director_is_active_1'));
+        this.fd1Active.setConsumer(sub.on('ap_boeing_flight_director_is_active_1'));
+        this.fd2Active.setConsumer(sub.on('ap_boeing_flight_director_is_active_2'));
         this.radioAltitude.setConsumer(sub.on('ra_radio_alt_1'));
         this.fmsPosIndexSub = this.fmsPosIndex.sub(index => {
             this.fmsPosSystemState.setConsumer(sub.on(`fms_pos_state_${index}`));
@@ -51164,6 +52470,8 @@ class SpeedLimitPublisher extends BasePublisher {
         this.normAoa = ConsumerValue.create(null, 0).pause();
         this.ias = ConsumerValue.create(null, 0).pause();
         this.pressureAltitude = ConsumerValue.create(null, 0).pause();
+        /** Ambient air pressure in in.Hg. */
+        this.ambientPressure = ConsumerValue.create(null, 29.92).pause();
         this.machToKiasFactorSource = ConsumerValue.create(null, 1).pause();
         this.machToKiasFactorSmoother = new ExpSmoother(SpeedLimitPublisher.MACH_KIAS_SMOOTHING_TAU);
         this.aoaCoefSmoother = new ExpSmoother(SpeedLimitPublisher.AOA_COEF_SMOOTHING_TAU);
@@ -51180,6 +52488,7 @@ class SpeedLimitPublisher extends BasePublisher {
             this.normAoa,
             this.ias,
             this.pressureAltitude,
+            this.ambientPressure,
             this.machToKiasFactorSource,
             this.loadFactorSource,
             this.gearPosition,
@@ -51204,6 +52513,7 @@ class SpeedLimitPublisher extends BasePublisher {
             this.ias.setConsumer(sub.on(`adc_ias_${index}`));
             this.machToKiasFactorSource.setConsumer(sub.on(`adc_mach_to_kias_factor_${index}`));
             this.pressureAltitude.setConsumer(sub.on(`adc_pressure_alt_${index}`));
+            this.ambientPressure.setConsumer(sub.on(`adc_ambient_pressure_inhg_${index}`));
             this.adcSystemState.setConsumer(sub.on(`adc_state_${index}`));
         }, true);
         this.gearPosition.setConsumer(sub.on('gear_position_2'));
@@ -51237,13 +52547,14 @@ class SpeedLimitPublisher extends BasePublisher {
         const dt = this.lastUpdateTime === undefined ? 0 : Math.max(0, time - this.lastUpdateTime);
         this.lastUpdateTime = time;
         const pressureAlt = this.pressureAltitude.get();
+        const ambientPressure = this.ambientPressure.get();
         // ------- Maximum speed -------
         // Maximum speed is defined as the lowest of Vmo, Mmo, landing gear placard speed (if extended), and placard speed
         // for the current flaps setting.
         const vmo = this.speedProvider.getVmo(pressureAlt);
         const mmo = this.speedProvider.getMmo();
         const flapLimit = this.flapSpeedLimit.get();
-        const gearLimit = this.speedProvider.getGearLimitSpeed();
+        const gearLimit = this.speedProvider.getGearLimitSpeed(UnitType.HPA.convertFrom(ambientPressure, UnitType.IN_HG));
         let maxIas = Math.min(vmo, mmo * this.machToKiasFactorSmoother.next(this.machToKiasFactorSource.get(), dt), flapLimit < 0 ? Infinity : flapLimit);
         if (gearLimit < maxIas) {
             const gearPosition = this.gearPosition.get();
@@ -54555,7 +55866,7 @@ B787EngineData.lrc_mach = new LerpLookupTable([
 B787EngineData.alt_opt = new LerpLookupTable([
     [31800, 573201.2],
     [32600, 551155],
-    [35300, 529108.8],
+    [33500, 529108.8],
     [34400, 507062.6],
     [35300, 485016.4],
     [36300, 462970.2],
@@ -54634,7 +55945,7 @@ B787EngineData.n1_tpr_lookup = new LerpLookupTable([
 class B787PerformanceMath extends BoeingPerformanceDataProvider {
     /** @inheritDoc */
     get operatingEmptyWeight() {
-        return 250000; // 113,398 kg
+        return 284000; // 128,850 kg
     }
     /** @inheritDoc */
     get maxZeroFuelWeight() {
@@ -56183,7 +57494,9 @@ class AfdsStatus extends DisplayComponent {
         this.arrowCssClass = SetSubject.create(['afds-status-arrow', 'hidden']);
         this.alertTimer = new DebounceTimer();
         this.autopilotMaster = ConsumerSubject.create(null, false);
-        this.flightDirector = ConsumerSubject.create(null, false);
+        this.flightDirector1 = ConsumerSubject.create(null, false);
+        this.flightDirector2 = ConsumerSubject.create(null, false);
+        this.flightDirector = MappedSubject.create(SubscribableMapFunctions.or(), this.flightDirector1, this.flightDirector2);
         this.radioAlt = ConsumerSubject.create(null, 0);
         this.radioAltHealthy = Subject.create(false);
         this.approachActive = ConsumerSubject.create(null, false);
@@ -56195,8 +57508,8 @@ class AfdsStatus extends DisplayComponent {
     onAfterRender() {
         const ap = this.props.bus.getSubscriber();
         this.autopilotMaster.setConsumer(ap.on('ap_master_status'));
-        // TODO FD2? PFDs common for now..
-        this.flightDirector.setConsumer(ap.on('ap_boeing_flight_director_is_active_1'));
+        this.flightDirector1.setConsumer(ap.on('ap_boeing_flight_director_is_active_1'));
+        this.flightDirector2.setConsumer(ap.on('ap_boeing_flight_director_is_active_2'));
         this.approachActive.setConsumer(ap.on('ap_glideslope_hold'));
         const ra = this.props.bus.getSubscriber();
         this.radioAlt.setConsumer(ra.on('ra_radio_alt_1').atFrequency(1));
@@ -56292,6 +57605,8 @@ class AfdsStatus extends DisplayComponent {
         var _a;
         this.afdsActiveModeSub.destroy();
         (_a = this.cssClassSub) === null || _a === void 0 ? void 0 : _a.destroy();
+        this.flightDirector1.destroy();
+        this.flightDirector2.destroy();
         super.destroy();
     }
 }
@@ -59781,7 +61096,9 @@ class WTB78xHudInstrument extends WTB78xFsInstrument {
         this.backplane.addPublisher(InstrumentBackplaneNames.ControlSurfaces, this.controlSurfacesPublisher);
         this.backplane.addPublisher(InstrumentBackplaneNames.SpeedLimit, this.speedLimitPublisher);
         this.createSystems();
-        this.doInit();
+        this.doInit().catch(e => {
+            console.error(e);
+        });
     }
     /** @inheritdoc */
     getSourceSelectSide() {

@@ -216,14 +216,13 @@ var b78xmcp = (function (exports) {
     /// <reference types="@microsoft/msfs-types/Pages/VCockpit/Instruments/Shared/BaseInstrument" />
     var McpWindowTypes;
     (function (McpWindowTypes) {
+        McpWindowTypes[McpWindowTypes["None"] = 0] = "None";
         McpWindowTypes[McpWindowTypes["IasMach"] = 1] = "IasMach";
         McpWindowTypes[McpWindowTypes["HdgTrk"] = 2] = "HdgTrk";
         McpWindowTypes[McpWindowTypes["VsFpa"] = 3] = "VsFpa";
         McpWindowTypes[McpWindowTypes["Altitude"] = 4] = "Altitude";
     })(McpWindowTypes || (McpWindowTypes = {}));
-    /**
-     *
-     */
+    /** 787 MCP */
     class HSB789_MCP extends BaseInstrument {
         constructor() {
             super(...arguments);
@@ -232,7 +231,7 @@ var b78xmcp = (function (exports) {
             this.value = null;
             this.mode = null;
             this.window = null;
-            this.windowType = 0;
+            this.windowType = McpWindowTypes.None;
         }
         /**
          * The instrument template ID.
