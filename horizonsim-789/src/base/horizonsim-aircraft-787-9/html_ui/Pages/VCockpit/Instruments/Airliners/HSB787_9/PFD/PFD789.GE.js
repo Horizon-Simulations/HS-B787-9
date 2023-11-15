@@ -39389,6 +39389,7 @@ var APVerticalModes;
     APVerticalModes[APVerticalModes["GA"] = 10] = "GA";
     APVerticalModes[APVerticalModes["FPA"] = 11] = "FPA";
     APVerticalModes[APVerticalModes["FLARE"] = 12] = "FLARE";
+    APVerticalModes[APVerticalModes["LEVEL"] = 13] = "LEVEL";
 })(APVerticalModes || (APVerticalModes = {}));
 var APLateralModes;
 (function (APLateralModes) {
@@ -52153,9 +52154,34 @@ class PerformancePlanRepository {
             const fromValue = fromPlan[key];
             const toValue = toPlan[key];
             if (fromValue instanceof Subject && toValue instanceof Subject) {
+            // do a shallow comparison of properties if fromValue is a complex type
+                if (typeof fromValue.get() === 'object' && this.isSameObject(fromValue.get(), toValue.get())) {
+                    continue;
+                }
                 toValue.set(fromValue.get());
             }
         }
+    }
+    /**
+     * Checks whether two objects are the same by performing a (very) shallow comparison.
+     * @param obj1 The first object
+     * @param obj2 The second object
+     * @returns true if the objects are the same
+     */
+    isSameObject(obj1, obj2) {
+        // Check if the values are null or undefined
+        if (obj1 == null || obj2 == null) {
+            return obj1 === obj2;
+        }
+        for (const prop in obj1) {
+            if (typeof obj1[prop] === 'object') {
+                continue;
+            }
+            if (obj1[prop] !== obj2[prop]) {
+                return false;
+            }
+        }
+        return true;
     }
     /**
      * Triggers a synchronisation of the active plan performance plan over the EventBus.

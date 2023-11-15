@@ -15096,7 +15096,7 @@ class FlightPlan {
         else {
             delete this.planSegments[segmentIndex];
         }
-        if (this.directToData.segmentIndex === segmentIndex);
+        if (this.directToData.segmentIndex === segmentIndex) ;
         this.reflowSegmentOffsets();
         notify && this.events.onSegmentChanged && this.events.onSegmentChanged(segmentIndex, SegmentEventType.Removed, segment, this.getBatchStack());
     }
@@ -15170,7 +15170,7 @@ class FlightPlan {
             const deleted = segment.legs.splice(segmentLegIndex, 1);
             legDefinition = deleted[0];
         }
-        if (this.directToData.segmentIndex === segmentIndex && this.directToData.segmentLegIndex === segmentLegIndex);
+        if (this.directToData.segmentIndex === segmentIndex && this.directToData.segmentLegIndex === segmentLegIndex) ;
         this.reflowSegmentOffsets();
         notify && legDefinition && this.events.onLegChanged && this.events.onLegChanged(segmentIndex, segmentLegIndex, LegEventType.Removed, legDefinition, this.getBatchStack());
         return legDefinition !== null && legDefinition !== void 0 ? legDefinition : null;
@@ -36089,6 +36089,10 @@ class PerformancePlanRepository {
             const fromValue = fromPlan[key];
             const toValue = toPlan[key];
             if (fromValue instanceof Subject && toValue instanceof Subject) {
+// do a shallow comparison of properties if fromValue is a complex type
+                if (typeof fromValue.get() === 'object' && this.isSameObject(fromValue.get(), toValue.get())) {
+                    continue;
+                }
                 toValue.set(fromValue.get());
             }
         }
@@ -38346,12 +38350,10 @@ class BoeingEfbButton extends DisplayComponent {
         const customWidthStyleString = this.props.width ? `width: ${this.props.width}px !important;` : '';
         const customHeightStyleString = this.props.height ? `height: ${this.props.height}px !important;` : '';
         const style = `${customWidthStyleString} ${customHeightStyleString}`;
-        return (FSComponent.buildComponent("span", {
-            ref: this.root, style: style, class: Object.assign({ 'boeing-mfd-button': true, 'boeing-mfd-button-selected': this.isSelected.map(x => x === undefined ? false : typeof x === 'boolean' ? x : this.props.name === x), 'boeing-mfd-button-disabled': this.isDisabled.map(x => x === true), 'boeing-mfd-button-inop': this.isInop.map(x => x === true), 'boeing-mfd-button-inactive': this.isInactive.map(x => x === true), 'boeing-mfd-button-alerted': this.isAlerted.map(x => x === true), 'hidden': this.isVisible.map(x => x === false) }, (((_a = this.props.class) !== null && _a !== void 0 ? _a : []).reduce((previous, current) => {
+        return (FSComponent.buildComponent("span", { ref: this.root, style: style, class: Object.assign({ 'boeing-mfd-button': true, 'boeing-mfd-button-selected': this.isSelected.map(x => x === undefined ? false : typeof x === 'boolean' ? x : this.props.name === x), 'boeing-mfd-button-disabled': this.isDisabled.map(x => x === true), 'boeing-mfd-button-inop': this.isInop.map(x => x === true), 'boeing-mfd-button-inactive': this.isInactive.map(x => x === true), 'boeing-mfd-button-alerted': this.isAlerted.map(x => x === true), 'hidden': this.isVisible.map(x => x === false) }, (((_a = this.props.class) !== null && _a !== void 0 ? _a : []).reduce((previous, current) => {
                 previous[current] = true;
                 return previous;
-            }, {})))
-        }, ...this.buttonText));
+            }, {}))) }, ...this.buttonText));
     }
     /** @inheritDoc */
     destroy() {
@@ -38563,12 +38565,10 @@ class BoeingEfbDropdownButton extends DisplayComponent {
         const style = `${customWidthStyleString} ${customHeightStyleString}`;
         return (FSComponent.buildComponent("div", { ref: this.theEntireButtonRef },
             FSComponent.buildComponent("div", { ref: this.buttonNameRef, class: 'button-name' }, this.props.dropdownButtonName),
-            FSComponent.buildComponent("span", {
-                ref: this.root, style: style, class: Object.assign({ 'boeing-efb-dropdown-button': true, 'boeing-efb-dropdown-button-selected': this.isSelected.map(x => x === undefined ? false : typeof x === 'boolean' ? x : this.props.name === x), 'boeing-efb-dropdown-button-disabled': this.isDisabled.map(x => x === true), 'boeing-efb-dropdown-button-alerted': this.isAlerted.map(x => x === true), 'hidden': this.isVisible.map(x => x === false) }, (((_a = this.props.class) !== null && _a !== void 0 ? _a : []).reduce((previous, current) => {
+            FSComponent.buildComponent("span", { ref: this.root, style: style, class: Object.assign({ 'boeing-efb-dropdown-button': true, 'boeing-efb-dropdown-button-selected': this.isSelected.map(x => x === undefined ? false : typeof x === 'boolean' ? x : this.props.name === x), 'boeing-efb-dropdown-button-disabled': this.isDisabled.map(x => x === true), 'boeing-efb-dropdown-button-alerted': this.isAlerted.map(x => x === true), 'hidden': this.isVisible.map(x => x === false) }, (((_a = this.props.class) !== null && _a !== void 0 ? _a : []).reduce((previous, current) => {
                     previous[current] = true;
                     return previous;
-                }, {})))
-            },
+                }, {}))) },
                 FSComponent.buildComponent("span", null, this.buttonText),
                 FSComponent.buildComponent("div", { ref: this.arrowRef, class: 'boeing-efb-dropdown-arrow hidden' },
                     FSComponent.buildComponent("svg", { width: "15px", viewBox: "0 0 20 25" },
@@ -38684,12 +38684,10 @@ class BoeingEfbSideButton extends DisplayComponent {
         const customWidthStyleString = this.props.width ? `width: ${this.props.width}px !important;` : '';
         const customHeightStyleString = this.props.height ? `height: ${this.props.height}px !important;` : '';
         const style = `${customWidthStyleString} ${customHeightStyleString}`;
-        return (FSComponent.buildComponent("span", {
-            ref: this.root, style: style, class: Object.assign({ 'boeing-efb-button': true, 'boeing-efb-button-selected': this.isSelected.map(x => x === undefined ? false : typeof x === 'boolean' ? x : this.props.name === x), 'boeing-efb-button-disabled': this.isDisabled.map(x => x === true), 'boeing-efb-button-alerted': this.isAlerted.map(x => x === true), 'hidden': this.isVisible.map(x => x === false) }, (((_a = this.props.class) !== null && _a !== void 0 ? _a : []).reduce((previous, current) => {
+        return (FSComponent.buildComponent("span", { ref: this.root, style: style, class: Object.assign({ 'boeing-efb-button': true, 'boeing-efb-button-selected': this.isSelected.map(x => x === undefined ? false : typeof x === 'boolean' ? x : this.props.name === x), 'boeing-efb-button-disabled': this.isDisabled.map(x => x === true), 'boeing-efb-button-alerted': this.isAlerted.map(x => x === true), 'hidden': this.isVisible.map(x => x === false) }, (((_a = this.props.class) !== null && _a !== void 0 ? _a : []).reduce((previous, current) => {
                 previous[current] = true;
                 return previous;
-            }, {})))
-        }, ...this.buttonText));
+            }, {}))) }, ...this.buttonText));
     }
     /** @inheritDoc */
     destroy() {
@@ -38922,12 +38920,10 @@ class BoeingEfbTextField extends DisplayComponent {
         const style = `${customWidthStyleString} ${customHeightStyleString}`;
         return (FSComponent.buildComponent("div", { class: 'boeing-efb-top-textfield', ref: this.theEntireButtonRef },
             FSComponent.buildComponent("div", { ref: this.buttonNameRef, class: 'button-name' }, this.props.buttonName),
-            FSComponent.buildComponent("span", {
-                ref: this.root, style: style, class: Object.assign({ 'boeing-efb-textfield-button': true, 'boeing-efb-textfield-button-selected': this.isSelected.map(x => x === undefined ? false : typeof x === 'boolean' ? x : this.props.name === x), 'boeing-efb-textfield-button-disabled': this.isDisabled.map(x => x === true), 'boeing-efb-textfield-button-alerted': this.isAlerted.map(x => x === true), 'hidden': this.isVisible.map(x => x === false) }, (((_a = this.props.class) !== null && _a !== void 0 ? _a : []).reduce((previous, current) => {
+            FSComponent.buildComponent("span", { ref: this.root, style: style, class: Object.assign({ 'boeing-efb-textfield-button': true, 'boeing-efb-textfield-button-selected': this.isSelected.map(x => x === undefined ? false : typeof x === 'boolean' ? x : this.props.name === x), 'boeing-efb-textfield-button-disabled': this.isDisabled.map(x => x === true), 'boeing-efb-textfield-button-alerted': this.isAlerted.map(x => x === true), 'hidden': this.isVisible.map(x => x === false) }, (((_a = this.props.class) !== null && _a !== void 0 ? _a : []).reduce((previous, current) => {
                     previous[current] = true;
                     return previous;
-                }, {})))
-            },
+                }, {}))) },
                 FSComponent.buildComponent("input", { class: 'boeing-efb-text-field-keyboard-input', ref: this.textBox })),
             FSComponent.buildComponent("div", { class: 'text-under-text-field', ref: this.textUnderTextFieldRef }, this.bottomText)));
     }
@@ -39683,11 +39679,9 @@ class BoeingPerformancePage extends DisplayComponent {
                 FSComponent.buildComponent("div", { class: 'efb-middle-top-right-box' },
                     FSComponent.buildComponent("div", { class: 'right-side-dropdowns' },
                         FSComponent.buildComponent(BoeingEfbDropdownButton, { dropdownItems: this.rtgList, dropdownItemFormatter: RawFormatter, hasGreenOutline: false, hasArrow: true, dropdownButtonName: 'RTG', isNameOnLeftSide: false, dropDownDefaultName: 'THRUST RTG', onItemSelected: (thrustRTG) => this.pickedRtg.set(thrustRTG) }),
-                        FSComponent.buildComponent(BoeingEfbTextField, {
-                            ref: this.atmTextFieldRef, buttonName: 'ATM', isNameOnLeftSide: false, hasBottomText: false, enableKeyboard: true, validator: EfbFormatters.AssumedTemperatureModeParser, bottomTextFormatter: EfbFormatters.RawFormatter, onlyNumberEntry: false, onValueChanged: (value) => {
+                        FSComponent.buildComponent(BoeingEfbTextField, { ref: this.atmTextFieldRef, buttonName: 'ATM', isNameOnLeftSide: false, hasBottomText: false, enableKeyboard: true, validator: EfbFormatters.AssumedTemperatureModeParser, bottomTextFormatter: EfbFormatters.RawFormatter, onlyNumberEntry: false, onValueChanged: (value) => {
                                 this.pickedAtm.set(value);
-                            }
-                        }),
+                            } }),
                         FSComponent.buildComponent("div", { class: 'right-side-making-space' }),
                         FSComponent.buildComponent(BoeingEfbDropdownButton, { dropdownItems: this.flapList, dropdownItemFormatter: RawFormatter, hasGreenOutline: false, hasArrow: true, dropdownButtonName: 'FLAP', isNameOnLeftSide: false, dropDownDefaultName: 'FLAP CONFIG', onItemSelected: (flap) => this.pickedFlaps.set(flap) }),
                         FSComponent.buildComponent(BoeingEfbDropdownButton, { dropdownItems: this.aiList, dropdownItemFormatter: EfbFormatters.EngineAntiIceSettingFormatter, hasGreenOutline: false, hasArrow: true, dropdownButtonName: 'A/I', isNameOnLeftSide: false, dropDownDefaultName: 'A/I CONFIG', onItemSelected: (aiConfig) => this.pickAiConfig.set(aiConfig) }),
@@ -39697,43 +39691,32 @@ class BoeingPerformancePage extends DisplayComponent {
                         FSComponent.buildComponent(BoeingEfbDropdownButton, { dropdownItems: this.arptList, dropdownItemFormatter: RawFormatter, hasGreenOutline: this.arptListGreenOutline, hasArrow: false, dropdownButtonName: 'ARPT', isNameOnLeftSide: true, dropDownDefaultName: 'ARPT SEARCH', onFmcLoadedName: this.aprtName, isDropDownDisabled: true }),
                         FSComponent.buildComponent(BoeingEfbDropdownButton, { ref: this.rwyDropdownRef, dropdownItems: this.runwayList, dropdownItemFormatter: EfbFormatters.RunwayFormatter, hasGreenOutline: this.rwyListGreenOutline, hasArrow: true, dropdownButtonName: 'RWY', isNameOnLeftSide: true, dropDownDefaultName: 'RUNWAYS', onItemSelected: (runway) => this.pickedRunway.set(runway) }),
                         FSComponent.buildComponent(BoeingEfbDropdownButton, { dropdownItems: this.intxList, dropdownItemFormatter: RawFormatter, hasGreenOutline: false, hasArrow: false, dropdownButtonName: 'INTX', isNameOnLeftSide: true, dropDownDefaultName: 'NO INTX', isDisabled: true, isDropDownDisabled: true }),
-                        FSComponent.buildComponent(BoeingEfbDropdownButton, {
-                            dropdownItems: this.condList, dropdownItemFormatter: RawFormatter, hasGreenOutline: false, hasArrow: true, dropdownButtonName: 'COND', isNameOnLeftSide: true, dropDownDefaultName: 'CONDITION', onItemSelected: (item) => {
+                        FSComponent.buildComponent(BoeingEfbDropdownButton, { dropdownItems: this.condList, dropdownItemFormatter: RawFormatter, hasGreenOutline: false, hasArrow: true, dropdownButtonName: 'COND', isNameOnLeftSide: true, dropDownDefaultName: 'CONDITION', onItemSelected: (item) => {
                                 this.pickedRunwayCondition.set(item);
-                            }, onFmcLoadedName: this.pickedRunwayCondition
-                        }),
-                        FSComponent.buildComponent(BoeingEfbTextField, {
-                            ref: this.windTextFieldRef, buttonName: 'WIND', isNameOnLeftSide: true, hasBottomText: true, enableKeyboard: true, validator: EfbFormatters.WindParser, bottomTextFormatter: EfbFormatters.WindFormatter(this.props.store.takeoffRunway), onlyNumberEntry: true, onValueChanged: (value) => {
+                            }, onFmcLoadedName: this.pickedRunwayCondition }),
+                        FSComponent.buildComponent(BoeingEfbTextField, { ref: this.windTextFieldRef, buttonName: 'WIND', isNameOnLeftSide: true, hasBottomText: true, enableKeyboard: true, validator: EfbFormatters.WindParser, bottomTextFormatter: EfbFormatters.WindFormatter(this.props.store.takeoffRunway), onlyNumberEntry: true, onValueChanged: (value) => {
                                 this.pickedWind.set(value);
-                            }, unitForTextField: 'KT', allowTforWind: true
-                        }),
-                        FSComponent.buildComponent(BoeingEfbTextField, {
-                            ref: this.oatFieldRef, buttonName: 'OAT', isNameOnLeftSide: true, hasBottomText: true, enableKeyboard: true, valueOnStartUp: this.pickedOat, validator: EfbFormatters.NumberParser, bottomTextFormatter: EfbFormatters.FahrenheitTemperatureFormatter, onlyNumberEntry: true, onValueChanged: (value) => {
+                            }, unitForTextField: 'KT', allowTforWind: true }),
+                        FSComponent.buildComponent(BoeingEfbTextField, { ref: this.oatFieldRef, buttonName: 'OAT', isNameOnLeftSide: true, hasBottomText: true, enableKeyboard: true, valueOnStartUp: this.pickedOat, validator: EfbFormatters.NumberParser, bottomTextFormatter: EfbFormatters.FahrenheitTemperatureFormatter, onlyNumberEntry: true, onValueChanged: (value) => {
                                 this.pickedOat.set(value);
-                            }, unitForTextField: 'C'
-                        }),
-                        FSComponent.buildComponent(BoeingEfbTextField, {
-                            ref: this.qnhFieldRef, buttonName: 'QNH', isNameOnLeftSide: true, hasBottomText: true, enableKeyboard: true, validator: EfbFormatters.PressureParser, textFieldFormatter: EfbFormatters.FieldPressureFormatter, bottomTextFormatter: EfbFormatters.BottomTextPressureFormatter, onlyNumberEntry: true, onValueChanged: (value) => {
+                            }, unitForTextField: 'C' }),
+                        FSComponent.buildComponent(BoeingEfbTextField, { ref: this.qnhFieldRef, buttonName: 'QNH', isNameOnLeftSide: true, hasBottomText: true, enableKeyboard: true, validator: EfbFormatters.PressureParser, textFieldFormatter: EfbFormatters.FieldPressureFormatter, bottomTextFormatter: EfbFormatters.BottomTextPressureFormatter, onlyNumberEntry: true, onValueChanged: (value) => {
                                 const unit = (value >= 28 && value <= 31) ? UnitType.IN_HG : UnitType.HPA;
                                 this.typedQnhUnit.set(unit);
                                 this.pickedQnh.set(value, unit);
-                            }, unitForTextField: this.typedQnhUnit.map((unit) => unit === UnitType.HPA ? 'HPa' : 'IN HG')
-                        }))),
+                            }, unitForTextField: this.typedQnhUnit.map((unit) => unit === UnitType.HPA ? 'HPa' : 'IN HG') }))),
                 FSComponent.buildComponent("div", { class: 'efb-middle-1st-middle-box' },
                     FSComponent.buildComponent("div", { class: 'left-textfield-middle' },
-                        FSComponent.buildComponent(BoeingEfbTextField, {
-                            ref: this.towFieldRef, buttonName: 'TOW:', isNameOnLeftSide: true, hasBottomText: false, enableKeyboard: true, validator: EfbFormatters.TowParser, bottomTextFormatter: EfbFormatters.RawFormatter, onlyNumberEntry: true, onValueChanged: (value) => {
+                        FSComponent.buildComponent(BoeingEfbTextField, { ref: this.towFieldRef, buttonName: 'TOW:', isNameOnLeftSide: true, hasBottomText: false, enableKeyboard: true, validator: EfbFormatters.TowParser, bottomTextFormatter: EfbFormatters.RawFormatter, onlyNumberEntry: true, onValueChanged: (value) => {
                                 if (this.gameUnitsMetric.get()) {
                                     this.pickedTow.set(value, UnitType.KILOGRAM);
                                 }
                                 else {
                                     this.pickedTow.set(value, UnitType.POUND);
                                 }
-                            }, unitForTextField: this.unitString
-                        })),
+                            }, unitForTextField: this.unitString })),
                     FSComponent.buildComponent("div", { class: 'right-textfield-middle' },
-                        FSComponent.buildComponent(BoeingEfbTextField, {
-                            ref: this.zfwFieldRef, buttonName: 'ZFW:', isNameOnLeftSide: true, hasBottomText: false, enableKeyboard: true, validator: EfbFormatters.NumberParser, bottomTextFormatter: EfbFormatters.RawFormatter, onlyNumberEntry: true, onValueChanged: (value) => {
+                        FSComponent.buildComponent(BoeingEfbTextField, { ref: this.zfwFieldRef, buttonName: 'ZFW:', isNameOnLeftSide: true, hasBottomText: false, enableKeyboard: true, validator: EfbFormatters.NumberParser, bottomTextFormatter: EfbFormatters.RawFormatter, onlyNumberEntry: true, onValueChanged: (value) => {
                                 if (this.gameUnitsMetric.get()) {
                                     //if the game is in metric then keep the same
                                     this.pickedZfwKg.set(value);
@@ -39743,8 +39726,7 @@ class BoeingPerformancePage extends DisplayComponent {
                                     const data = Number(UnitType.POUND.convertTo(value, UnitType.KILOGRAM).toFixed());
                                     this.pickedZfwKg.set(data);
                                 }
-                            }, unitForTextField: this.unitString
-                        }))),
+                            }, unitForTextField: this.unitString }))),
                 FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box' },
                     FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-name-and-engine hidden', ref: this.nameAndEngineRef }, "787-9/GENX-1B70"),
                     FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-setting-buttons hidden', ref: this.textAreaSettingButtonsRefs },
@@ -39753,11 +39735,9 @@ class BoeingPerformancePage extends DisplayComponent {
                         FSComponent.buildComponent(BoeingEfbButton, { selected: this.isAtmSettingActive, isDisabled: this.isAtmSettingDisabled, onClick: () => this.onMenuButtonClicked(textAreaSetting.Atm) },
                             FSComponent.buildComponent("span", null, "ATM"))),
                     FSComponent.buildComponent("div", { class: 'efb-middle-2st-middle-box-cg' },
-                        FSComponent.buildComponent(BoeingEfbTextField, {
-                            ref: this.cgFieldRef, buttonName: 'CG(%): ', isNameOnLeftSide: true, hasBottomText: false, width: 60, enableKeyboard: true, validator: EfbFormatters.NumberParser, bottomTextFormatter: EfbFormatters.RawFormatter, onlyNumberEntry: true, onValueChanged: (value) => {
+                        FSComponent.buildComponent(BoeingEfbTextField, { ref: this.cgFieldRef, buttonName: 'CG(%): ', isNameOnLeftSide: true, hasBottomText: false, width: 60, enableKeyboard: true, validator: EfbFormatters.NumberParser, bottomTextFormatter: EfbFormatters.RawFormatter, onlyNumberEntry: true, onValueChanged: (value) => {
                                 this.pickedCg.set(value);
-                            }
-                        }))),
+                            } }))),
                 FSComponent.buildComponent("div", { class: 'efb-middle-3st-middle-box' },
                     FSComponent.buildComponent("div", { class: 'efb-middle-3st-middle-box-contents hidden', ref: this.textAreaContentsRef },
                         FSComponent.buildComponent("div", { class: 'efb-text-area-flaps' },
