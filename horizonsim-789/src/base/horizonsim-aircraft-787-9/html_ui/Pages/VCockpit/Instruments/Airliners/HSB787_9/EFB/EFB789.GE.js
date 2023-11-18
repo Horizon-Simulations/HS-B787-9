@@ -36097,6 +36097,27 @@ class PerformancePlanRepository {
             }
         }
     }
+/**
+     * Checks whether two objects are the same by performing a (very) shallow comparison.
+     * @param obj1 The first object
+     * @param obj2 The second object
+     * @returns true if the objects are the same
+     */
+    isSameObject(obj1, obj2) {
+        // Check if the values are null or undefined
+        if (obj1 == null || obj2 == null) {
+            return obj1 === obj2;
+        }
+        for (const prop in obj1) {
+            if (typeof obj1[prop] === 'object') {
+                continue;
+            }
+            if (obj1[prop] !== obj2[prop]) {
+                return false;
+            }
+        }
+        return true;
+    }
     /**
      * Triggers a synchronisation of the active plan performance plan over the EventBus.
      * @param planIndex the plan index
@@ -39354,7 +39375,7 @@ class BoeingPerformancePage extends DisplayComponent {
             this.v1SpeedValue.set(v1Out !== undefined ? (v1Out + ' KT') : '');
             this.v2SpeedValue.set(v2Out !== undefined ? (v2Out + ' KT') : '');
             this.vrSpeedValue.set(vrOut !== undefined ? (vrOut + ' KT') : '');
-            if (assumedTemperatureOut !== undefined) {
+            if (assumedTemperatureOut !== 0) {
                 this.selTempValue.set(assumedTemperatureOut + ' C');
             }
             //default value for the QNH if nothing is entered
@@ -43715,6 +43736,7 @@ class B787TakeoffCalculator {
         const rwyPressureAlt = toRwy.elevation - AeroMath.baroPressureAltitudeOffset(qnh);
         const rwyPressureAltFeet = UnitType.METER.convertTo(rwyPressureAlt, UnitType.FOOT);
         const tempDeviationVsIsaDay = oat - AeroMath.isaTemperature(rwyPressureAlt);
+        const initialOat = oat;
         // Determine a breaking action coefficient for a given rwy condition based on the table on page 849:
         //     coefficient -> reported breaking action
         //     6 -> Dry
@@ -43792,6 +43814,10 @@ class B787TakeoffCalculator {
                 case EFBTakeoffCalculationMode.FULL:
                     // For FULL, we want to calculate the same performance, just without the assumed temperature part.
                     optimizeAssumedTemperature = false;
+                    // User jon on Avsim (787 captain) confirmed that the FULL case also is using the TO rating.
+                    requestedThrustRating = EFBTakeoffThrustMode.TO;
+                    oat = initialOat;
+                    determinedAssumedTemperature = 0;
                     break;
                 case EFBTakeoffCalculationMode.RTOW:
                     // For RTOW, disable assumed temperature and overwrite any OPTIMUM option:
