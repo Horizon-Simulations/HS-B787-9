@@ -266,8 +266,7 @@ html {
 
 .map-compass-overlay svg {
   stroke: var(--boeing-colors-white);
-  /* TODO Use css var */
-  stroke-width: calc(4px * var(--nd-canvas-scale));
+  stroke-width: var(--nav-display-path-stroke-width);
   stroke-linecap: round;
   stroke-linejoin: round;
   fill: none;
@@ -275,8 +274,7 @@ html {
 
 .map-compass-overlay .nd-path-shadow {
   stroke: var(--boeing-colors-black) !important;
-  /* TODO Use css var */
-  stroke-width: calc(6px * var(--nd-canvas-scale));
+  stroke-width: var(--nav-display-path-stroke-width-outline);
 }
 
 .inertial-heading-data-invalid .map-cross-track-error-container,
@@ -361,6 +359,8 @@ html {
   overflow: hidden;
   paint-order: stroke;
   -webkit-text-stroke: .06em black;
+  --nav-display-path-stroke-width: calc(4px * var(--nd-canvas-scale));
+  --nav-display-path-stroke-width-outline: calc(6px * var(--nd-canvas-scale));
 }
 
 .map-system-container .map-system {
