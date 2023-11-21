@@ -28822,72 +28822,6 @@
         },
         {
             "bufferView": 4,
-            "byteOffset": 25864884,
-            "componentType": 5126,
-            "count": 6665,
-            "min": [
-                -3.222182273864746,
-                -2.5606632232666016,
-                -37.96046447753906
-            ],
-            "max": [
-                3.222182273864746,
-                12.329360008239746,
-                28.496612548828125
-            ],
-            "type": "VEC3",
-            "name": "FROST_FUSELAGE_vertices#0_POSITION"
-        },
-        {
-            "bufferView": 4,
-            "byteOffset": 25864896,
-            "componentType": 5120,
-            "count": 6665,
-            "type": "VEC4",
-            "name": "FROST_FUSELAGE_vertices#0_TANGENT"
-        },
-        {
-            "bufferView": 4,
-            "byteOffset": 25864900,
-            "componentType": 5120,
-            "count": 6665,
-            "type": "VEC4",
-            "name": "FROST_FUSELAGE_vertices#0_NORMAL"
-        },
-        {
-            "bufferView": 4,
-            "byteOffset": 25864904,
-            "componentType": 5122,
-            "count": 6665,
-            "type": "VEC2",
-            "name": "FROST_FUSELAGE_vertices#0_TEXCOORD_0"
-        },
-        {
-            "bufferView": 4,
-            "byteOffset": 25864908,
-            "componentType": 5122,
-            "count": 6665,
-            "type": "VEC2",
-            "name": "FROST_FUSELAGE_vertices#0_TEXCOORD_1"
-        },
-        {
-            "bufferView": 4,
-            "byteOffset": 25864912,
-            "componentType": 5123,
-            "count": 6665,
-            "type": "VEC4",
-            "name": "FROST_FUSELAGE_vertices#0_COLOR_0"
-        },
-        {
-            "bufferView": 5,
-            "byteOffset": 3594006,
-            "componentType": 5123,
-            "count": 16674,
-            "type": "SCALAR",
-            "name": "FROST_FUSELAGE_indices#0"
-        },
-        {
-            "bufferView": 4,
             "byteOffset": 26104824,
             "componentType": 5126,
             "count": 301,
@@ -56601,31 +56535,6 @@
             "primitives": [
                 {
                     "attributes": {
-                        "COLOR_0": 3401,
-                        "NORMAL": 3402,
-                        "POSITION": 3403,
-                        "TANGENT": 3404,
-                        "TEXCOORD_0": 3405,
-                        "TEXCOORD_1": 3406
-                    },
-                    "indices": 3407,
-                    "material": 35,
-                    "mode": 4,
-                    "extras": {
-                        "ASOBO_primitive": {
-                            "PrimitiveCount": 2,
-                            "VertexType": "VTX",
-                            "VertexVersion": 2
-                        }
-                    }
-                }
-            ],
-            "name": "FROST_FUSELAGE"
-        },
-        {
-            "primitives": [
-                {
-                    "attributes": {
                         "COLOR_0": 3264,
                         "JOINTS_0": 3262,
                         "NORMAL": 3259,
@@ -69303,10 +69212,6 @@
             ],
             "mesh": 267,
             "name": "CARGO_INTERIOR"
-        },
-        {
-            "mesh": 268,
-            "name": "FROST_FUSELAGE"
         },
         {
             "mesh": 269,
