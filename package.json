@@ -1,6 +1,6 @@
 {
     "name": "horizonsim-b787-9",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "edition": "Stable",
     "author": "Yago Martínez(Qbit) & Horizon Simulations",
     "scripts": {
