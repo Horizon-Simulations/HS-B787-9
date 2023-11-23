@@ -180,13 +180,13 @@ TaxiLights=False
 WingLights=False
 
 ; INTERIOR LIGHTS
-PanelLights=True
-CabinLights=True
-CabinLightsNight=True
+PanelLights=False
+CabinLights=False
+CabinLightsNight=False
 GlareshieldLights=False
-GlareshieldLightsNight=True
+GlareshieldLightsNight=False
 PedestalLights=False
-PedestalLightsNight=True
+PedestalLightsNight=False
 
 ; CABIN LIGHTS
 ; Dome
