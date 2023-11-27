@@ -15,6 +15,8 @@ jobs:
       PRE_RELEASE_TAG: vstable
       ZIP_NAME: hs-b787-9-${{ github.ref_name }}.zip
       BUILD_DIR_NAME: stable
+      CLOUDFLARE_WORKER_PASSWORD: ${{ secrets.CLOUDFLARE_WORKER_PASSWORD }}
+      CDN_BUCKET_DESTINATION: addons/horizonsim-789/release
     steps:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
@@ -59,11 +61,15 @@ jobs:
           zip -r ../../${{ env.BUILD_DIR_NAME }}/${{ env.ZIP_NAME }} ./horizonsim-aircraft-787-9/
           cd ../../
       - name: Upload to Cloudflare CDN
-        env:
-          CLOUDFLARE_WORKER_PASSWORD: ${{ secrets.CLOUDFLARE_WORKER_PASSWORD }}
-          CDN_BUCKET_DESTINATION: addons/horizonsim-789/release
         run: |
           ./scripts/cdn.sh $CDN_BUCKET_DESTINATION ./horizonsim-789/build/build-modules
+      - name: Upload Release Config to CloudFlare CDN
+        run: |
+          mkdir -p ./horizonsim-789/build/config
+          echo "releases:" >> ./horizonsim-789/build/config/releases.yaml
+          echo "  - name: $GITHUB_REF_NAME" >> ./horizonsim-789/build/config/releases.yaml
+          echo "    date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> ./horizonsim-789/build/config/releases.yaml
+          ./scripts/cdn.sh $CDN_BUCKET_DESTINATION ./horizonsim-789/build/config
       - name: Upload to Google Drive
         uses: adityak74/google-drive-upload-git-action@main
         with:
