@@ -109,7 +109,7 @@
         "nanoid": "^3.3.7",
         "network": "^0.6.1",
         "pdf-to-printer": "^5.1.1",
-        "pdfkit": "^0.13.0",
+        "pdfkit": "^0.14.0",
         "pkg": "^5.1.0",
         "rc-slider": "^9.7.5",
         "redux": "^4.1.1",
