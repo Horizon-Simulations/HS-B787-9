@@ -847,6 +847,7 @@ class ConsumerValue {
     }
 }
 
+/* eslint-disable @typescript-eslint/ban-ts-comment */
 /**
  * Valid type arguments for Set/GetSimVarValue
  */
@@ -903,6 +904,7 @@ const stringRegex = new RegExp(/string/i);
 const boolRegex = new RegExp(/boolean|bool/i);
 const numberRegex = new RegExp(/number/i);
 const defaultSource = '';
+// @ts-ignore
 SimVar.GetSimVarValue = (name, unit, dataSource = defaultSource) => {
     try {
         if (simvar) {
@@ -946,6 +948,7 @@ SimVar.GetSimVarValue = (name, unit, dataSource = defaultSource) => {
     }
     return null;
 };
+// @ts-ignore
 SimVar.SetSimVarValue = (name, unit, value, dataSource = defaultSource) => {
     if (value == undefined) {
         console.warn(name + ' : Trying to set a null value');
@@ -993,6 +996,11 @@ SimVar.SetSimVarValue = (name, unit, value, dataSource = defaultSource) => {
     }
     return Promise.resolve();
 };
+// @ts-ignore
+({
+    GetSimVarValue: SimVar.GetSimVarValue,
+    SetSimVarValue: SimVar.SetSimVarValue,
+});
 
 /**
  * A basic event-bus publisher.
