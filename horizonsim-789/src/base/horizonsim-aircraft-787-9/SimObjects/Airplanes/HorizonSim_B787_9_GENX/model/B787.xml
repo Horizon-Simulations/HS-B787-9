@@ -499,5 +499,10 @@
                 	<VISIBILITY_CODE>(L:B789_SATCOM_ENABLED, bool)</VISIBILITY_CODE>
      		</UseTemplate>
    		</Component>
+		<Component ID="Icing" Node="0FR">
+            	<UseTemplate Name="ASOBO_GT_Visibility_Code">
+                	<VISIBILITY_CODE>0</VISIBILITY_CODE>
+     		</UseTemplate>
+   		</Component>
 	</Behaviors>	
 </ModelInfo>
