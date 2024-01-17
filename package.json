@@ -98,7 +98,7 @@
         "@sentry/tracing": "^6.17.7",
         "@tabler/icons": "^1.41.2",
         "byte-data": "^19.0.1",
-        "classnames": "^2.3.3",
+        "classnames": "^2.4.0",
         "esbuild-plugin-inline-image": "^0.0.9",
         "esbuild-style-plugin": "^1.6.3",
         "geolib": "^3.3.3",
