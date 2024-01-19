@@ -116,7 +116,7 @@
         "redux-thunk": "^2.3.0",
         "rollup-plugin-scss": "^3.0.0",
         "safe-stable-stringify": "^2.3.1",
-        "sass": "^1.69.5",
+        "sass": "^1.69.6",
         "semver": "^7.3.8",
         "tailwindcss": "^3.4.0",
         "type-to-reducer": "^1.2.0",
